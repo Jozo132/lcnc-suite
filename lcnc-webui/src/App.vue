@@ -154,12 +154,13 @@ onUnmounted(() => {
             @resetBackplot="onResetBackplotL"
             @setView="onSetViewL"
             @toggleLayer="onToggleLayerL"
-          />
-          <ThreeViewer
-            ref="viewerL"
-            :workpieceSize="[100, 100, 20]"
-            :workpieceOffset="[0, 0, 0]"
-          />
+          >
+            <ThreeViewer
+              ref="viewerL"
+              :workpieceSize="[100, 100, 20]"
+              :workpieceOffset="[0, 0, 0]"
+            />
+          </Toolbar>
         </template>
 
         <template #dro>
@@ -189,12 +190,13 @@ onUnmounted(() => {
             @resetBackplot="onResetBackplotR"
             @setView="onSetViewR"
             @toggleLayer="onToggleLayerR"
-          />
-          <ThreeViewer
-            ref="viewerR"
-            :workpieceSize="[100, 100, 20]"
-            :workpieceOffset="[0, 0, 0]"
-          />
+          >
+            <ThreeViewer
+              ref="viewerR"
+              :workpieceSize="[100, 100, 20]"
+              :workpieceOffset="[0, 0, 0]"
+            />
+          </Toolbar>
         </template>
 
         <template #dro>
