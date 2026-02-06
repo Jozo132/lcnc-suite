@@ -232,6 +232,8 @@ Full machine status (10 Hz):
     "dtg": [0.0, 0.0, 0.0],
     "feed_override": 1.0,
     "spindle_override": 1.0,
+    "rapid_override": 1.0,
+    "max_velocity": 100.0,
     "active_file": "/path/to/file.ngc",
     "motion_line": 42,
     "tool_number": 1,
@@ -324,6 +326,19 @@ Send JSON messages to control the machine:
 ```
 
 **Axis mapping**: 0=X, 1=Y, 2=Z, etc.
+
+#### Overrides
+```json
+{"cmd": "set_feed_override", "scale": 1.0}
+{"cmd": "set_spindle_override", "scale": 1.0}
+{"cmd": "set_rapid_override", "scale": 1.0}
+{"cmd": "set_max_velocity", "velocity": 100.0}
+```
+
+**Scale ranges**:
+- Feed: 0.0-2.0 (0-200%)
+- Spindle: 0.5-2.0 (50-200%)
+- Rapid: 0.0-1.0 (0-100%)
 
 ### Error Handling
 

@@ -48,6 +48,8 @@ class StatusPayload:
     # misc
     feed_override: Optional[float]
     spindle_override: Optional[float]
+    rapid_override: Optional[float]
+    max_velocity: Optional[float]
     active_file: Optional[str]
     motion_line: Optional[int]
 
@@ -162,6 +164,66 @@ def read_machine_limits_from_ini(stat_obj):
     origin = [xmin, ymin, zmin]
     size = [xmax - xmin, ymax - ymin, zmax - zmin]
     return origin, size
+
+
+def get_spindle_override() -> Optional[float]:
+    """
+    Get spindle override with fallbacks for different LinuxCNC versions.
+    Returns the override scale factor (1.0 = 100%).
+    """
+    # Try 1: Direct spindle_override attribute
+    val = safe_get("spindle_override", None)
+    if val is not None:
+        try:
+            result = float(val)
+            if result > 0:  # Sanity check
+                return result
+        except (TypeError, ValueError):
+            pass
+
+    # Try 2: spindle array with override (multi-spindle configs)
+    spindles = safe_get("spindle", None)
+    if spindles is not None:
+        try:
+            # If it's an array/list, get first spindle's override
+            if hasattr(spindles, '__getitem__'):
+                s0 = spindles[0]
+                if hasattr(s0, 'override'):
+                    return float(s0.override)
+                # Also try as dict
+                if isinstance(s0, dict) and 'override' in s0:
+                    return float(s0['override'])
+        except (IndexError, AttributeError, TypeError, ValueError, KeyError):
+            pass
+
+    # Try 3: Check if spindle itself has override (single spindle)
+    if spindles is not None:
+        try:
+            if hasattr(spindles, 'override'):
+                return float(spindles.override)
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    # Try 4: spindlerate (some versions)
+    val = safe_get("spindlerate", None)
+    if val is not None:
+        try:
+            result = float(val)
+            if result > 0:
+                return result
+        except (TypeError, ValueError):
+            pass
+
+    # Try 5: Check spindle_0 specifically
+    val = safe_get("spindle_0", None)
+    if val is not None:
+        try:
+            if hasattr(val, 'override'):
+                return float(val.override)
+        except (AttributeError, TypeError, ValueError):
+            pass
+
+    return None
 
 
 def poll_status() -> StatusPayload:
@@ -288,7 +350,9 @@ def poll_status() -> StatusPayload:
         work_pos=work_pos,       # <-- tool-tip work coords
         dtg=dtg,
         feed_override=safe_get("feedrate", None),
-        spindle_override=safe_get("spindle", None),
+        spindle_override=get_spindle_override(),
+        rapid_override=safe_get("rapidrate", None),
+        max_velocity=safe_get("max_velocity", None),
         active_file=safe_get("file", None),
         motion_line=safe_get("motion_line", None),
         tool_number=tool_number,
@@ -436,6 +500,12 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             CMD.home(-1)  # -1 homes all axes
             return {"ok": True}
 
+        if cmd == "unhome_all":
+            require_armed(armed)
+            set_mode(linuxcnc.MODE_MANUAL)
+            CMD.unhome(-1)  # -1 unhomes all axes
+            return {"ok": True}
+
         if cmd == "cycle_start":
             require_armed(armed)
             set_mode(linuxcnc.MODE_AUTO)
@@ -452,6 +522,38 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             # Don't call set_mode - already in AUTO mode when paused
             CMD.auto(linuxcnc.AUTO_RESUME)
             return {"ok": True}
+
+        if cmd == "set_feed_override":
+            require_armed(armed)
+            scale = float(msg.get("scale", 1.0))
+            # Clamp to reasonable range (0-200%)
+            scale = max(0.0, min(2.0, scale))
+            CMD.feedrate(scale)
+            return {"ok": True, "scale": scale}
+
+        if cmd == "set_spindle_override":
+            require_armed(armed)
+            scale = float(msg.get("scale", 1.0))
+            # Clamp to reasonable range (50-200%)
+            scale = max(0.5, min(2.0, scale))
+            CMD.spindleoverride(scale)
+            return {"ok": True, "scale": scale}
+
+        if cmd == "set_rapid_override":
+            require_armed(armed)
+            scale = float(msg.get("scale", 1.0))
+            # Clamp to 0-100%
+            scale = max(0.0, min(1.0, scale))
+            CMD.rapidrate(scale)
+            return {"ok": True, "scale": scale}
+
+        if cmd == "set_max_velocity":
+            require_armed(armed)
+            velocity = float(msg.get("velocity", 0.0))
+            # Clamp to positive values
+            velocity = max(0.0, velocity)
+            CMD.maxvel(velocity)
+            return {"ok": True, "velocity": velocity}
 
         return {"ok": False, "error": f"Unknown cmd: {cmd}"}
 

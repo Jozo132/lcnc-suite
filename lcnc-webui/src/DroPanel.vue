@@ -2,11 +2,15 @@
 defineProps<{
   workPos: number[];
   machinePos: number[];
+  armed: boolean;
+  busy: boolean;
+  homed: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "zeroAxis", axis: number): void;
   (e: "homeAll"): void;
+  (e: "unhomeAll"): void;
 }>();
 
 function fmt(n: any) {
@@ -22,15 +26,15 @@ function fmt(n: any) {
       <div class="dro">
         <div class="axisRow">
           <div class="axis"><span>X</span><b>{{ fmt(workPos[0]) }}</b></div>
-          <button class="zeroBtn" @click="emit('zeroAxis', 0)">Zero X</button>
+          <button class="zeroBtn" @click="emit('zeroAxis', 0)" :disabled="!armed || busy">Zero X</button>
         </div>
         <div class="axisRow">
           <div class="axis"><span>Y</span><b>{{ fmt(workPos[1]) }}</b></div>
-          <button class="zeroBtn" @click="emit('zeroAxis', 1)">Zero Y</button>
+          <button class="zeroBtn" @click="emit('zeroAxis', 1)" :disabled="!armed || busy">Zero Y</button>
         </div>
         <div class="axisRow">
           <div class="axis"><span>Z</span><b>{{ fmt(workPos[2]) }}</b></div>
-          <button class="zeroBtn" @click="emit('zeroAxis', 2)">Zero Z</button>
+          <button class="zeroBtn" @click="emit('zeroAxis', 2)" :disabled="!armed || busy">Zero Z</button>
         </div>
       </div>
     </div>
@@ -39,13 +43,17 @@ function fmt(n: any) {
 
     <div class="section">
       <div class="sub">Machine Position</div>
-      <div class="dro">
-        <div class="axis"><span>X</span><b>{{ fmt(machinePos[0]) }}</b></div>
-        <div class="axis"><span>Y</span><b>{{ fmt(machinePos[1]) }}</b></div>
-        <div class="axis"><span>Z</span><b>{{ fmt(machinePos[2]) }}</b></div>
+      <div class="machineRow">
+        <div class="dro">
+          <div class="axis"><span>X</span><b>{{ fmt(machinePos[0]) }}</b></div>
+          <div class="axis"><span>Y</span><b>{{ fmt(machinePos[1]) }}</b></div>
+          <div class="axis"><span>Z</span><b>{{ fmt(machinePos[2]) }}</b></div>
+        </div>
+        <div class="homingButtons">
+          <button class="homeBtn" @click="emit('homeAll')" :disabled="!armed || busy || homed">Home All Axes</button>
+          <button class="homeBtn" @click="emit('unhomeAll')" :disabled="!armed || busy || !homed">Unhome</button>
+        </div>
       </div>
-
-      <button class="homeBtn" @click="emit('homeAll')">Home All Axes</button>
     </div>
   </div>
 </template>
@@ -81,6 +89,18 @@ function fmt(n: any) {
   gap: 16px;
 }
 
+.machineRow {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+}
+
+.homingButtons {
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+}
+
 .axis {
   display: flex;
   align-items: baseline;
@@ -105,14 +125,20 @@ function fmt(n: any) {
   cursor: pointer;
   transition: all 0.15s ease;
   white-space: nowrap;
+  min-width: 120px;
 }
 
 .zeroBtn:hover {
   background: color-mix(in oklab, var(--button-bg) 85%, var(--fg));
 }
 
-.zeroBtn:active {
+.zeroBtn:active:not(:disabled) {
   transform: scale(0.98);
+}
+
+.zeroBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .homeBtn {
@@ -125,15 +151,23 @@ function fmt(n: any) {
   color: var(--fg);
   cursor: pointer;
   transition: all 0.15s ease;
-  margin-top: 4px;
+  min-width: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .homeBtn:hover {
   background: color-mix(in oklab, var(--button-bg) 85%, var(--fg));
 }
 
-.homeBtn:active {
+.homeBtn:active:not(:disabled) {
   transform: scale(0.98);
+}
+
+.homeBtn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .separator {

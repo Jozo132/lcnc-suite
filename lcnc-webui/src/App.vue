@@ -8,15 +8,17 @@ import DroPanel from "./DroPanel.vue";
 import JogPanel from "./JogPanel.vue";
 import MdiPanel from "./MdiPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
+import OverridePanel from "./OverridePanel.vue";
 
 onMounted(() => connectWs());
 
 /** ---------- tab definitions ---------- */
 const tabs = [
   { id: "viewer", label: "3D Viewer" },
-  { id: "dro", label: "Position" },
+  { id: "dro", label: "DRO" },
   { id: "jog", label: "Jogging" },
   { id: "mdi", label: "MDI" },
+  { id: "overrides", label: "Overrides" },
   { id: "gcode", label: "G-code" },
 ];
 
@@ -147,8 +149,36 @@ const interpStateLabel = computed(() => {
 // Feed override percentage
 const feedOverride = computed(() => {
   const fo = st.value.feed_override;
-  if (fo == null) return "-";
+  if (fo == null || !Number.isFinite(fo)) return "-";
   return `${Math.round(fo * 100)}%`;
+});
+
+// Spindle override percentage
+const spindleOverride = computed(() => {
+  const so = st.value.spindle_override;
+  if (so == null || !Number.isFinite(so)) return "-";
+  return `${Math.round(so * 100)}%`;
+});
+
+// Rapid override percentage
+const rapidOverride = computed(() => {
+  const ro = st.value.rapid_override;
+  if (ro == null || !Number.isFinite(ro)) return "-";
+  return `${Math.round(ro * 100)}%`;
+});
+
+// Override values (raw 0.0-2.0 scale) - with NaN handling
+const feedOverrideValue = computed(() => {
+  const val = st.value.feed_override;
+  return (val != null && Number.isFinite(val)) ? val : 1.0;
+});
+const spindleOverrideValue = computed(() => {
+  const val = st.value.spindle_override;
+  return (val != null && Number.isFinite(val)) ? val : 1.0;
+});
+const rapidOverrideValue = computed(() => {
+  const val = st.value.rapid_override;
+  return (val != null && Number.isFinite(val)) ? val : 1.0;
 });
 
 
@@ -194,6 +224,10 @@ function homeAll() {
   fire({ cmd: "home_all" });
 }
 
+function unhomeAll() {
+  fire({ cmd: "unhome_all" });
+}
+
 function cycleStart() {
   fire({ cmd: "cycle_start" });
 }
@@ -204,6 +238,18 @@ function cyclePause() {
 
 function cycleResume() {
   fire({ cmd: "cycle_resume" });
+}
+
+function setFeedOverride(scale: number) {
+  send({ cmd: "set_feed_override", scale });
+}
+
+function setSpindleOverride(scale: number) {
+  send({ cmd: "set_spindle_override", scale });
+}
+
+function setRapidOverride(scale: number) {
+  send({ cmd: "set_rapid_override", scale });
 }
 
 /** ---------- safety: stop jog on focus loss ---------- */
@@ -279,8 +325,12 @@ watch(viewerGcode, (newGcode) => {
           <DroPanel
             :workPos="workPos"
             :machinePos="machinePos"
+            :armed="armed"
+            :busy="busy"
+            :homed="isHomed"
             @zeroAxis="zeroAxis"
             @homeAll="homeAll"
+            @unhomeAll="unhomeAll"
           />
         </template>
 
@@ -297,6 +347,19 @@ watch(viewerGcode, (newGcode) => {
             :status="status"
             @update:mdiText="mdiText = $event"
             @send="sendMdi"
+          />
+        </template>
+
+        <template #overrides>
+          <OverridePanel
+            :feedOverride="feedOverrideValue"
+            :spindleOverride="spindleOverrideValue"
+            :rapidOverride="rapidOverrideValue"
+            :armed="armed"
+            :busy="busy"
+            @setFeedOverride="setFeedOverride"
+            @setSpindleOverride="setSpindleOverride"
+            @setRapidOverride="setRapidOverride"
           />
         </template>
 
@@ -332,8 +395,12 @@ watch(viewerGcode, (newGcode) => {
           <DroPanel
             :workPos="workPos"
             :machinePos="machinePos"
+            :armed="armed"
+            :busy="busy"
+            :homed="isHomed"
             @zeroAxis="zeroAxis"
             @homeAll="homeAll"
+            @unhomeAll="unhomeAll"
           />
         </template>
 
@@ -350,6 +417,19 @@ watch(viewerGcode, (newGcode) => {
             :status="status"
             @update:mdiText="mdiText = $event"
             @send="sendMdi"
+          />
+        </template>
+
+        <template #overrides>
+          <OverridePanel
+            :feedOverride="feedOverrideValue"
+            :spindleOverride="spindleOverrideValue"
+            :rapidOverride="rapidOverrideValue"
+            :armed="armed"
+            :busy="busy"
+            @setFeedOverride="setFeedOverride"
+            @setSpindleOverride="setSpindleOverride"
+            @setRapidOverride="setRapidOverride"
           />
         </template>
 
@@ -411,8 +491,16 @@ watch(viewerGcode, (newGcode) => {
         <div class="statusGroup">
           <div class="groupTitle">Overrides</div>
           <div class="statusRow">
-            <div class="k">Feed Override</div>
+            <div class="k">Feed</div>
             <div class="v">{{ feedOverride }}</div>
+          </div>
+          <div class="statusRow">
+            <div class="k">Spindle</div>
+            <div class="v">{{ spindleOverride }}</div>
+          </div>
+          <div class="statusRow">
+            <div class="k">Rapid</div>
+            <div class="v">{{ rapidOverride }}</div>
           </div>
         </div>
       </div>
