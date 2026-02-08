@@ -368,6 +368,10 @@ function spindleStop() {
   fire({ cmd: "spindle_stop" });
 }
 
+function loadFile(path: string) {
+  fire({ cmd: "load_file", path });
+}
+
 /** ---------- safety: stop jog on focus loss ---------- */
 function stopAllJog() {
   if (!canJog.value) return; // no jog possible unless armed + enabled + homed
@@ -540,6 +544,9 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :activeFile="activeFile"
               :gcodeContent="gcodeContent"
               :currentLine="currentLine"
+              :armed="armed"
+              :busy="busy"
+              @loadFile="loadFile"
             />
           </template>
 

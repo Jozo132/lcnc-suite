@@ -9,7 +9,8 @@ import linuxcnc
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, List
 from fastapi.staticfiles import StaticFiles
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+import tempfile
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 
@@ -40,7 +41,8 @@ def _get_lcnc_pid() -> Optional[int]:
 
 def try_connect_lcnc() -> bool:
     """Attempt to connect to LinuxCNC. Returns True on success."""
-    global STAT, CMD, ERR, lcnc_connected, _lcnc_pid
+    global STAT, CMD, ERR, lcnc_connected, _lcnc_pid, _nc_files_dir
+    _nc_files_dir = None  # re-resolve on reconnect
     try:
         STAT = linuxcnc.stat()
         CMD = linuxcnc.command()
@@ -75,6 +77,62 @@ def check_lcnc_instance() -> bool:
 
 # Best-effort connection at startup (gateway still runs if LinuxCNC isn't up yet)
 try_connect_lcnc()
+
+
+# ---- NC files directory ----
+ALLOWED_EXTENSIONS = {".ngc", ".nc", ".gcode", ".tap", ".txt"}
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+_nc_files_dir: Optional[str] = None
+
+
+def get_nc_files_dir() -> str:
+    """Return NC files directory from LinuxCNC INI, fallback ~/linuxcnc/nc_files."""
+    global _nc_files_dir
+    if _nc_files_dir is not None:
+        return _nc_files_dir
+
+    fallback = os.path.expanduser("~/linuxcnc/nc_files")
+
+    if STAT is not None:
+        try:
+            STAT.poll()
+            ini_path = getattr(STAT, "ini_filename", None)
+            if ini_path:
+                ini = linuxcnc.ini(ini_path)
+                prefix = ini.find("DISPLAY", "PROGRAM_PREFIX")
+                if prefix:
+                    if not os.path.isabs(prefix):
+                        prefix = os.path.join(os.path.dirname(ini_path), prefix)
+                    prefix = os.path.realpath(prefix)
+                    if os.path.isdir(prefix):
+                        _nc_files_dir = prefix
+                        return _nc_files_dir
+        except Exception:
+            pass
+
+    _nc_files_dir = fallback
+    os.makedirs(_nc_files_dir, exist_ok=True)
+    return _nc_files_dir
+
+
+def sanitize_filename(name: str) -> str:
+    name = os.path.basename(name)
+    name = name.replace("\x00", "")
+    name = name.lstrip(".")
+    if not name:
+        name = "uploaded.ngc"
+    return name
+
+
+def validate_extension(filename: str) -> bool:
+    _, ext = os.path.splitext(filename)
+    return ext.lower() in ALLOWED_EXTENSIONS
+
+
+def validate_path_within(path: str, root: str) -> bool:
+    real_path = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    return real_path.startswith(real_root + os.sep) or real_path == real_root
 
 
 @dataclass
@@ -785,6 +843,32 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             CMD.maxvel(velocity)
             return {"ok": True, "velocity": velocity}
 
+        if cmd == "load_file":
+            require_armed(armed)
+            path = msg.get("path", "")
+            if not path or not isinstance(path, str):
+                return {"ok": False, "error": "Missing path"}
+
+            real_path = os.path.realpath(path)
+            if not os.path.isfile(real_path):
+                return {"ok": False, "error": "File not found"}
+
+            nc_dir = get_nc_files_dir()
+            if not validate_path_within(real_path, nc_dir):
+                return {"ok": False, "error": "File not in NC files directory"}
+
+            if not validate_extension(real_path):
+                return {"ok": False, "error": "Invalid file extension"}
+
+            blocked = reject_if_auto_running()
+            if blocked:
+                return blocked
+
+            set_mode(linuxcnc.MODE_AUTO)
+            CMD.program_open(real_path)
+            CMD.wait_complete()
+            return {"ok": True, "path": real_path}
+
         return {"ok": False, "error": f"Unknown cmd: {cmd}"}
 
     except PermissionError as pe:
@@ -991,6 +1075,84 @@ app.mount("/assets", StaticFiles(directory=str(MACHINE_DIR), html=False), name="
 @app.get("/health")
 def health():
     return {"ok": True}
+
+
+@app.post("/upload")
+async def upload_gcode(file: UploadFile = File(...)):
+    """Upload a G-code file to the NC files directory."""
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+
+    safe_name = sanitize_filename(file.filename)
+    if not validate_extension(safe_name):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file extension. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+
+    nc_dir = get_nc_files_dir()
+    dest_path = os.path.join(nc_dir, safe_name)
+
+    if not validate_path_within(dest_path, nc_dir):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    content = await file.read()
+    if len(content) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=nc_dir, suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+        os.rename(tmp_path, dest_path)
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+
+    return {"ok": True, "path": dest_path, "filename": safe_name, "size": len(content)}
+
+
+@app.get("/files")
+def list_files(subdir: str = ""):
+    """List G-code files in the NC files directory."""
+    nc_dir = get_nc_files_dir()
+    browse_dir = os.path.join(nc_dir, subdir) if subdir else nc_dir
+
+    if not validate_path_within(browse_dir, nc_dir):
+        raise HTTPException(status_code=400, detail="Invalid directory")
+
+    if not os.path.isdir(browse_dir):
+        raise HTTPException(status_code=404, detail="Directory not found")
+
+    entries = []
+    try:
+        for entry in sorted(os.scandir(browse_dir), key=lambda e: (not e.is_dir(), e.name.lower())):
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir():
+                entries.append({
+                    "name": entry.name,
+                    "type": "directory",
+                    "path": os.path.relpath(entry.path, nc_dir),
+                })
+            elif entry.is_file():
+                _, ext = os.path.splitext(entry.name)
+                if ext.lower() in ALLOWED_EXTENSIONS:
+                    stat = entry.stat()
+                    entries.append({
+                        "name": entry.name,
+                        "type": "file",
+                        "path": entry.path,
+                        "size": stat.st_size,
+                        "modified": stat.st_mtime,
+                    })
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+
+    return {"ok": True, "nc_dir": nc_dir, "subdir": subdir, "entries": entries}
 
 
 @app.websocket("/ws")
