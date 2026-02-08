@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { connectWs, connected, status, send, lastReply, viewerGcode } from "./lcncWs";
 import ThreeViewer from "./ThreeViewer.vue";
 import Toolbar from "./Toolbar.vue";
@@ -9,6 +9,33 @@ import JogPanel from "./JogPanel.vue";
 import MdiPanel from "./MdiPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
 import OverridePanel from "./OverridePanel.vue";
+import SettingsPanel from "./SettingsPanel.vue";
+
+type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "hud";
+const ALL_LAYERS: Layer[] = ["backplot", "toolpath", "machine", "workpiece", "bounds", "hud"];
+
+/** Load startup defaults from localStorage (shared with SettingsPanel) */
+function loadDefaults() {
+  const fallback = {
+    workpieceSize: [100, 100, 20] as [number, number, number],
+    workpieceOffset: [0, 0, -20] as [number, number, number],
+    layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, hud: true } as Record<Layer, boolean>,
+  };
+  try {
+    const raw = localStorage.getItem("lcnc-defaults");
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      return {
+        workpieceSize: (parsed.workpieceSize ?? [...fallback.workpieceSize]) as [number, number, number],
+        workpieceOffset: (parsed.workpieceOffset ?? [...fallback.workpieceOffset]) as [number, number, number],
+        layers: { ...fallback.layers, ...parsed.layers } as Record<Layer, boolean>,
+      };
+    }
+  } catch { /* ignore */ }
+  return { ...fallback, workpieceSize: [...fallback.workpieceSize] as [number, number, number], workpieceOffset: [...fallback.workpieceOffset] as [number, number, number], layers: { ...fallback.layers } };
+}
+
+const defaults = loadDefaults();
 
 onMounted(() => connectWs());
 
@@ -20,6 +47,7 @@ const tabs = [
   { id: "mdi", label: "MDI" },
   { id: "overrides", label: "Overrides" },
   { id: "gcode", label: "G-code" },
+  { id: "settings", label: "Settings" },
 ];
 
 const leftTab = ref("viewer");
@@ -42,9 +70,9 @@ const armed = ref(false);
 const mdiText = ref("G0 X0 Y0");
 const busy = ref(false);
 
-// Workpiece configuration
-const workpieceSize = ref<[number, number, number]>([100, 100, 20]);
-const workpieceOffset = ref<[number, number, number]>([0, 0, -20]); // Z offset = -height (zero at top)
+// Workpiece configuration (initialized from saved defaults)
+const workpieceSize = ref<[number, number, number]>(defaults.workpieceSize);
+const workpieceOffset = ref<[number, number, number]>(defaults.workpieceOffset);
 
 // G-code viewer
 const gcodeContent = ref<string | null>(null);
@@ -279,6 +307,15 @@ function visHandler() {
 onMounted(() => {
   window.addEventListener("blur", stopAllJog);
   document.addEventListener("visibilitychange", visHandler);
+
+  // Apply saved layer defaults after viewers are mounted
+  nextTick(() => {
+    for (const layer of ALL_LAYERS) {
+      const on = defaults.layers[layer];
+      viewerL.value?.setLayerVisible?.(layer, on);
+      viewerR.value?.setLayerVisible?.(layer, on);
+    }
+  });
 });
 
 onUnmounted(() => {
@@ -321,6 +358,7 @@ watch(viewerGcode, (newGcode) => {
             @resetBackplot="onResetBackplotL"
             @setView="onSetViewL"
             @toggleLayer="onToggleLayerL"
+            :layerDefaults="defaults.layers"
             :workpieceSize="workpieceSize"
             :workpieceOffset="workpieceOffset"
             @update:workpieceSize="workpieceSize = $event"
@@ -386,6 +424,10 @@ watch(viewerGcode, (newGcode) => {
             :currentLine="currentLine"
           />
         </template>
+
+        <template #settings>
+          <SettingsPanel />
+        </template>
       </TabPanel>
 
       <TabPanel :tabs="tabs" v-model="rightTab" class="panel">
@@ -394,6 +436,7 @@ watch(viewerGcode, (newGcode) => {
             @resetBackplot="onResetBackplotR"
             @setView="onSetViewR"
             @toggleLayer="onToggleLayerR"
+            :layerDefaults="defaults.layers"
             :workpieceSize="workpieceSize"
             :workpieceOffset="workpieceOffset"
             @update:workpieceSize="workpieceSize = $event"
@@ -457,6 +500,10 @@ watch(viewerGcode, (newGcode) => {
             :gcodeContent="gcodeContent"
             :currentLine="currentLine"
           />
+        </template>
+
+        <template #settings>
+          <SettingsPanel />
         </template>
       </TabPanel>
     </div>

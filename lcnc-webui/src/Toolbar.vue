@@ -128,6 +128,7 @@ type Vec3 = [number, number, number];
 const props = defineProps<{
   workpieceSize: Vec3;
   workpieceOffset: Vec3;
+  layerDefaults?: Record<Layer, boolean>;
 }>();
 
 const emit = defineEmits<{
@@ -139,12 +140,12 @@ const emit = defineEmits<{
 }>();
 
 const local = reactive<Record<Layer, boolean>>({
-  backplot: true,
-  toolpath: true,
-  machine: true,
-  workpiece: true,
-  bounds: true,
-  hud: true,
+  backplot: props.layerDefaults?.backplot ?? true,
+  toolpath: props.layerDefaults?.toolpath ?? true,
+  machine: props.layerDefaults?.machine ?? true,
+  workpiece: props.layerDefaults?.workpiece ?? true,
+  bounds: props.layerDefaults?.bounds ?? true,
+  hud: props.layerDefaults?.hud ?? true,
 });
 
 function emitToggle(layer: Layer) {

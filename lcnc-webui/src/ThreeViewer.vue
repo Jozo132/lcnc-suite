@@ -99,6 +99,9 @@ let highlightMarker: THREE.Mesh | null = null;
 let feedPtsCache: number[][] = [];
 let feedLineMap: Map<number, { start: number; end: number }> = new Map();
 
+// Pending layer visibility: stores calls made before scene objects exist
+let pendingLayers: Map<Layer, boolean> | null = new Map();
+
 // ---- Backplot (live toolpath history) ----
 let backplotLine: THREE.Line | null = null;
 let backplotGeom: THREE.BufferGeometry | null = null;
@@ -171,6 +174,9 @@ function setView(p: ViewPreset) {
 }
 
 function setLayerVisible(layer: Layer, on: boolean) {
+  if (pendingLayers) {
+    pendingLayers.set(layer, on);
+  }
   switch (layer) {
     case "backplot":
       if (backplotLine) backplotLine.visible = on;
@@ -563,6 +569,14 @@ async function buildFromInit(init: ViewerInit) {
     camera.updateProjectionMatrix();
     controls.update();
   }
+
+  // Apply any layer visibility that was requested before objects existed
+  if (pendingLayers) {
+    for (const [layer, on] of pendingLayers) {
+      setLayerVisible(layer, on);
+    }
+    pendingLayers = null;
+  }
 }
 
 function applyState(init: ViewerInit, st: ViewerState) {
@@ -717,13 +731,13 @@ function applyGcode(g: ViewerGcode) {
     }
   }
 
-  // Feed: blue; Rapid: dashed orange
+  // Feed: cyan; Rapid: dashed yellow-orange
   if (feedPts.length >= 2) {
-    feedLine = makeLine(feedPts, 0x5b9bd5, false);
+    feedLine = makeLine(feedPts, 0x22b8cf, false);
     workOrigin.add(feedLine);
   }
   if (rapidPts.length >= 2) {
-    rapidLine = makeLine(rapidPts, 0xe0a050, true);
+    rapidLine = makeLine(rapidPts, 0xf5a623, true);
     workOrigin.add(rapidLine);
   }
 
