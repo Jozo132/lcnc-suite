@@ -112,6 +112,7 @@
         <label><input type="checkbox" v-model="local.machine"  @change="emitToggle('machine')"  /> Machine</label>
         <label><input type="checkbox" v-model="local.workpiece" @change="emitToggle('workpiece')" /> Workpiece</label>
         <label><input type="checkbox" v-model="local.bounds" @change="emitToggle('bounds')" /> Bounds</label>
+        <label><input type="checkbox" v-model="local.workzero" @change="emitToggle('workzero')" /> Work Zero</label>
         <label><input type="checkbox" v-model="local.hud" @change="emitToggle('hud')" /> HUD</label>
       </div>
     </div>
@@ -122,7 +123,7 @@
 import { reactive } from "vue";
 
 type ViewPreset = "top" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
-type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "hud";
+type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "workzero" | "hud";
 type Vec3 = [number, number, number];
 
 const props = defineProps<{
@@ -145,6 +146,7 @@ const local = reactive<Record<Layer, boolean>>({
   machine: props.layerDefaults?.machine ?? true,
   workpiece: props.layerDefaults?.workpiece ?? true,
   bounds: props.layerDefaults?.bounds ?? true,
+  workzero: props.layerDefaults?.workzero ?? true,
   hud: props.layerDefaults?.hud ?? true,
 });
 

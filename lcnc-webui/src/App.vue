@@ -11,15 +11,17 @@ import GcodePanel from "./GcodePanel.vue";
 import OverridePanel from "./OverridePanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 
-type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "hud";
-const ALL_LAYERS: Layer[] = ["backplot", "toolpath", "machine", "workpiece", "bounds", "hud"];
+type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "workzero" | "hud";
+const ALL_LAYERS: Layer[] = ["backplot", "toolpath", "machine", "workpiece", "bounds", "workzero", "hud"];
 
 /** Load startup defaults from localStorage (shared with SettingsPanel) */
 function loadDefaults() {
   const fallback = {
     workpieceSize: [100, 100, 20] as [number, number, number],
     workpieceOffset: [0, 0, -20] as [number, number, number],
-    layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, hud: true } as Record<Layer, boolean>,
+    layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, workzero: true, hud: true } as Record<Layer, boolean>,
+    colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", workpiece: "#ffffff", tool: "#ffdd00" },
+    opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
   };
   try {
     const raw = localStorage.getItem("lcnc-defaults");
@@ -29,10 +31,12 @@ function loadDefaults() {
         workpieceSize: (parsed.workpieceSize ?? [...fallback.workpieceSize]) as [number, number, number],
         workpieceOffset: (parsed.workpieceOffset ?? [...fallback.workpieceOffset]) as [number, number, number],
         layers: { ...fallback.layers, ...parsed.layers } as Record<Layer, boolean>,
+        colors: { ...fallback.colors, ...parsed.colors },
+        opacities: { ...fallback.opacities, ...parsed.opacities },
       };
     }
   } catch { /* ignore */ }
-  return { ...fallback, workpieceSize: [...fallback.workpieceSize] as [number, number, number], workpieceOffset: [...fallback.workpieceOffset] as [number, number, number], layers: { ...fallback.layers } };
+  return { ...fallback, workpieceSize: [...fallback.workpieceSize] as [number, number, number], workpieceOffset: [...fallback.workpieceOffset] as [number, number, number], layers: { ...fallback.layers }, colors: { ...fallback.colors }, opacities: { ...fallback.opacities } };
 }
 
 const defaults = loadDefaults();
@@ -368,6 +372,8 @@ watch(viewerGcode, (newGcode) => {
               ref="viewerL"
               :workpieceSize="workpieceSize"
               :workpieceOffset="workpieceOffset"
+              :colors="defaults.colors"
+              :opacities="defaults.opacities"
               :g5xLabel="g5xLabel"
             />
           </Toolbar>
@@ -446,6 +452,8 @@ watch(viewerGcode, (newGcode) => {
               ref="viewerR"
               :workpieceSize="workpieceSize"
               :workpieceOffset="workpieceOffset"
+              :colors="defaults.colors"
+              :opacities="defaults.opacities"
             />
           </Toolbar>
         </template>

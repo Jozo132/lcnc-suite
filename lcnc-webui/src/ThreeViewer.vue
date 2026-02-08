@@ -30,7 +30,7 @@ type ViewerInit = {
 type Vec3N = [number, number, number];
 
 type ViewPreset = "top" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
-type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "tool" | "hud";
+type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "tool" | "workzero" | "hud";
 
 
 type ViewerState = {
@@ -66,10 +66,29 @@ type ViewerGcode = {
   rapid?: number[][];
 };
 
+type ColorDefaults = {
+  feed: string;
+  rapid: string;
+  backplot: string;
+  bounds: string;
+  workpiece: string;
+  tool: string;
+};
+
+type OpacityDefaults = {
+  workpiece: number;
+  bounds: number;
+  machine: number;
+  toolpath: number;
+  backplot: number;
+  hud: number;
+};
+
 const props = defineProps<{
-  // workpiece (editable by UI)
   workpieceSize: Vec3;
-  workpieceOffset: Vec3; // min corner relative to DRO/work zero
+  workpieceOffset: Vec3;
+  colors?: ColorDefaults;
+  opacities?: OpacityDefaults;
   g5xLabel?: string;
 }>();
 
@@ -94,6 +113,7 @@ let feedLine: THREE.Line | null = null;
 let rapidLine: THREE.Line | null = null;
 let highlightLine: THREE.Line | null = null;
 let highlightMarker: THREE.Mesh | null = null;
+let workAxes: THREE.AxesHelper | null = null;
 
 // Map g-code line number → { start, end } point-index range in feed arrays
 let feedPtsCache: number[][] = [];
@@ -199,6 +219,9 @@ function setLayerVisible(layer: Layer, on: boolean) {
     case "tool":
       if (toolMarker) toolMarker.visible = on;
       break;
+    case "workzero":
+      if (workAxes) workAxes.visible = on;
+      break;
     case "hud":
       hudVisible.value = on;
       break;
@@ -263,6 +286,16 @@ MAT.axisY.color.setHex(0x4a8f5a); // Y muted green
 MAT.axisZ.color.setHex(0x4a6f9b); // Z muted blue
 MAT.tool.color.setHex(0xf5f5f5);  // near-white tool
 
+/** Apply machine STL opacity to all MAT materials */
+function applyMachineOpacity(op: number) {
+  for (const mat of [MAT.frame, MAT.axisX, MAT.axisY, MAT.axisZ]) {
+    mat.transparent = op < 1;
+    mat.opacity = op;
+    mat.depthWrite = op >= 1;
+    mat.needsUpdate = true;
+  }
+}
+
 // ---------- helpers ----------
 function disposeObject(obj: THREE.Object3D) {
   obj.traverse((child: any) => {
@@ -288,7 +321,7 @@ function applyBox(mesh: THREE.Mesh, size: Vec3, origin: Vec3) {
   mesh.position.set(ox + sx / 2, oy + sy / 2, oz + sz / 2);
 }
 
-function makeLine(points: number[][], colorHex: number, dashed = false) {
+function makeLine(points: number[][], colorHex: number | string, dashed = false, opacity = 1.0) {
   const geom = new THREE.BufferGeometry();
   const flat = new Float32Array(points.flat());
   geom.setAttribute("position", new THREE.BufferAttribute(flat, 3));
@@ -303,11 +336,13 @@ function makeLine(points: number[][], colorHex: number, dashed = false) {
       color: colorHex,
       dashSize: 10,
       gapSize: 6,
+      transparent: opacity < 1,
+      opacity,
     });
     mat.depthTest = true;
-    mat.depthWrite = true;
+    mat.depthWrite = opacity >= 1;
   } else {
-    mat = new THREE.LineBasicMaterial({ color: colorHex });
+    mat = new THREE.LineBasicMaterial({ color: colorHex, transparent: opacity < 1, opacity });
     mat.depthTest = false;
     mat.depthWrite = false;
   }
@@ -373,6 +408,7 @@ function ensureCoreGroups() {
 
   // reset pointers
   workOrigin = null;
+  workAxes = null;
   machineBoundsMesh = null;
   workpieceMesh = null;
   machineMeshes = [];
@@ -400,7 +436,7 @@ function ensureCoreGroups() {
   groups.x.add(workOrigin);
 
   // Work/DRO axes helper (the one you kept)
-  const workAxes = new THREE.AxesHelper(120);
+  workAxes = new THREE.AxesHelper(120);
   workOrigin.add(workAxes);
 
   // ---- Backplot line (tool history in WORK coordinates) ----
@@ -410,10 +446,12 @@ function ensureCoreGroups() {
   backplotGeom.setAttribute("position", new THREE.BufferAttribute(backplotPos, 3));
   backplotGeom.setDrawRange(0, 0);
 
+  const bpColor = props.colors?.backplot ?? "#ff00ff";
+  const bpOpacity = props.opacities?.backplot ?? 0.55;
   const mat = new THREE.LineBasicMaterial({
-    color: 0xff00ff,     // magenta-ish like your VTK default
+    color: bpColor,
     transparent: true,
-    opacity: 0.55,
+    opacity: bpOpacity,
     depthTest: false,
     depthWrite: false,
   });
@@ -452,44 +490,54 @@ resetBackplot();
 
   // --- Machine bounds box (also sits on X, like your vismach limits_vis) ---
   {
+    const boundsColor = props.colors?.bounds ?? "#ffffff";
+    const boundsOp = props.opacities?.bounds ?? 0.10;
     const geom = new THREE.BoxGeometry(1, 1, 1);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+      color: boundsColor,
       transparent: true,
-      opacity: 0.10,
+      opacity: boundsOp,
       depthWrite: false,
     });
     machineBoundsMesh = new THREE.Mesh(geom, mat);
 
     const edges = new THREE.LineSegments(
       new THREE.EdgesGeometry(geom),
-      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.25 })
+      new THREE.LineBasicMaterial({ color: boundsColor, transparent: true, opacity: Math.min(1, boundsOp * 2.5) })
     );
     machineBoundsMesh.add(edges);
 
-    groups.x.add(machineBoundsMesh);    
+    groups.x.add(machineBoundsMesh);
   }
 
   // --- Workpiece box (in work coordinates, relative to DRO zero, and sits on X via workOrigin) ---
   {
+    const wpColor = props.colors?.workpiece ?? "#ffffff";
+    const wpOp = props.opacities?.workpiece ?? 0.16;
     const geom = new THREE.BoxGeometry(1, 1, 1);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xffffff,
+      color: wpColor,
       transparent: true,
-      opacity: 0.16,
+      opacity: wpOp,
       depthWrite: false,
     });
     workpieceMesh = new THREE.Mesh(geom, mat);
 
     const edges = new THREE.LineSegments(
       new THREE.EdgesGeometry(geom),
-      new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.35 })
+      new THREE.LineBasicMaterial({ color: wpColor, transparent: true, opacity: Math.min(1, wpOp * 2.2) })
     );
     workpieceMesh.add(edges);
 
     workOrigin.add(workpieceMesh);
     applyBox(workpieceMesh, props.workpieceSize, props.workpieceOffset);
   }
+
+  // Apply machine STL opacity
+  applyMachineOpacity(props.opacities?.machine ?? 1.0);
+
+  // Apply tool color
+  MAT.tool.color.set(props.colors?.tool ?? "#ffdd00");
 }
 
 async function buildFromInit(init: ViewerInit) {
@@ -731,13 +779,16 @@ function applyGcode(g: ViewerGcode) {
     }
   }
 
-  // Feed: cyan; Rapid: dashed yellow-orange
+  // Feed + Rapid toolpath lines (colors + opacity from props or defaults)
+  const feedColor = props.colors?.feed ?? "#22b8cf";
+  const rapidColor = props.colors?.rapid ?? "#f5a623";
+  const toolpathOp = props.opacities?.toolpath ?? 1.0;
   if (feedPts.length >= 2) {
-    feedLine = makeLine(feedPts, 0x22b8cf, false);
+    feedLine = makeLine(feedPts, feedColor, false, toolpathOp);
     workOrigin.add(feedLine);
   }
   if (rapidPts.length >= 2) {
-    rapidLine = makeLine(rapidPts, 0xf5a623, true);
+    rapidLine = makeLine(rapidPts, rapidColor, true, toolpathOp);
     workOrigin.add(rapidLine);
   }
 
@@ -901,7 +952,7 @@ defineExpose({
     <div ref="host" class="viewerHost" />
 
     <!-- HUD Overlay -->
-    <div v-show="hudVisible" class="hud">
+    <div v-show="hudVisible" class="hud" :style="{ opacity: props.opacities?.hud ?? 1 }">
       <div class="hudSection">
         <div class="hudLabel">Machine Position</div>
         <div class="hudValue">

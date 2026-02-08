@@ -3,20 +3,42 @@ import { ref, reactive, watch } from "vue";
 import TabPanel from "./TabPanel.vue";
 
 type Vec3 = [number, number, number];
-type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "hud";
+type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "workzero" | "hud";
 
 const STORAGE_KEY = "lcnc-defaults";
+
+interface ColorDefaults {
+  feed: string;
+  rapid: string;
+  backplot: string;
+  bounds: string;
+  workpiece: string;
+  tool: string;
+}
+
+interface OpacityDefaults {
+  workpiece: number;
+  bounds: number;
+  machine: number;
+  toolpath: number;
+  backplot: number;
+  hud: number;
+}
 
 interface Defaults {
   workpieceSize: Vec3;
   workpieceOffset: Vec3;
   layers: Record<Layer, boolean>;
+  colors: ColorDefaults;
+  opacities: OpacityDefaults;
 }
 
 const fallback: Defaults = {
   workpieceSize: [100, 100, 20],
   workpieceOffset: [0, 0, -20],
-  layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, hud: true },
+  layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, workzero: true, hud: true },
+  colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", workpiece: "#ffffff", tool: "#ffdd00" },
+  opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
 };
 
 function load(): Defaults {
@@ -28,10 +50,12 @@ function load(): Defaults {
         workpieceSize: parsed.workpieceSize ?? [...fallback.workpieceSize],
         workpieceOffset: parsed.workpieceOffset ?? [...fallback.workpieceOffset],
         layers: { ...fallback.layers, ...parsed.layers },
+        colors: { ...fallback.colors, ...parsed.colors },
+        opacities: { ...fallback.opacities, ...parsed.opacities },
       };
     }
   } catch { /* ignore */ }
-  return { ...fallback, workpieceSize: [...fallback.workpieceSize], workpieceOffset: [...fallback.workpieceOffset], layers: { ...fallback.layers } };
+  return { ...fallback, workpieceSize: [...fallback.workpieceSize], workpieceOffset: [...fallback.workpieceOffset], layers: { ...fallback.layers }, colors: { ...fallback.colors }, opacities: { ...fallback.opacities } };
 }
 
 function save() {
@@ -39,6 +63,8 @@ function save() {
     workpieceSize: wpSize,
     workpieceOffset: wpOffset,
     layers: { ...layers },
+    colors: { ...colors },
+    opacities: { ...opacities },
   }));
 }
 
@@ -46,6 +72,8 @@ const saved = load();
 const wpSize = reactive<Vec3>([...saved.workpieceSize] as Vec3);
 const wpOffset = reactive<Vec3>([...saved.workpieceOffset] as Vec3);
 const layers = reactive<Record<Layer, boolean>>({ ...saved.layers });
+const colors = reactive<ColorDefaults>({ ...saved.colors });
+const opacities = reactive<OpacityDefaults>({ ...saved.opacities });
 
 const subTabs = [
   { id: "viewer", label: "3D Viewer" },
@@ -70,6 +98,34 @@ function updateOffset(axis: number, value: number) {
 function onLayerChange() {
   save();
 }
+
+function onColorChange(key: keyof ColorDefaults, value: string) {
+  colors[key] = value;
+  save();
+}
+
+const colorFields: { key: keyof ColorDefaults; label: string }[] = [
+  { key: "feed", label: "Toolpath" },
+  { key: "rapid", label: "Fast Feed" },
+  { key: "backplot", label: "Backplot" },
+  { key: "bounds", label: "Machine Bounds" },
+  { key: "workpiece", label: "Workpiece" },
+  { key: "tool", label: "Tool" },
+];
+
+function onOpacityChange(key: keyof OpacityDefaults, value: number) {
+  opacities[key] = value;
+  save();
+}
+
+const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
+  { key: "toolpath", label: "Toolpath" },
+  { key: "backplot", label: "Backplot" },
+  { key: "machine", label: "Machine" },
+  { key: "bounds", label: "Machine Bounds" },
+  { key: "workpiece", label: "Workpiece" },
+  { key: "hud", label: "HUD" },
+];
 </script>
 
 <template>
@@ -79,28 +135,30 @@ function onLayerChange() {
       <template #viewer>
         <div class="section">
           <div class="sectionTitle">Workpiece Defaults</div>
-          <div class="fieldGroup">
-            <div class="inputRow" v-for="(label, i) in ['Size X', 'Size Y', 'Size Z']" :key="'s'+i">
-              <label class="inputLabel">{{ label }}</label>
-              <input
-                type="number"
-                class="numInput"
-                :value="wpSize[i]"
-                @input="updateSize(i, parseFloat(($event.target as HTMLInputElement).value))"
-                step="1" min="0" max="9999"
-              />
+          <div class="wpColumns">
+            <div class="fieldGroup">
+              <div class="inputRow" v-for="(label, i) in ['Size X', 'Size Y', 'Size Z']" :key="'s'+i">
+                <label class="inputLabel">{{ label }}</label>
+                <input
+                  type="number"
+                  class="numInput"
+                  :value="wpSize[i]"
+                  @input="updateSize(i, parseFloat(($event.target as HTMLInputElement).value))"
+                  step="1" min="0" max="9999"
+                />
+              </div>
             </div>
-          </div>
-          <div class="fieldGroup">
-            <div class="inputRow" v-for="(label, i) in ['Offset X', 'Offset Y', 'Offset Z']" :key="'o'+i">
-              <label class="inputLabel">{{ label }}</label>
-              <input
-                type="number"
-                class="numInput"
-                :value="wpOffset[i]"
-                @input="updateOffset(i, parseFloat(($event.target as HTMLInputElement).value))"
-                step="1" min="-9999" max="9999"
-              />
+            <div class="fieldGroup">
+              <div class="inputRow" v-for="(label, i) in ['Offset X', 'Offset Y', 'Offset Z']" :key="'o'+i">
+                <label class="inputLabel">{{ label }}</label>
+                <input
+                  type="number"
+                  class="numInput"
+                  :value="wpOffset[i]"
+                  @input="updateOffset(i, parseFloat(($event.target as HTMLInputElement).value))"
+                  step="1" min="-9999" max="9999"
+                />
+              </div>
             </div>
           </div>
         </div>
@@ -108,10 +166,42 @@ function onLayerChange() {
         <div class="section">
           <div class="sectionTitle">Layer Defaults</div>
           <div class="layerGrid">
-            <label v-for="layer in (['backplot', 'toolpath', 'machine', 'workpiece', 'bounds', 'hud'] as Layer[])" :key="layer">
+            <label v-for="layer in (['backplot', 'toolpath', 'machine', 'workpiece', 'bounds', 'workzero', 'hud'] as Layer[])" :key="layer">
               <input type="checkbox" v-model="layers[layer]" @change="onLayerChange" />
-              {{ layer === 'hud' ? 'HUD' : layer.charAt(0).toUpperCase() + layer.slice(1) }}
+              {{ layer === 'hud' ? 'HUD' : layer === 'workzero' ? 'Work Zero' : layer.charAt(0).toUpperCase() + layer.slice(1) }}
             </label>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="sectionTitle">Color Defaults</div>
+          <div class="colorGrid">
+            <div class="colorRow" v-for="cf in colorFields" :key="cf.key">
+              <input
+                type="color"
+                class="colorInput"
+                :value="colors[cf.key]"
+                @input="onColorChange(cf.key, ($event.target as HTMLInputElement).value)"
+              />
+              <span class="colorLabel">{{ cf.label }}</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="sectionTitle">Opacity Defaults</div>
+          <div class="opacityList">
+            <div class="opacityRow" v-for="of_ in opacityFields" :key="of_.key">
+              <span class="opacityLabel">{{ of_.label }}</span>
+              <input
+                type="range"
+                class="opacitySlider"
+                min="0" max="1" step="0.05"
+                :value="opacities[of_.key]"
+                @input="onOpacityChange(of_.key, parseFloat(($event.target as HTMLInputElement).value))"
+              />
+              <span class="opacityValue">{{ Math.round(opacities[of_.key] * 100) }}%</span>
+            </div>
           </div>
         </div>
       </template>
@@ -159,6 +249,16 @@ function onLayerChange() {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   margin-bottom: 12px;
+}
+
+.wpColumns {
+  display: flex;
+  gap: 24px;
+}
+
+.wpColumns .fieldGroup {
+  flex: 1;
+  margin-bottom: 0;
 }
 
 .fieldGroup {
@@ -213,6 +313,74 @@ function onLayerChange() {
 
 .layerGrid input[type="checkbox"] {
   cursor: pointer;
+}
+
+.colorGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.colorRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.colorInput {
+  width: 32px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  cursor: pointer;
+  padding: 0;
+}
+
+.colorInput::-webkit-color-swatch-wrapper {
+  padding: 2px;
+}
+
+.colorInput::-webkit-color-swatch {
+  border: none;
+  border-radius: 2px;
+}
+
+.colorLabel {
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+.opacityList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.opacityRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.opacityLabel {
+  font-size: 12px;
+  opacity: 0.8;
+  min-width: 100px;
+}
+
+.opacitySlider {
+  flex: 1;
+  cursor: pointer;
+  accent-color: var(--fg);
+}
+
+.opacityValue {
+  font-size: 11px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  opacity: 0.6;
+  min-width: 32px;
+  text-align: right;
 }
 
 .placeholder {
