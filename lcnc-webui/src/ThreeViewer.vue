@@ -91,6 +91,7 @@ const props = defineProps<{
   opacities?: OpacityDefaults;
   g5xLabel?: string;
   linearUnit?: string;
+  active?: boolean;
 }>();
 
 // HUD data (read from status for template)
@@ -837,6 +838,7 @@ function resize() {
 let pendingState: any = null;
 
 function animate() {
+  if (props.active === false) return; // paused — don't schedule next frame
   raf = requestAnimationFrame(animate);
 
   // Apply pending state before render (natural frame dropping —
@@ -921,10 +923,21 @@ watch(
   { immediate: true }
 );
 
+// Pause/resume RAF loop when active prop changes
+watch(() => props.active, (now) => {
+  if (now !== false && renderer) {
+    resize();
+    animate();
+  } else {
+    cancelAnimationFrame(raf);
+  }
+});
+
 // Buffer latest status for rAF consumption (frame dropping)
 watch(
   () => status.value,
   (msg) => {
+    if (props.active === false) return; // skip when hidden
     if (msg?.data) pendingState = msg.data;
   },
 );

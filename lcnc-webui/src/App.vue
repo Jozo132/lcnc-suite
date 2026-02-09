@@ -511,6 +511,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             >
               <ThreeViewer
                 :ref="(el: any) => setViewerRef(panel.id, el)"
+                :active="panel.tab === 'viewer'"
                 :workpieceSize="workpieceSize"
                 :workpieceOffset="workpieceOffset"
                 :colors="defaults.colors"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from "vue";
+import { computed, ref, watch } from "vue";
 import { listFiles, uploadFile, type FileEntry } from "./lcncApi";
 
 const props = defineProps<{
@@ -84,14 +84,42 @@ function tokenizeCode(code: string, tokens: Token[]) {
   }
 }
 
-// Auto-scroll to current line
-watch(() => props.currentLine, async (newLine) => {
-  if (newLine !== null && codeViewerRef.value) {
-    await nextTick();
-    const lineElement = codeViewerRef.value.querySelector(`[data-line="${newLine}"]`);
-    if (lineElement) {
-      lineElement.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+// ---------- Virtual scroll ----------
+const LINE_HEIGHT = 23; // px — matches .codeLine (12px × 1.6 + 4px padding)
+const BUFFER = 10;
+
+const tokenizedLines = computed(() => lines.value.map(highlightGcode));
+
+const scrollTop = ref(0);
+
+const visibleRange = computed(() => {
+  const viewportH = codeViewerRef.value?.clientHeight ?? 400;
+  const start = Math.max(0, Math.floor(scrollTop.value / LINE_HEIGHT) - BUFFER);
+  const count = Math.ceil(viewportH / LINE_HEIGHT) + BUFFER * 2;
+  const end = Math.min(lines.value.length, start + count);
+  return { start, end };
+});
+
+const visibleLines = computed(() => {
+  const { start, end } = visibleRange.value;
+  return tokenizedLines.value.slice(start, end).map((tokens, i) => ({
+    lineNum: start + i + 1,
+    tokens,
+  }));
+});
+
+const totalHeight = computed(() => lines.value.length * LINE_HEIGHT);
+const offsetY = computed(() => visibleRange.value.start * LINE_HEIGHT);
+
+function onCodeScroll(ev: Event) {
+  scrollTop.value = (ev.target as HTMLElement).scrollTop;
+}
+
+// Scroll to current line (mathematical — no DOM search)
+watch(() => props.currentLine, (newLine) => {
+  if (newLine != null && codeViewerRef.value) {
+    const targetTop = (newLine - 1) * LINE_HEIGHT - codeViewerRef.value.clientHeight / 2 + LINE_HEIGHT / 2;
+    codeViewerRef.value.scrollTop = Math.max(0, targetTop);
   }
 });
 
@@ -253,21 +281,24 @@ function formatSize(bytes: number): string {
         <div class="dropText">Drop G-code file to upload</div>
       </div>
 
-      <!-- Code viewer -->
-      <div class="codeViewer" v-if="gcodeContent" ref="codeViewerRef">
-        <div class="codeLine"
-             v-for="(line, index) in lines"
-             :key="index"
-             :data-line="index + 1"
-             :class="{ active: currentLine === index + 1 }">
-          <span class="lineNumber">{{ index + 1 }}</span>
-          <span class="lineContent">
-            <span
-              v-for="(token, ti) in highlightGcode(line)"
-              :key="ti"
-              :class="'token-' + token.type"
-            >{{ token.text }}</span>
-          </span>
+      <!-- Code viewer (virtual scroll) -->
+      <div class="codeViewer" v-if="gcodeContent" ref="codeViewerRef" @scroll="onCodeScroll">
+        <div :style="{ height: totalHeight + 'px', position: 'relative' }">
+          <div :style="{ position: 'absolute', top: offsetY + 'px', left: 0, right: 0 }">
+            <div class="codeLine"
+                 v-for="item in visibleLines"
+                 :key="item.lineNum"
+                 :class="{ active: currentLine === item.lineNum }">
+              <span class="lineNumber">{{ item.lineNum }}</span>
+              <span class="lineContent">
+                <span
+                  v-for="(token, ti) in item.tokens"
+                  :key="ti"
+                  :class="'token-' + token.type"
+                >{{ token.text }}</span>
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -547,7 +578,8 @@ function formatSize(bytes: number): string {
   font-size: 12px;
   line-height: 1.6;
   padding: 2px 12px;
-  transition: background-color 0.2s ease;
+  height: 23px;
+  box-sizing: border-box;
 }
 
 .codeLine:hover {
