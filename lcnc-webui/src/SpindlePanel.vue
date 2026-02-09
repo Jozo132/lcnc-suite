@@ -8,6 +8,7 @@ const props = defineProps<{
   spindleOverride: number | null;
   armed: boolean;
   busy: boolean;
+  isIdle: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -46,7 +47,7 @@ function formatRpm(val: number | null): string {
   return Math.round(val).toLocaleString();
 }
 
-const canControl = computed(() => props.armed && !props.busy);
+const canControl = computed(() => props.armed && !props.busy && props.isIdle);
 </script>
 
 <template>
@@ -99,7 +100,7 @@ const canControl = computed(() => props.armed && !props.busy);
         min="0"
         max="99999"
         step="100"
-        :disabled="!armed"
+        :disabled="!canControl"
       />
     </div>
 

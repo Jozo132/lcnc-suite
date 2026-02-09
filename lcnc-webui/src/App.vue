@@ -175,7 +175,7 @@ const canMachineOn = computed(
 const canMachineOff = computed(() => armed.value && isEnabled.value);
 
 const canAbort = computed(() => armed.value);
-const canMdi = computed(() => armed.value && !isEstop.value && isEnabled.value);
+const canMdi = computed(() => armed.value && !isEstop.value && isEnabled.value && isIdle.value);
 
 const isHomed = computed(() => {
   const h = st.value.homed;
@@ -318,7 +318,7 @@ function arm(v: boolean) {
 /** ---------- local UI jog ---------- */
 const jogVel = ref(10);
 
-const canJog = computed(() => armed.value && !isEstop.value && isEnabled.value && isHomed.value);
+const canJog = computed(() => armed.value && !isEstop.value && isEnabled.value && isHomed.value && isIdle.value);
 
 
 /**
@@ -575,6 +575,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :spindleOverride="spindleOverrideValue"
               :armed="armed"
               :busy="busy"
+              :isIdle="isIdle"
               @spindleForward="spindleForward"
               @spindleReverse="spindleReverse"
               @spindleStop="spindleStop"
@@ -589,6 +590,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :currentLine="currentLine"
               :armed="armed"
               :busy="busy"
+              :isIdle="isIdle"
               @loadFile="loadFile"
               @unloadFile="unloadFile"
             />

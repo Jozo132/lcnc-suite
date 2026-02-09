@@ -8,6 +8,7 @@ const props = defineProps<{
   currentLine: number | null;
   armed: boolean;
   busy: boolean;
+  isIdle: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -228,18 +229,18 @@ function formatSize(bytes: number): string {
       </div>
       <div class="headerActions">
         <span class="stats" v-if="gcodeContent">{{ lineCount }} lines</span>
-        <button class="actionBtn" @click="reloadFile" :disabled="!activeFile || loading || !armed">
+        <button class="actionBtn" @click="reloadFile" :disabled="!activeFile || loading || !armed || !isIdle">
           Reload
         </button>
-        <button class="actionBtn" @click="unloadFile" :disabled="!activeFile || loading || !armed">
+        <button class="actionBtn" @click="unloadFile" :disabled="!activeFile || loading || !armed || !isIdle">
           Unload
         </button>
-        <button class="actionBtn" @click="toggleBrowser" :disabled="loading || !armed">
+        <button class="actionBtn" @click="toggleBrowser" :disabled="loading || !armed || !isIdle">
           {{ showBrowser ? 'Hide Files' : 'Browse' }}
         </button>
-        <label class="actionBtn uploadBtn" :class="{ disabled: !armed }">
+        <label class="actionBtn uploadBtn" :class="{ disabled: !armed || !isIdle }">
           Upload
-          <input type="file" accept=".ngc,.nc,.gcode,.tap,.txt" @change="onFileSelect" hidden :disabled="!armed" />
+          <input type="file" accept=".ngc,.nc,.gcode,.tap,.txt" @change="onFileSelect" hidden :disabled="!armed || !isIdle" />
         </label>
       </div>
     </div>
