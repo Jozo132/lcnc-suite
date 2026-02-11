@@ -24,6 +24,10 @@ ERR: Optional[linuxcnc.error_channel] = None
 lcnc_connected = False
 _lcnc_pid: Optional[int] = None  # tracks linuxcncsvr PID
 
+# ---- Connected WebSocket clients ----
+_clients: Dict[int, Dict[str, Any]] = {}
+_next_client_id = 0
+
 
 def _get_lcnc_pid() -> Optional[int]:
     """Return PID of linuxcncsvr if running, else None."""
@@ -1201,6 +1205,12 @@ async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     armed = False  # connection-local arming
 
+    global _next_client_id
+    client_id = _next_client_id
+    _next_client_id += 1
+    client_ip = ws.client.host if ws.client else "unknown"
+    _clients[client_id] = {"ip": client_ip, "armed": False}
+
     # Restore lcnc_connected if LinuxCNC is still running but the flag was
     # cleared by a previous connection's WebSocket error
     global lcnc_connected
@@ -1285,6 +1295,7 @@ async def ws_endpoint(ws: WebSocket):
                         "type": "status",
                         "data": asdict(st),
                         "errors": errs,
+                        "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
                     },
                 )
 
@@ -1362,6 +1373,8 @@ async def ws_endpoint(ws: WebSocket):
 
             if msg.get("cmd") == "arm":
                 armed = bool(msg.get("armed", False))
+                if client_id in _clients:
+                    _clients[client_id]["armed"] = armed
                 await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
                 continue
 
@@ -1371,4 +1384,5 @@ async def ws_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         pass
     finally:
+        _clients.pop(client_id, None)
         status_task.cancel()

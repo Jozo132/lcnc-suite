@@ -119,6 +119,10 @@ watch(
 );
 
 /** ---------- local UI state ---------- */
+const connLabel = computed(() => {
+  const h = location.hostname;
+  return (h === "localhost" || h === "127.0.0.1") ? "local" : h;
+});
 const armed = ref(false);
 const mdiText = ref("G0 X0 Y0");
 const busy = ref(false);
@@ -132,6 +136,7 @@ const gcodeContent = ref<string | null>(null);
 
 /** ---------- status helpers ---------- */
 const st = computed<Record<string, any>>(() => status.value?.data ?? {});
+const connectedClients = computed<{ip: string, armed: boolean}[]>(() => status.value?.clients ?? []);
 
 // LinuxCNC config name from INI path (e.g. "/home/cnc/.../my-mill/my-mill.ini" → "my-mill")
 const configName = computed(() => {
@@ -485,9 +490,16 @@ watch(isHomed, (nowHomed, wasHomed) => {
 <template>
   <div class="wrap">
     <header class="hdr">
-      <div class="title">LinuxCNC WebUI (local)</div>
+      <div class="title">LinuxCNC WebUI ({{ connLabel }})</div>
 
       <div class="hdrRight">
+        <div
+          class="pill"
+          :title="connectedClients.map(c => c.ip + (c.armed ? ' (armed)' : '')).join('\n')"
+        >
+          {{ connectedClients.length }} client{{ connectedClients.length !== 1 ? 's' : '' }}
+        </div>
+
         <div class="pill" :class="connected ? 'ok' : 'bad'">
           {{ connected ? "WS connected" : "WS disconnected" }}
         </div>
