@@ -28,6 +28,23 @@ _lcnc_pid: Optional[int] = None  # tracks linuxcncsvr PID
 _clients: Dict[int, Dict[str, Any]] = {}
 _next_client_id = 0
 
+# ---- HAL watchdog component ----
+_hal_comp = None
+
+def init_hal_watchdog():
+    """Create a HAL component with safety pins. Non-fatal if HAL unavailable."""
+    global _hal_comp
+    try:
+        import hal
+        _hal_comp = hal.component("webui-safety")
+        _hal_comp.newpin("heartbeat", hal.HAL_BIT, hal.HAL_OUT)
+        _hal_comp.newpin("connected", hal.HAL_BIT, hal.HAL_OUT)
+        _hal_comp.ready()
+        print("HAL watchdog component 'webui-safety' ready")
+    except Exception as e:
+        print(f"HAL watchdog init failed (non-fatal): {e}")
+        _hal_comp = None
+
 
 def _get_lcnc_pid() -> Optional[int]:
     """Return PID of linuxcncsvr if running, else None."""
@@ -1209,7 +1226,7 @@ async def ws_endpoint(ws: WebSocket):
     client_id = _next_client_id
     _next_client_id += 1
     client_ip = ws.client.host if ws.client else "unknown"
-    _clients[client_id] = {"ip": client_ip, "armed": False}
+    _clients[client_id] = {"ip": client_ip, "armed": False, "last_hb": time.time()}
 
     # Restore lcnc_connected if LinuxCNC is still running but the flag was
     # cleared by a previous connection's WebSocket error
@@ -1268,7 +1285,7 @@ async def ws_endpoint(ws: WebSocket):
 
 
     async def status_loop():
-        nonlocal last_file
+        nonlocal last_file, armed
         while True:
             try:
                 # Process-level detection: check if linuxcncsvr PID changed
@@ -1298,6 +1315,13 @@ async def ws_endpoint(ws: WebSocket):
                         "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
                     },
                 )
+
+                # HAL watchdog: toggle heartbeat only when armed clients exist
+                if _hal_comp is not None:
+                    has_armed = any(c["armed"] for c in _clients.values())
+                    if has_armed:
+                        _hal_comp["heartbeat"] = not _hal_comp["heartbeat"]
+                    _hal_comp["connected"] = has_armed
 
                 # Viewer: gcode preview only when the file changes
                 if st.active_file and st.active_file != last_file:
@@ -1343,6 +1367,24 @@ async def ws_endpoint(ws: WebSocket):
                         "data": {"file": None, "feed": [], "feed_lines": [], "rapid": [], "content": None},
                     })
 
+                # Heartbeat timeout: disarm and stop motion if client stalled
+                if armed and client_id in _clients:
+                    if time.time() - _clients[client_id].get("last_hb", 0) > 3.0:
+                        armed = False
+                        _clients[client_id]["armed"] = False
+                        try:
+                            set_mode(linuxcnc.MODE_MANUAL)
+                            jf = _jog_joint_flag()
+                            for ax in range(3):
+                                CMD.jog(linuxcnc.JOG_STOP, jf, ax)
+                            CMD.abort()
+                        except Exception:
+                            pass
+                        try:
+                            await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety"})
+                        except Exception:
+                            pass
+
                 await asyncio.sleep(1.0 / POLL_HZ)
             except Exception as e:
                 global lcnc_connected
@@ -1371,10 +1413,16 @@ async def ws_endpoint(ws: WebSocket):
                 await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Invalid JSON"})
                 continue
 
+            if msg.get("cmd") == "heartbeat":
+                if client_id in _clients:
+                    _clients[client_id]["last_hb"] = time.time()
+                continue
+
             if msg.get("cmd") == "arm":
                 armed = bool(msg.get("armed", False))
                 if client_id in _clients:
                     _clients[client_id]["armed"] = armed
+                    _clients[client_id]["last_hb"] = time.time()  # reset on arm change
                 await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
                 continue
 
@@ -1385,4 +1433,14 @@ async def ws_endpoint(ws: WebSocket):
         pass
     finally:
         _clients.pop(client_id, None)
+        # Safety: stop all motion if this armed client disconnects
+        if armed and CMD is not None:
+            try:
+                set_mode(linuxcnc.MODE_MANUAL)
+                jf = _jog_joint_flag()
+                for ax in range(3):
+                    CMD.jog(linuxcnc.JOG_STOP, jf, ax)
+                CMD.abort()
+            except Exception:
+                pass
         status_task.cancel()

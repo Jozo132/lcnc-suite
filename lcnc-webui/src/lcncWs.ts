@@ -21,15 +21,24 @@ let _nextMsgId = 1;
 
 
 let ws: WebSocket | null = null;
+let _heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
 export function connectWs() {
   const host = (location.hostname === "localhost") ? "127.0.0.1" : location.hostname;
   const wsUrl = `ws://${host}:8000/ws`;
   ws = new WebSocket(wsUrl);
 
+  ws.onopen = () => {
+    connected.value = true;
+    _heartbeatInterval = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) ws.send('{"cmd":"heartbeat"}');
+    }, 1000);
+  };
 
-  ws.onopen = () => (connected.value = true);
-  ws.onclose = () => (connected.value = false);
+  ws.onclose = () => {
+    connected.value = false;
+    if (_heartbeatInterval) { clearInterval(_heartbeatInterval); _heartbeatInterval = null; }
+  };
 
   let _pendingStatus: any = null;
   let _flushScheduled = false;
