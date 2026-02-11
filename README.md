@@ -90,11 +90,18 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 
 - **Real-time Status**: 10 Hz machine state updates via WebSocket
 - **Full Machine Control**: E-stop, enable, jog, MDI, auto run
-- **Safety System**: Connection-level arming to prevent accidental commands
+- **Three-Layer Safety System**:
+  - Connection-level arming to prevent accidental commands
+  - Disconnect handler: stops all motion when an armed client disconnects
+  - Heartbeat watchdog: client sends 1 s heartbeat; gateway disarms after 3 s timeout
+  - HAL watchdog: `webui-safety` HAL component with `heartbeat` and `connected` pins for hardware-level estop integration
+- **Client Tracking**: Connected clients with IP and armed state, visible to all sessions
+- **Auto-Reconnect**: Detects LinuxCNC restart and reconnects without gateway restart
 - **3D Visualization Support**: Machine model, kinematics, G-code preview
 - **Position Tracking**: Machine, work, and joint coordinates with full offset handling
 - **Tool Management**: Tool number, diameter, and length offset tracking
 - **G-code Parser**: Preview generator for feed and rapid moves (G0/G1/G2/G3)
+- **G-code File Management**: Upload, browse, and load G-code files via REST API
 - **Error Channel**: Real-time LinuxCNC error/message forwarding
 - **STL Model Serving**: Static file server for 3D machine models
 
@@ -106,9 +113,14 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - Spindle control panel (FWD/REV/STOP, RPM input, live actual speed)
 - Feed, spindle, and rapid override sliders with presets
 - MDI command interface with history
+- G-code file browser with drag-and-drop upload
+- G-code viewer with virtual scroll and line highlighting
 - 3D machine visualization with Three.js (colorized toolpath, backplot, HUD overlay)
 - Persistent settings (colors, opacities, layers, workpiece defaults)
-- Responsive dual-panel layout for tablets and desktop
+- Responsive auto-layout (1–4 panels based on viewport width)
+- Connected clients display with IP and armed status
+- Dynamic connection label (local vs. LAN hostname)
+- Error/message panel with unread count badge
 
 ## Requirements
 
@@ -247,7 +259,11 @@ Full machine status (10 Hz):
     "tool_diameter": 6.0,
     "tool_length": 50.0
   },
-  "errors": []
+  "errors": [],
+  "clients": [
+    {"ip": "192.168.1.42", "armed": true},
+    {"ip": "192.168.1.10", "armed": false}
+  ]
 }
 ```
 
@@ -297,6 +313,12 @@ Send JSON messages to control the machine:
 #### Arming
 ```json
 {"cmd": "arm", "armed": true}
+```
+
+#### Heartbeat
+Clients should send a heartbeat every 1 second. If the gateway doesn't receive a heartbeat from an armed client within 3 seconds, it will stop all motion and disarm the connection.
+```json
+{"cmd": "heartbeat"}
 ```
 
 #### E-stop Control
@@ -373,6 +395,32 @@ All commands return a reply:
   "ok": false,
   "error": "Cannot Machine On while in E-stop"
 }
+```
+
+### Safety System
+
+The gateway implements three layers of safety to handle connection loss during machine operation:
+
+**Layer 1 — Disconnect Handler**: When an armed WebSocket client disconnects (browser closed, network drop), the gateway immediately sends `jog_stop` for all axes and `abort` to halt any running program.
+
+**Layer 2 — Heartbeat Watchdog**: The client sends `{"cmd": "heartbeat"}` every 1 second. If the gateway doesn't receive a heartbeat from an armed client within 3 seconds (e.g., browser freeze, WiFi stall), it stops all motion and disarms the connection. The client receives an error message: `"Heartbeat timeout — disarmed for safety"`.
+
+**Layer 3 — HAL Watchdog**: The gateway spawns a `hal_watchdog.py` subprocess that creates a `webui-safety` HAL component with two pins:
+
+| Pin | Type | Description |
+|---|---|---|
+| `webui-safety.heartbeat` | BIT OUT | Toggles at 10 Hz while armed clients are connected |
+| `webui-safety.connected` | BIT OUT | True when at least one armed client is connected |
+
+If the gateway process crashes, the subprocess exits (stdin EOF), the HAL component is destroyed, and the heartbeat pin stops toggling. Wire this to a HAL `watchdog` component to trip your estop chain:
+
+```hal
+loadrt watchdog num_inputs=1
+addf watchdog.process servo-thread
+addf watchdog.set-timeouts servo-thread
+setp watchdog.timeout-0 1.0
+net webui-wd webui-safety.heartbeat => watchdog.input-0
+net webui-wd-ok watchdog.ok-out => [your-estop-chain-input]
 ```
 
 ## Building Your Own UI
@@ -459,6 +507,7 @@ Adjust `POLL_HZ` in `gateway.py` (default: 10 Hz).
 lcnc-suite/
 ├── lcnc-gateway/          # Backend WebSocket gateway
 │   ├── gateway.py         # FastAPI application
+│   ├── hal_watchdog.py    # HAL safety subprocess
 │   ├── requirements.txt   # Python dependencies
 │   ├── setup-venv.sh      # Virtual environment setup
 │   └── machine/           # STL machine models (Git LFS)
