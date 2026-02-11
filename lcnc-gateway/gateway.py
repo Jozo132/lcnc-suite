@@ -28,22 +28,60 @@ _lcnc_pid: Optional[int] = None  # tracks linuxcncsvr PID
 _clients: Dict[int, Dict[str, Any]] = {}
 _next_client_id = 0
 
-# ---- HAL watchdog component ----
-_hal_comp = None
+# ---- HAL watchdog subprocess ----
+import sys
+import select
 
-def init_hal_watchdog():
-    """Create a HAL component with safety pins. Non-fatal if HAL unavailable."""
-    global _hal_comp
+_hal_proc: Optional[subprocess.Popen] = None
+_hal_last_hb = False
+
+def _start_hal_watchdog():
+    """Spawn hal_watchdog.py subprocess. Non-fatal if it fails."""
+    global _hal_proc
+    _stop_hal_watchdog()
     try:
-        import hal
-        _hal_comp = hal.component("webui-safety")
-        _hal_comp.newpin("heartbeat", hal.HAL_BIT, hal.HAL_OUT)
-        _hal_comp.newpin("connected", hal.HAL_BIT, hal.HAL_OUT)
-        _hal_comp.ready()
-        print("HAL watchdog component 'webui-safety' ready")
+        script = os.path.join(os.path.dirname(__file__), "hal_watchdog.py")
+        _hal_proc = subprocess.Popen(
+            [sys.executable, script],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        ready, _, _ = select.select([_hal_proc.stdout], [], [], 3.0)
+        if ready:
+            line = _hal_proc.stdout.readline().strip()
+            if line == "OK":
+                print(f"HAL watchdog subprocess started (PID {_hal_proc.pid})")
+                return
+        _stop_hal_watchdog()
+        print("HAL watchdog subprocess failed to report ready")
     except Exception as e:
-        print(f"HAL watchdog init failed (non-fatal): {e}")
-        _hal_comp = None
+        print(f"HAL watchdog start failed (non-fatal): {e}")
+        _hal_proc = None
+
+def _stop_hal_watchdog():
+    """Kill the HAL watchdog subprocess if running."""
+    global _hal_proc
+    if _hal_proc is not None:
+        try:
+            _hal_proc.stdin.close()
+            _hal_proc.wait(timeout=2)
+        except Exception:
+            try:
+                _hal_proc.kill()
+            except Exception:
+                pass
+        _hal_proc = None
+
+def _hal_send(msg: dict):
+    """Send a pin-update message to the HAL subprocess."""
+    if _hal_proc is not None and _hal_proc.poll() is None:
+        try:
+            _hal_proc.stdin.write(json.dumps(msg) + "\n")
+            _hal_proc.stdin.flush()
+        except Exception:
+            pass
 
 
 def _get_lcnc_pid() -> Optional[int]:
@@ -72,6 +110,7 @@ def try_connect_lcnc() -> bool:
         STAT.poll()  # verify it actually works
         lcnc_connected = True
         _lcnc_pid = _get_lcnc_pid()
+        _start_hal_watchdog()
         return True
     except Exception:
         STAT = CMD = ERR = None
@@ -94,6 +133,7 @@ def check_lcnc_instance() -> bool:
     _lcnc_pid = pid
     if pid is None:
         lcnc_connected = False
+        _stop_hal_watchdog()
     return True
 
 
@@ -1316,12 +1356,11 @@ async def ws_endpoint(ws: WebSocket):
                     },
                 )
 
-                # HAL watchdog: toggle heartbeat only when armed clients exist
-                if _hal_comp is not None:
-                    has_armed = any(c["armed"] for c in _clients.values())
-                    if has_armed:
-                        _hal_comp["heartbeat"] = not _hal_comp["heartbeat"]
-                    _hal_comp["connected"] = has_armed
+                # HAL watchdog: send pin updates to subprocess
+                global _hal_last_hb
+                has_armed = any(c["armed"] for c in _clients.values())
+                _hal_last_hb = not _hal_last_hb
+                _hal_send({"heartbeat": _hal_last_hb, "connected": has_armed})
 
                 # Viewer: gcode preview only when the file changes
                 if st.active_file and st.active_file != last_file:
