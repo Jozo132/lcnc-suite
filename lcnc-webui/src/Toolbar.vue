@@ -178,17 +178,16 @@ function updateOffset(axis: number, value: number) {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   border-radius: 6px;
-  background: color-mix(in oklab, #000 75%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  color: #ccc;
-  border: 1px solid rgba(255,255,255,0.08);
+  background: var(--button-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
   user-select: none;
+  opacity: 0.75;
 }
 
 .toolPill:hover > .pillLabel {
-  color: #fff;
-  background: color-mix(in oklab, #000 85%, transparent);
+  opacity: 1;
+  background: var(--panel);
 }
 
 /* ---- Popovers ---- */
@@ -199,11 +198,9 @@ function updateOffset(axis: number, value: number) {
   left: 0;
   padding: 8px 8px 14px 8px;
   border-radius: 8px;
-  background: color-mix(in oklab, #000 80%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255,255,255,0.1);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
   z-index: 30;
   min-width: 140px;
 }
@@ -225,17 +222,16 @@ function updateOffset(axis: number, value: number) {
   padding: 6px 10px;
   font-size: 12px;
   border-radius: 4px;
-  border: 1px solid rgba(255,255,255,0.1);
-  background: rgba(255,255,255,0.06);
-  color: #ddd;
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  color: var(--fg);
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.12s;
 }
 
 .viewBtn:hover {
-  background: rgba(255,255,255,0.15);
-  color: #fff;
+  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
 }
 
 .viewBtn:active {
@@ -248,7 +244,7 @@ function updateOffset(axis: number, value: number) {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: #ccc;
+  color: var(--fg);
   cursor: pointer;
   user-select: none;
   padding: 3px 4px;
@@ -256,8 +252,7 @@ function updateOffset(axis: number, value: number) {
 }
 
 .pillPopover label:hover {
-  background: rgba(255,255,255,0.06);
-  color: #fff;
+  background: color-mix(in oklab, var(--fg) 10%, var(--button-bg));
 }
 
 .pillPopover input[type="checkbox"] {
@@ -278,7 +273,8 @@ function updateOffset(axis: number, value: number) {
 
 .inputLabel {
   font-size: 11px;
-  color: #999;
+  color: var(--fg);
+  opacity: 0.6;
   min-width: 52px;
 }
 
@@ -287,22 +283,22 @@ function updateOffset(axis: number, value: number) {
   padding: 4px 6px;
   font-size: 11px;
   border-radius: 4px;
-  border: 1px solid rgba(255,255,255,0.1);
-  background: rgba(255,255,255,0.06);
-  color: #ddd;
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  color: var(--fg);
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
   max-width: 72px;
 }
 
 .numInput:focus {
   outline: none;
-  border-color: rgba(255,255,255,0.25);
-  background: rgba(255,255,255,0.1);
+  border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
+  background: color-mix(in oklab, var(--fg) 10%, var(--button-bg));
 }
 
 .popSep {
   height: 1px;
-  background: rgba(255,255,255,0.08);
+  background: var(--border);
   margin: 4px 0;
 }
 </style>

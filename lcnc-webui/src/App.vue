@@ -803,22 +803,27 @@ watch(isHomed, (nowHomed, wasHomed) => {
       <div class="sub">Program Control</div>
 
       <div class="btnrow">
-        <button class="btn primary" @click="cycleStart" :disabled="!canCycleStart || busy">
-          Cycle Start
-        </button>
-
-        <button class="btn" @click="cyclePause" :disabled="!canCyclePause || busy">
-          Pause
-        </button>
-
-        <button class="btn" @click="cycleResume" :disabled="!canCycleResume || busy">
-          Resume
+        <button class="btn safetyBtn primary" @click="cycleStart" :disabled="!canCycleStart || busy">
+          <span class="safetyIcon">&#x25B6;</span>
+          <span class="safetyLabel">Start</span>
         </button>
 
         <div class="sep"></div>
 
-        <button class="btn" @click="fire({ cmd: 'abort' })" :disabled="!canAbort || busy">
-          Abort
+        <button
+          class="btn safetyBtn"
+          @click="isPaused ? cycleResume() : cyclePause()"
+          :disabled="!(canCyclePause || canCycleResume) || busy"
+        >
+          <span class="safetyIcon">{{ isPaused ? '&#x25B6;' : '&#x23F8;' }}</span>
+          <span class="safetyLabel">{{ isPaused ? 'Resume' : 'Pause' }}</span>
+        </button>
+
+        <div class="sep"></div>
+
+        <button class="btn safetyBtn danger" @click="fire({ cmd: 'abort' })" :disabled="!canAbort || busy">
+          <span class="safetyIcon">&#x23F9;</span>
+          <span class="safetyLabel">Abort</span>
         </button>
       </div>
     </section>
@@ -884,11 +889,11 @@ watch(isHomed, (nowHomed, wasHomed) => {
 }
 
 .pill.bad {
-  background: color-mix(in oklab, #b00020 10%, var(--panel));
+  background: color-mix(in oklab, #cc3333 25%, var(--panel));
 }
 
 .pill.armed {
-  background: color-mix(in oklab, #0a7a0a 12%, var(--panel));
+  background: color-mix(in oklab, #1a9a1a 25%, var(--panel));
 }
 
 .pill.disarmed {
@@ -1082,13 +1087,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
   min-width: 100px;
 }
 
-.statusChip.ok { border-color: #0a7a0a40; background: color-mix(in oklab, #0a7a0a 8%, var(--panel)); }
-.statusChip.bad { border-color: #b0002040; background: color-mix(in oklab, #b00020 8%, var(--panel)); }
-.statusChip.warn { border-color: #b8860b40; animation: flash-chip-warn 1.2s ease-in-out infinite; }
+.statusChip.ok { border-color: #1a9a1a80; background: color-mix(in oklab, #1a9a1a 20%, var(--panel)); }
+.statusChip.bad { border-color: #cc333380; background: color-mix(in oklab, #cc3333 20%, var(--panel)); }
+.statusChip.warn { border-color: #b8860b80; animation: flash-chip-warn 1.2s ease-in-out infinite; }
 
 @keyframes flash-chip-warn {
-  0%, 100% { background: color-mix(in oklab, #b8860b 15%, var(--panel)); }
-  50% { background: color-mix(in oklab, #b8860b 4%, var(--panel)); }
+  0%, 100% { background: color-mix(in oklab, #b8860b 25%, var(--panel)); }
+  50% { background: color-mix(in oklab, #b8860b 10%, var(--panel)); }
 }
 
 .chipLabel { font-size: 10px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.5px; }
@@ -1139,13 +1144,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
 }
 
 .btn.danger {
-  border-color: #b0002030;
-  background: #b0002008;
+  border-color: #cc333380;
+  background: color-mix(in oklab, #cc3333 25%, var(--button-bg));
 }
 
 .btn.primary {
-  border-color: #0a7a0a30;
-  background: #0a7a0a12;
+  border-color: #1a9a1a80;
+  background: color-mix(in oklab, #1a9a1a 25%, var(--button-bg));
   font-weight: 600;
 }
 

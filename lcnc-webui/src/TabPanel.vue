@@ -71,7 +71,6 @@ const totalBadge = computed(() => {
 
 .tabPill {
   position: relative;
-  flex: 1;
   min-width: 0;
   cursor: default;
 }
@@ -84,17 +83,16 @@ const totalBadge = computed(() => {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   border-radius: 6px;
-  background: color-mix(in oklab, #000 75%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  color: #ccc;
-  border: 1px solid rgba(255,255,255,0.08);
+  background: var(--button-bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
   user-select: none;
+  opacity: 0.75;
 }
 
 .tabPill:hover > .pillLabel {
-  color: #fff;
-  background: color-mix(in oklab, #000 85%, transparent);
+  opacity: 1;
+  background: var(--panel);
 }
 
 /* ---- Popover (opens downward) ---- */
@@ -103,14 +101,11 @@ const totalBadge = computed(() => {
   position: absolute;
   top: 100%;
   left: 0;
-  right: 0;
   padding: 14px 8px 8px 8px;
   border-radius: 8px;
-  background: color-mix(in oklab, #000 80%, transparent);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255,255,255,0.1);
-  box-shadow: 0 4px 16px rgba(0,0,0,0.3);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 16px rgba(0,0,0,0.15);
   z-index: 30;
   min-width: 140px;
   flex-direction: column;
@@ -126,9 +121,9 @@ const totalBadge = computed(() => {
   padding: 6px 10px;
   font-size: 12px;
   border-radius: 4px;
-  border: 1px solid rgba(255,255,255,0.1);
-  background: rgba(255,255,255,0.06);
-  color: #ddd;
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+  color: var(--fg);
   cursor: pointer;
   white-space: nowrap;
   text-align: left;
@@ -136,13 +131,11 @@ const totalBadge = computed(() => {
 }
 
 .tabOption:hover {
-  background: rgba(255,255,255,0.15);
-  color: #fff;
+  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
 }
 
 .tabOption.active {
-  background: rgba(255,255,255,0.15);
-  color: #fff;
+  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
   font-weight: 600;
 }
 
@@ -153,26 +146,23 @@ const totalBadge = computed(() => {
 /* ---- Close button ---- */
 .panelClose {
   flex-shrink: 0;
-  width: 24px;
-  height: 24px;
+  padding: 5px 10px;
   border-radius: 6px;
-  border: 1px solid rgba(255,255,255,0.08);
-  background: color-mix(in oklab, #000 75%, transparent);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
-  color: #ccc;
-  font-size: 16px;
+  border: 1px solid #cc333380;
+  background: color-mix(in oklab, #cc3333 25%, var(--button-bg));
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 600;
   cursor: pointer;
-  opacity: 0.5;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: opacity 0.15s;
+  margin-left: auto;
 }
 
 .panelClose:hover {
-  opacity: 1;
-  color: #fff;
+  opacity: 0.8;
 }
 
 /* ---- Content ---- */

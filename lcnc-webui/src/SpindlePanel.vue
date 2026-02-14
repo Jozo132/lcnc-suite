@@ -194,18 +194,18 @@ const canControl = computed(() => props.armed && !props.busy && props.isIdle);
 }
 
 .dirBtn.fwd.active {
-  background: color-mix(in oklab, #0a7a0a 20%, var(--panel));
-  border-color: #0a7a0a60;
+  background: color-mix(in oklab, #1a9a1a 30%, var(--panel));
+  border-color: #1a9a1a80;
 }
 
 .dirBtn.rev.active {
-  background: color-mix(in oklab, #0a7a0a 20%, var(--panel));
-  border-color: #0a7a0a60;
+  background: color-mix(in oklab, #1a9a1a 30%, var(--panel));
+  border-color: #1a9a1a80;
 }
 
 .dirBtn.stop.active {
-  background: color-mix(in oklab, #cc3333 15%, var(--panel));
-  border-color: #cc333360;
+  background: color-mix(in oklab, #cc3333 30%, var(--panel));
+  border-color: #cc333380;
 }
 
 .dirIcon {

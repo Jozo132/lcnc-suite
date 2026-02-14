@@ -44,14 +44,14 @@ function fmt(n: any) {
       <div class="grid">
         <div class="axis"><span>X</span><b>{{ fmt(workPos[0]) }}</b></div>
         <div class="dtg"><span>DTG</span>{{ fmt(dtg[0]) }}</div>
-        <button class="zeroBtn" @click="emit('zeroAxis', 0)" :disabled="!armed || busy">Zero X</button>
-        <button class="homeBtn spanBtn" style="grid-column: 4" @click="emit('zeroAll')" :disabled="!armed || busy">Zero All</button>
+        <button class="zeroBtn" @click="emit('zeroAxis', 0)" :disabled="!armed || busy || !homed">Zero X</button>
+        <button class="homeBtn spanBtn" style="grid-column: 4" @click="emit('zeroAll')" :disabled="!armed || busy || !homed">Zero All</button>
         <div class="axis"><span>Y</span><b>{{ fmt(workPos[1]) }}</b></div>
         <div class="dtg"><span>DTG</span>{{ fmt(dtg[1]) }}</div>
-        <button class="zeroBtn" @click="emit('zeroAxis', 1)" :disabled="!armed || busy">Zero Y</button>
+        <button class="zeroBtn" @click="emit('zeroAxis', 1)" :disabled="!armed || busy || !homed">Zero Y</button>
         <div class="axis"><span>Z</span><b>{{ fmt(workPos[2]) }}</b></div>
         <div class="dtg"><span>DTG</span>{{ fmt(dtg[2]) }}</div>
-        <button class="zeroBtn" @click="emit('zeroAxis', 2)" :disabled="!armed || busy">Zero Z</button>
+        <button class="zeroBtn" @click="emit('zeroAxis', 2)" :disabled="!armed || busy || !homed">Zero Z</button>
       </div>
     </div>
 

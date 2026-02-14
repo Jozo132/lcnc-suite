@@ -1064,9 +1064,8 @@ defineExpose({
 }
 
 .hudSection {
-  background: color-mix(in oklab, #000 75%, transparent);
-  backdrop-filter: blur(8px);
-  border: 1px solid color-mix(in oklab, #fff 15%, transparent);
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 12px;
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
@@ -1075,7 +1074,8 @@ defineExpose({
 }
 
 .hudLabel {
-  color: color-mix(in oklab, #fff 60%, transparent);
+  color: var(--fg);
+  opacity: 0.6;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.5px;
@@ -1083,7 +1083,7 @@ defineExpose({
 }
 
 .hudValue {
-  color: #00ff88;
+  color: var(--fg);
   font-weight: 500;
 }
 
@@ -1093,11 +1093,12 @@ defineExpose({
   gap: 2px;
 }
 .hudCoord {
-  color: #00ff88;
+  color: var(--fg);
   font-weight: 500;
 }
 .hudAxis {
-  color: color-mix(in oklab, #fff 50%, transparent);
+  color: var(--fg);
+  opacity: 0.5;
   margin-right: 4px;
 }
 </style>
