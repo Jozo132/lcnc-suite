@@ -65,6 +65,11 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 // Adjust path as needed
 import { viewerInit, viewerGcode, status } from "./lcncWs";
+import JogHUD from "./JogHUD.vue";
+import GcodeHUD from "./GcodeHUD.vue";
+import SetupHUD from "./SetupHUD.vue";
+import SpindleHUD from "./SpindleHUD.vue";
+import OverrideHUD from "./OverrideHUD.vue";
 
 type Vec3 = [number, number, number];
 
@@ -150,14 +155,64 @@ const props = defineProps<{
   g5xLabel?: string;
   linearUnit?: string;
   active?: boolean;
+  jogVel?: number;
+  canJog?: boolean;
+  isHomed?: boolean;
+  armed?: boolean;
+  maxJogVel?: number;
+  jogIncrement?: number;
+  gcodeContent?: string | null;
+  currentLine?: number | null;
+  canCycleStart?: boolean;
+  canCyclePause?: boolean;
+  canCycleResume?: boolean;
+  canAbort?: boolean;
+  isPaused?: boolean;
+  busy?: boolean;
+  canMdi?: boolean;
+  spindleSpeed?: number | null;
+  spindleActual?: number | null;
+  spindleDirection?: number | null;
+  spindleOverride?: number | null;
+  isIdle?: boolean;
+  feedOverride?: number | null;
+  rapidOverride?: number | null;
+}>();
+
+const emit = defineEmits<{
+  (e: "update:jogVel", vel: number): void;
+  (e: "update:jogIncrement", val: number): void;
+  (e: "cycleStart"): void;
+  (e: "cyclePause"): void;
+  (e: "cycleResume"): void;
+  (e: "abort"): void;
+  (e: "homeAll"): void;
+  (e: "unhomeAll"): void;
+  (e: "zeroAxis", axis: number): void;
+  (e: "zeroAll"): void;
+  (e: "spindleForward", speed: number): void;
+  (e: "spindleReverse", speed: number): void;
+  (e: "spindleStop"): void;
+  (e: "setSpindleOverride", scale: number): void;
+  (e: "setFeedOverride", scale: number): void;
+  (e: "setRapidOverride", scale: number): void;
 }>();
 
 // HUD data (read from status for template)
 const vst = computed(() => status.value?.data ?? null);
 
+const overridesActive = computed(() =>
+  (props.feedOverride != null && props.feedOverride !== 1.0) ||
+  (props.spindleOverride != null && props.spindleOverride !== 1.0) ||
+  (props.rapidOverride != null && props.rapidOverride !== 1.0)
+);
+
 // ---------- DOM ----------
 const host = ref<HTMLDivElement | null>(null);
 const hudVisible = ref(true);
+type HudPanel = "none" | "jog" | "gcode" | "setup" | "spindle" | "overrides";
+const activeHudPanel = ref<HudPanel>("none");
+function toggleHud(panel: HudPanel) { activeHudPanel.value = activeHudPanel.value === panel ? "none" : panel; }
 
 // ---------- Three globals ----------
 let renderer: THREE.WebGLRenderer | null = null;
@@ -1096,10 +1151,146 @@ defineExpose({
         <div class="hudValue">{{ formatCoord(vst?.spindle_speed_actual) }} RPM</div>
       </div>
     </div>
+
+    <!-- HUD pills (top-left) -->
+    <div class="hudOverlay">
+      <div class="hudPills">
+        <button class="hudPill" :class="{ active: activeHudPanel === 'jog' }" @click="toggleHud('jog')">Jog</button>
+        <button class="hudPill" :class="{ active: activeHudPanel === 'gcode' }" @click="toggleHud('gcode')">Gcode</button>
+        <button class="hudPill" :class="{ active: activeHudPanel === 'setup' }" @click="toggleHud('setup')">Setup</button>
+        <button class="hudPill" :class="{ active: activeHudPanel === 'spindle' }" @click="toggleHud('spindle')">Spindle</button>
+        <button class="hudPill" :class="{ active: activeHudPanel === 'overrides', warn: overridesActive }" @click="toggleHud('overrides')">Overrides</button>
+      </div>
+
+      <div v-show="activeHudPanel === 'jog'">
+        <JogHUD
+          :jogVel="props.jogVel ?? 10"
+          :canJog="props.canJog ?? false"
+          :isHomed="props.isHomed ?? false"
+          :armed="props.armed ?? false"
+          :linearUnit="props.linearUnit ?? 'mm'"
+          :maxJogVel="props.maxJogVel ?? 100"
+          :jogIncrement="props.jogIncrement ?? 0"
+          @update:jogVel="emit('update:jogVel', $event)"
+          @update:jogIncrement="emit('update:jogIncrement', $event)"
+        />
+      </div>
+
+      <div v-show="activeHudPanel === 'gcode'">
+        <GcodeHUD
+          :gcodeContent="props.gcodeContent ?? null"
+          :currentLine="props.currentLine ?? null"
+          :canCycleStart="props.canCycleStart ?? false"
+          :canCyclePause="props.canCyclePause ?? false"
+          :canCycleResume="props.canCycleResume ?? false"
+          :canAbort="props.canAbort ?? false"
+          :isPaused="props.isPaused ?? false"
+          @cycleStart="emit('cycleStart')"
+          @cyclePause="emit('cyclePause')"
+          @cycleResume="emit('cycleResume')"
+          @abort="emit('abort')"
+        />
+      </div>
+
+      <div v-show="activeHudPanel === 'setup'">
+        <SetupHUD
+          :armed="props.armed ?? false"
+          :busy="props.busy ?? false"
+          :homed="props.isHomed ?? false"
+          :canMdi="props.canMdi ?? false"
+          @homeAll="emit('homeAll')"
+          @unhomeAll="emit('unhomeAll')"
+          @zeroAxis="emit('zeroAxis', $event)"
+          @zeroAll="emit('zeroAll')"
+        />
+      </div>
+
+      <div v-show="activeHudPanel === 'spindle'">
+        <SpindleHUD
+          :spindleSpeed="props.spindleSpeed ?? null"
+          :spindleActual="props.spindleActual ?? null"
+          :spindleDirection="props.spindleDirection ?? null"
+          :spindleOverride="props.spindleOverride ?? null"
+          :armed="props.armed ?? false"
+          :busy="props.busy ?? false"
+          :isIdle="props.isIdle ?? false"
+          @spindleForward="emit('spindleForward', $event)"
+          @spindleReverse="emit('spindleReverse', $event)"
+          @spindleStop="emit('spindleStop')"
+          @setSpindleOverride="emit('setSpindleOverride', $event)"
+        />
+      </div>
+
+      <div v-show="activeHudPanel === 'overrides'">
+        <OverrideHUD
+          :feedOverride="props.feedOverride ?? null"
+          :spindleOverride="props.spindleOverride ?? null"
+          :rapidOverride="props.rapidOverride ?? null"
+          :armed="props.armed ?? false"
+          :busy="props.busy ?? false"
+          @setFeedOverride="emit('setFeedOverride', $event)"
+          @setSpindleOverride="emit('setSpindleOverride', $event)"
+          @setRapidOverride="emit('setRapidOverride', $event)"
+        />
+      </div>
+    </div>
   </div>
 </template>
 
 <style scoped>
+.hudOverlay {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.hudPills {
+  display: flex;
+  gap: 4px;
+}
+
+.hudPill {
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--panel) 85%, transparent);
+  color: var(--fg);
+  opacity: 0.75;
+  cursor: pointer;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  transition: opacity 0.12s, background 0.12s;
+}
+
+.hudPill:hover {
+  opacity: 1;
+}
+
+.hudPill.active {
+  opacity: 1;
+  background: color-mix(in oklab, var(--fg) 15%, var(--panel));
+  border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
+}
+
+.hudPill.warn {
+  opacity: 1;
+  border-color: #b8860b80;
+  animation: flash-pill-warn 1.2s ease-in-out infinite;
+}
+
+@keyframes flash-pill-warn {
+  0%, 100% { background: color-mix(in oklab, #b8860b 25%, var(--panel)); }
+  50% { background: color-mix(in oklab, #b8860b 10%, var(--panel)); }
+}
+
 .viewerWrapper {
   position: relative;
   width: 100%;
@@ -1127,10 +1318,12 @@ defineExpose({
 }
 
 .hudSection {
-  background: var(--panel);
+  background: color-mix(in oklab, var(--panel) 85%, transparent);
   border: 1px solid var(--border);
   border-radius: 8px;
   padding: 8px 12px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
   font-size: 12px;
   line-height: 1.4;
