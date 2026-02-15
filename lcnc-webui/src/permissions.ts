@@ -15,12 +15,14 @@ export type MachineState = {
 
 /** Permission classes — each maps to a set of buttons */
 export type Permissions = {
-  /** idle: machine ready for new commands (home, zero, MDI, spindle, file ops, cycle start) */
+  /** idle: machine on and idle (home, unhome, zero, G5x, file ops) */
   idle: boolean;
   /** jog: can jog axes (idle + homed, no busy gate for hold-to-move) */
   jog: boolean;
   /** override: can adjust feed/spindle/rapid overrides (works during execution) */
   override: boolean;
+  /** ready: idle + homed (MDI, cycle start, spindle direction) */
+  ready: boolean;
   /** pause: can pause a running program */
   pause: boolean;
   /** resume: can resume a paused program */
@@ -35,7 +37,8 @@ export function evaluatePermissions(s: MachineState): Permissions {
   return {
     idle:     base && s.isIdle && !s.busy,
     jog:      base && s.isIdle && s.isHomed,
-    override: s.armed && !s.busy,
+    override: base && !s.busy,
+    ready:    base && s.isIdle && !s.busy && s.isHomed,
     pause:    base && s.isRunning && !s.isPaused,
     resume:   base && s.isPaused,
     abort:    s.armed,

@@ -46,21 +46,21 @@ function formatRpm(val: number | null): string {
       <button
         class="dirBtn"
         :class="{ active: isReverse }"
-        :disabled="!can.idle"
+        :disabled="!can.ready"
         @click="emit('spindleReverse', rpmInput)"
         title="Reverse (CCW)"
       >&#x21BA; REV</button>
       <button
         class="dirBtn stop"
         :class="{ active: isForward || isReverse }"
-        :disabled="!can.idle"
+        :disabled="!can.ready"
         @click="emit('spindleStop')"
         title="Stop"
       >&#x25A0; STOP</button>
       <button
         class="dirBtn"
         :class="{ active: isForward }"
-        :disabled="!can.idle"
+        :disabled="!can.ready"
         @click="emit('spindleForward', rpmInput)"
         title="Forward (CW)"
       >&#x21BB; FWD</button>
@@ -76,7 +76,7 @@ function formatRpm(val: number | null): string {
         min="0"
         max="99999"
         step="100"
-        :disabled="!can.idle"
+        :disabled="!can.ready"
       />
     </div>
 

@@ -257,7 +257,7 @@ function formatSize(bytes: number): string {
 
     <!-- Program control -->
     <div class="controlRow">
-      <button class="ctrlBtn primary" @click="emit('cycleStart')" :disabled="!can.idle || !activeFile">
+      <button class="ctrlBtn primary" @click="emit('cycleStart')" :disabled="!can.ready || !activeFile">
         <span class="ctrlIcon">&#x25B6;</span> Start
       </button>
       <button class="ctrlBtn"

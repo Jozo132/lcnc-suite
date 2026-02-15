@@ -49,11 +49,12 @@ All button enable/disable logic is defined once in `permissions.ts` and distribu
 
 | Class | Rule | Controls |
 |-------|------|----------|
-| `idle` | armed, not estopped, enabled, idle, not busy | Home, zero, MDI, spindle direction, file ops, cycle start |
+| `idle` | armed, not estopped, enabled, idle, not busy | Home, unhome, zero, G5x, file ops |
 | `jog` | armed, not estopped, enabled, idle, homed | Jog buttons, speed slider, increment select |
-| `override` | armed, not busy | Feed/spindle/rapid sliders and presets |
-| `pause` | armed, enabled, running, not paused | Pause button |
-| `resume` | armed, enabled, paused | Resume button |
+| `override` | armed, not estopped, enabled, not busy | Feed/spindle/rapid sliders and presets |
+| `ready` | armed, not estopped, enabled, idle, not busy, homed | MDI send, cycle start, spindle FWD/REV/STOP |
+| `pause` | armed, not estopped, enabled, running, not paused | Pause button |
+| `resume` | armed, not estopped, enabled, paused | Resume button |
 | `abort` | armed | Abort/stop button |
 
 Safety buttons (E-Stop, Machine On/Off) use direct conditions in App.vue — they have unique toggle logic and appear in one place.

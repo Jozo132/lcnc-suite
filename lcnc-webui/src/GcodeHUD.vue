@@ -90,7 +90,7 @@ function tokenizeCode(code: string, tokens: Token[]) {
   <div class="gcodeHud">
     <!-- Program controls -->
     <div class="ctrlRow">
-      <button class="ctrlBtn primary" :disabled="!can.idle || !gcodeContent" @click="emit('cycleStart')">&#9654;</button>
+      <button class="ctrlBtn primary" :disabled="!can.ready || !gcodeContent" @click="emit('cycleStart')">&#9654;</button>
       <button
         class="ctrlBtn"
         :disabled="!can.pause && !can.resume"

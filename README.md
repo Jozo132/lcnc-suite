@@ -118,7 +118,18 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - G-code viewer with syntax highlighting, program controls, and progress bar
 - 3D machine visualization with Three.js (colorized toolpath, backplot, HUD overlays)
 - HUD overlay pills on 3D viewer: jog, gcode, spindle, override, and setup controls
-- Centralized permission system — 6 state-driven classes (`idle`, `jog`, `override`, `pause`, `resume`, `abort`) via Vue provide/inject
+- Centralized permission system via Vue provide/inject — all button enable/disable logic defined once:
+
+| Class | Rule | Controls |
+|-------|------|----------|
+| `idle` | armed, not estopped, enabled, idle, not busy | Home, unhome, zero, G5x, file ops |
+| `jog` | armed, not estopped, enabled, idle, homed | Jog buttons, speed slider, increment select |
+| `override` | armed, not estopped, enabled, not busy | Feed/spindle/rapid sliders and presets |
+| `ready` | armed, not estopped, enabled, idle, not busy, homed | MDI send, cycle start, spindle FWD/REV/STOP |
+| `pause` | armed, not estopped, enabled, running, not paused | Pause button |
+| `resume` | armed, not estopped, enabled, paused | Resume button |
+| `abort` | armed | Abort/stop button |
+
 - Persistent settings (colors, opacities, layers, workpiece defaults)
 - Responsive auto-layout (1–4 panels based on viewport) with portrait and landscape modes
 - Connected clients display with IP and armed status

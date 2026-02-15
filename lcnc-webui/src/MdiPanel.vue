@@ -50,10 +50,10 @@ function loadFromHistory(cmd: string) {
         :value="mdiText"
         @input="emit('update:mdiText', ($event.target as HTMLInputElement).value)"
         @keyup.enter="handleSend"
-        :disabled="!can.idle"
+        :disabled="!can.ready"
         placeholder="Enter G-code command..."
       />
-      <button class="btn" @click="handleSend" :disabled="!can.idle">
+      <button class="btn" @click="handleSend" :disabled="!can.ready">
         Send
       </button>
     </div>
