@@ -27,6 +27,7 @@ function loadDefaults() {
     opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
     trackingMode: "none" as "none" | "tool" | "workpiece",
     pathOnTop: true,
+    projection: "perspective" as "perspective" | "parallel",
   };
   try {
     const raw = localStorage.getItem("lcnc-defaults");
@@ -40,6 +41,7 @@ function loadDefaults() {
         opacities: { ...fallback.opacities, ...parsed.opacities },
         trackingMode: (parsed.trackingMode ?? fallback.trackingMode) as "none" | "tool" | "workpiece",
         pathOnTop: parsed.pathOnTop ?? fallback.pathOnTop,
+        projection: (parsed.projection ?? fallback.projection) as "perspective" | "parallel",
       };
     }
   } catch { /* ignore */ }
@@ -543,6 +545,7 @@ onMounted(() => {
     for (const viewer of viewerRefs.values()) {
       viewer?.setTrackingMode?.(defaults.trackingMode);
       viewer?.setPathAlwaysOnTop?.(defaults.pathOnTop);
+      if (defaults.projection === "parallel") viewer?.switchProjection?.();
     }
   });
 });
@@ -704,9 +707,11 @@ watch(isHomed, (nowHomed, wasHomed) => {
               @toggleLayer="(l: string, on: boolean) => viewerRefs.get(panel.id)?.setLayerVisible?.(l, on)"
               @setPathOnTop="(on: boolean) => viewerRefs.get(panel.id)?.setPathAlwaysOnTop?.(on)"
               @setTrackMode="(m: string) => viewerRefs.get(panel.id)?.setTrackingMode?.(m)"
+              @toggleProjection="viewerRefs.get(panel.id)?.switchProjection?.()"
               :layerDefaults="defaults.layers"
               :trackingDefault="defaults.trackingMode"
               :pathOnTopDefault="defaults.pathOnTop"
+              :projectionDefault="defaults.projection"
               :workpieceSize="workpieceSize"
               :workpieceOffset="workpieceOffset"
               @update:workpieceSize="workpieceSize = $event"

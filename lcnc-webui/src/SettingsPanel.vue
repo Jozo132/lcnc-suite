@@ -31,6 +31,7 @@ interface OpacityDefaults {
 }
 
 type TrackMode = "none" | "tool" | "workpiece";
+type Projection = "perspective" | "parallel";
 
 interface Defaults {
   workpieceSize: Vec3;
@@ -40,6 +41,7 @@ interface Defaults {
   opacities: OpacityDefaults;
   trackingMode: TrackMode;
   pathOnTop: boolean;
+  projection: Projection;
 }
 
 const fallback: Defaults = {
@@ -50,6 +52,7 @@ const fallback: Defaults = {
   opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
   trackingMode: "none",
   pathOnTop: true,
+  projection: "perspective",
 };
 
 function load(): Defaults {
@@ -65,6 +68,7 @@ function load(): Defaults {
         opacities: { ...fallback.opacities, ...parsed.opacities },
         trackingMode: parsed.trackingMode ?? fallback.trackingMode,
         pathOnTop: parsed.pathOnTop ?? fallback.pathOnTop,
+        projection: parsed.projection ?? fallback.projection,
       };
     }
   } catch { /* ignore */ }
@@ -80,6 +84,7 @@ function save() {
     opacities: { ...opacities },
     trackingMode: trackingMode.value,
     pathOnTop: pathOnTop.value,
+    projection: projection.value,
   }));
 }
 
@@ -91,6 +96,7 @@ const colors = reactive<ColorDefaults>({ ...saved.colors });
 const opacities = reactive<OpacityDefaults>({ ...saved.opacities });
 const trackingMode = ref<TrackMode>(saved.trackingMode);
 const pathOnTop = ref(saved.pathOnTop);
+const projection = ref<Projection>(saved.projection);
 
 const subTabs = [
   { id: "viewer", label: "3D Viewer" },
@@ -242,6 +248,18 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
               <input type="checkbox" v-model="pathOnTop" @change="save()" />
               Toolpath always on top
             </label>
+            <div class="inputRow">
+              <label class="inputLabel">Projection</label>
+              <div class="btnGroup">
+                <button
+                  v-for="p in (['perspective', 'parallel'] as Projection[])"
+                  :key="p"
+                  class="optBtn"
+                  :class="{ active: projection === p }"
+                  @click="projection = p; save()"
+                >{{ p.charAt(0).toUpperCase() + p.slice(1) }}</button>
+              </div>
+            </div>
           </div>
         </div>
 

@@ -209,7 +209,10 @@ function toggleHud(panel: HudPanel) { activeHudPanel.value = activeHudPanel.valu
 // ---------- Three globals ----------
 let renderer: THREE.WebGLRenderer | null = null;
 let scene: THREE.Scene | null = null;
-let camera: THREE.PerspectiveCamera | null = null;
+let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera | null = null;
+let perspCam: THREE.PerspectiveCamera | null = null;
+let orthoCam: THREE.OrthographicCamera | null = null;
+const isOrtho = ref(false);
 let controls: OrbitControls | null = null;
 let raf = 0;
 
@@ -281,6 +284,13 @@ function setView(p: ViewPreset) {
     camera.near = Math.max(0.1, maxDim / 1000);
     camera.far = Math.max(200000, maxDim * 20);
     camera.up.set(0, 0, 1);
+    if (camera instanceof THREE.OrthographicCamera) {
+      const aspect = host.value ? (host.value.clientWidth / host.value.clientHeight) || 1 : 1;
+      const halfH = maxDim * 1.2;
+      camera.top = halfH; camera.bottom = -halfH;
+      camera.right = halfH * aspect; camera.left = -halfH * aspect;
+      camera.zoom = 1;
+    }
     camera.updateProjectionMatrix();
     controls.update();
     return;
@@ -308,6 +318,47 @@ function setView(p: ViewPreset) {
   camera.up.set(...up);
 
   camera.updateProjectionMatrix();
+  controls.update();
+}
+
+const PERSP_FOV = 45;
+
+function switchProjection() {
+  if (!camera || !controls || !perspCam || !orthoCam) return;
+
+  const target = controls.target.clone();
+  const dist = camera.position.distanceTo(target);
+  const aspect = host.value ? (host.value.clientWidth / host.value.clientHeight) || 1 : 1;
+
+  if (!isOrtho.value) {
+    // Perspective → Orthographic
+    const halfH = dist * Math.tan(THREE.MathUtils.degToRad(PERSP_FOV / 2));
+    orthoCam.top = halfH;
+    orthoCam.bottom = -halfH;
+    orthoCam.right = halfH * aspect;
+    orthoCam.left = -halfH * aspect;
+    orthoCam.near = perspCam.near;
+    orthoCam.far = perspCam.far;
+    orthoCam.position.copy(camera.position);
+    orthoCam.up.copy(camera.up);
+    orthoCam.zoom = 1;
+    orthoCam.updateProjectionMatrix();
+    camera = orthoCam;
+  } else {
+    // Orthographic → Perspective
+    const effectiveHalfH = orthoCam.top / orthoCam.zoom;
+    const newDist = effectiveHalfH / Math.tan(THREE.MathUtils.degToRad(PERSP_FOV / 2));
+    const dir = camera.position.clone().sub(target).normalize();
+    perspCam.position.copy(target).addScaledVector(dir, newDist);
+    perspCam.up.copy(camera.up);
+    perspCam.near = orthoCam.near;
+    perspCam.far = orthoCam.far;
+    perspCam.updateProjectionMatrix();
+    camera = perspCam;
+  }
+
+  isOrtho.value = !isOrtho.value;
+  controls.object = camera;
   controls.update();
 }
 
@@ -931,7 +982,14 @@ function resize() {
   const w = host.value.clientWidth;
   const h = host.value.clientHeight;
   if (w === 0 || h === 0) return; // hidden (v-show)
-  camera.aspect = w / h;
+  if (camera instanceof THREE.PerspectiveCamera) {
+    camera.aspect = w / h;
+  } else if (camera instanceof THREE.OrthographicCamera) {
+    const aspect = w / h;
+    const halfH = camera.top; // frustum half-height stays fixed
+    camera.left = -halfH * aspect;
+    camera.right = halfH * aspect;
+  }
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
 }
@@ -975,9 +1033,16 @@ onMounted(() => {
   scene = new THREE.Scene();
   scene.background = sceneBgFromTheme();
 
-  camera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
-  camera.up.set(0, 0, 1); // Z-up
-  camera.position.set(1200, -1200, 800);
+  perspCam = new THREE.PerspectiveCamera(45, 1, 1, 20000);
+  perspCam.up.set(0, 0, 1); // Z-up
+  perspCam.position.set(1200, -1200, 800);
+
+  // Ortho camera — frustum will be computed on first switch
+  orthoCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 1, 20000);
+  orthoCam.up.set(0, 0, 1);
+  orthoCam.position.copy(perspCam.position);
+
+  camera = perspCam;
 
   renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
   renderer.setPixelRatio(window.devicePixelRatio);
@@ -1095,6 +1160,8 @@ defineExpose({
   setLayerVisible,
   setPathAlwaysOnTop,
   setTrackingMode,
+  switchProjection,
+  isOrtho,
 });
 
 

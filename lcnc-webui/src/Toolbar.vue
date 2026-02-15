@@ -21,6 +21,11 @@
             <button class="viewBtn wide" @click="$emit('setView', 'dimetric')">Dimetric</button>
             <button class="viewBtn wide" @click="$emit('setView', 'reset')">Reset</button>
           </div>
+          <div class="sep"></div>
+          <div class="projRow">
+            <button class="viewBtn" :class="{ active: !isOrtho }" @click="isOrtho && toggleProjection()">Perspective</button>
+            <button class="viewBtn" :class="{ active: isOrtho }" @click="!isOrtho && toggleProjection()">Parallel</button>
+          </div>
         </div>
       </div>
 
@@ -119,6 +124,7 @@ const props = defineProps<{
   layerDefaults?: Record<Layer, boolean>;
   trackingDefault?: "none" | "tool" | "workpiece";
   pathOnTopDefault?: boolean;
+  projectionDefault?: "perspective" | "parallel";
 }>();
 
 const emit = defineEmits<{
@@ -129,9 +135,16 @@ const emit = defineEmits<{
   (e: "update:workpieceOffset", value: Vec3): void;
   (e: "setPathOnTop", on: boolean): void;
   (e: "setTrackMode", mode: string): void;
+  (e: "toggleProjection"): void;
 }>();
 
 const pathOnTop = ref(props.pathOnTopDefault ?? true);
+const isOrtho = ref(props.projectionDefault === "parallel");
+
+function toggleProjection() {
+  isOrtho.value = !isOrtho.value;
+  emit("toggleProjection");
+}
 
 type TrackMode = "none" | "tool" | "workpiece";
 const trackMode = ref<TrackMode>(props.trackingDefault ?? "none");
@@ -259,6 +272,12 @@ function updateOffset(axis: number, value: number) {
 
 .viewBtn.wide {
   grid-column: 1 / -1;
+}
+
+.projRow {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
 }
 
 /* ---- Layer checkboxes ---- */
