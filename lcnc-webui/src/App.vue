@@ -490,7 +490,7 @@ function onKeyDown(e: KeyboardEvent) {
     e.preventDefault();
     if (permissions.value.resume) fire({ cmd: "cycle_resume" });
     else if (permissions.value.pause) fire({ cmd: "cycle_pause" });
-    else if (permissions.value.idle && !!activeFile.value) fire({ cmd: "cycle_start" });
+    else if (permissions.value.ready && !!activeFile.value) fire({ cmd: "cycle_start" });
     return;
   }
 

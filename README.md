@@ -120,15 +120,17 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - HUD overlay pills on 3D viewer: jog, gcode, spindle, override, and setup controls
 - Centralized permission system via Vue provide/inject — all button enable/disable logic defined once:
 
-| Class | Rule | Controls |
-|-------|------|----------|
-| `idle` | armed, not estopped, enabled, idle, not busy | Home, unhome, zero, G5x, file ops |
-| `jog` | armed, not estopped, enabled, idle, homed | Jog buttons, speed slider, increment select |
-| `override` | armed, not estopped, enabled, not busy | Feed/spindle/rapid sliders and presets |
-| `ready` | armed, not estopped, enabled, idle, not busy, homed | MDI send, cycle start, spindle FWD/REV/STOP |
-| `pause` | armed, not estopped, enabled, running, not paused | Pause button |
-| `resume` | armed, not estopped, enabled, paused | Resume button |
-| `abort` | armed | Abort/stop button |
+| Class | Rule | Buttons / Actions |
+|-------|------|-------------------|
+| `idle` | base, idle, not busy | Home All, Unhome, Zero X/Y/Z, Zero All, G5x select, file Reload/Unload/Browse/Upload |
+| `jog` | base, idle, homed | Jog X+/X-/Y+/Y-/Z+/Z-, speed slider, increment select, teleop toggle, keyboard jog |
+| `override` | base, not busy | Feed/Spindle/Rapid override sliders + presets, Reset All |
+| `ready` | base, idle, not busy, homed | MDI input + Send, Cycle Start, Spindle FWD/REV/STOP, RPM input |
+| `pause` | base, running, not paused | Pause |
+| `resume` | base, paused | Resume |
+| `abort` | armed | Abort |
+
+`base` = armed, not estopped, enabled
 
 - Persistent settings (colors, opacities, layers, workpiece defaults)
 - Responsive auto-layout (1–4 panels based on viewport) with portrait and landscape modes
