@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, reactive } from "vue";
 import { send } from "./lcncWs";
 import { usePermissions } from "./permissions";
 
@@ -38,43 +38,138 @@ const incrementOptions = computed(() => {
 
 const disabled = computed(() => !can.value.jog);
 
-// ---- Jog axis definitions ----
-type Axis = { id: string; axis: number; dir: 1 | -1; label: string };
+// ---- Wheel geometry (same as JogPanel) ----
+const CX = 100, CY = 100, R = 94, r = 34;
+const HALF_SPAN = 21; // degrees — 42° sector with 3° gaps
 
-const xyAxes: Axis[] = [
-  { id: "yp", axis: 1, dir: 1, label: "Y+" },
-  { id: "xn", axis: 0, dir: -1, label: "X-" },
-  { id: "xp", axis: 0, dir: 1, label: "X+" },
-  { id: "yn", axis: 1, dir: -1, label: "Y-" },
+interface Sector {
+  id: string;
+  axis: number;
+  dir: 1 | -1;
+  axis2?: number;
+  dir2?: 1 | -1;
+  label: string;
+  path: string;
+  labelX: number;
+  labelY: number;
+}
+
+function arcPath(centerDeg: number): string {
+  const a1 = (centerDeg - HALF_SPAN) * Math.PI / 180;
+  const a2 = (centerDeg + HALF_SPAN) * Math.PI / 180;
+  const ox1 = CX + R * Math.cos(a1), oy1 = CY + R * Math.sin(a1);
+  const ox2 = CX + R * Math.cos(a2), oy2 = CY + R * Math.sin(a2);
+  const ix2 = CX + r * Math.cos(a2), iy2 = CY + r * Math.sin(a2);
+  const ix1 = CX + r * Math.cos(a1), iy1 = CY + r * Math.sin(a1);
+  return `M${ox1.toFixed(1)},${oy1.toFixed(1)} A${R},${R} 0 0,1 ${ox2.toFixed(1)},${oy2.toFixed(1)} L${ix2.toFixed(1)},${iy2.toFixed(1)} A${r},${r} 0 0,0 ${ix1.toFixed(1)},${iy1.toFixed(1)} Z`;
+}
+
+function labelPos(centerDeg: number): { x: number; y: number } {
+  const mid = (R + r) / 2;
+  const a = centerDeg * Math.PI / 180;
+  return { x: Math.round(CX + mid * Math.cos(a)), y: Math.round(CY + mid * Math.sin(a)) };
+}
+
+function spread(deg: number) {
+  const lp = labelPos(deg);
+  return { path: arcPath(deg), labelX: lp.x, labelY: lp.y };
+}
+
+// SVG 0° = right (3 o'clock), clockwise. Screen up = SVG 270°.
+const sectors: Sector[] = [
+  { id: "xp",   axis: 0, dir:  1,                           label: "X+",   ...spread(0) },
+  { id: "xpyn", axis: 0, dir:  1, axis2: 1, dir2: -1,      label: "X+Y-", ...spread(45) },
+  { id: "yn",   axis: 1, dir: -1,                           label: "Y-",   ...spread(90) },
+  { id: "xnyn", axis: 0, dir: -1, axis2: 1, dir2: -1,      label: "X-Y-", ...spread(135) },
+  { id: "xn",   axis: 0, dir: -1,                           label: "X-",   ...spread(180) },
+  { id: "xnyp", axis: 0, dir: -1, axis2: 1, dir2:  1,      label: "X-Y+", ...spread(225) },
+  { id: "yp",   axis: 1, dir:  1,                           label: "Y+",   ...spread(270) },
+  { id: "xpyp", axis: 0, dir:  1, axis2: 1, dir2:  1,      label: "X+Y+", ...spread(315) },
 ];
 
-const zAxes: Axis[] = [
-  { id: "zp", axis: 2, dir: 1, label: "Z+" },
-  { id: "zn", axis: 2, dir: -1, label: "Z-" },
-];
+// ---- Jog logic (mirrors JogPanel) ----
+const activeSectors = reactive(new Set<string>());
 
-// ---- Active tracking ----
-const active = new Set<string>();
-
-function startJog(a: Axis, e: PointerEvent) {
+function startJog(s: Sector, e: PointerEvent) {
   if (disabled.value || !Number.isFinite(props.jogVel) || props.jogVel <= 0) return;
-  try { (e.currentTarget as Element)?.setPointerCapture?.(e.pointerId); } catch {}
-  if (active.has(a.id)) return;
-  active.add(a.id);
 
-  const v = props.jogVel;
+  try { (e.currentTarget as Element)?.setPointerCapture?.(e.pointerId); } catch {}
+
+  if (activeSectors.has(s.id)) return;
+  activeSectors.add(s.id);
+
+  const isDiag = s.axis2 != null && s.dir2 != null;
+  const v = isDiag ? props.jogVel * 0.7071 : props.jogVel;
+
   if (props.jogIncrement > 0) {
-    send({ cmd: "jog_incr", axis: a.axis, vel: v * a.dir, distance: props.jogIncrement * a.dir });
+    const dist = isDiag ? props.jogIncrement * 0.7071 : props.jogIncrement;
+    if (isDiag) {
+      send({
+        cmd: "jog_incr_multi",
+        axes: [
+          { axis: s.axis, vel: v * s.dir, distance: dist * s.dir },
+          { axis: s.axis2!, vel: v * s.dir2!, distance: dist * s.dir2! },
+        ],
+      });
+    } else {
+      send({ cmd: "jog_incr", axis: s.axis, vel: v * s.dir, distance: props.jogIncrement * s.dir });
+    }
   } else {
-    send({ cmd: "jog_cont", axis: a.axis, vel: v * a.dir });
+    if (isDiag) {
+      send({
+        cmd: "jog_cont_multi",
+        axes: [
+          { axis: s.axis, vel: v * s.dir },
+          { axis: s.axis2!, vel: v * s.dir2! },
+        ],
+      });
+    } else {
+      send({ cmd: "jog_cont", axis: s.axis, vel: v * s.dir });
+    }
   }
 }
 
-function stopJog(a: Axis, e?: PointerEvent) {
-  if (!active.has(a.id)) return;
-  active.delete(a.id);
+function stopJog(s: Sector, e?: PointerEvent) {
+  if (!activeSectors.has(s.id)) return;
+  activeSectors.delete(s.id);
+
   if (props.jogIncrement <= 0) {
-    send({ cmd: "jog_stop", axis: a.axis });
+    const isDiag = s.axis2 != null && s.dir2 != null;
+    if (isDiag) {
+      send({ cmd: "jog_stop_multi", axes: [s.axis, s.axis2!] });
+    } else {
+      send({ cmd: "jog_stop", axis: s.axis });
+    }
+  }
+
+  if (e) {
+    try { (e.currentTarget as Element)?.releasePointerCapture?.(e.pointerId); } catch {}
+  }
+}
+
+// ---- Z axis ----
+const zActive = reactive(new Set<string>());
+
+function startZ(dir: 1 | -1, e: PointerEvent) {
+  if (disabled.value || !Number.isFinite(props.jogVel) || props.jogVel <= 0) return;
+  try { (e.currentTarget as Element)?.setPointerCapture?.(e.pointerId); } catch {}
+  const id = dir > 0 ? "zp" : "zn";
+  if (zActive.has(id)) return;
+  zActive.add(id);
+
+  if (props.jogIncrement > 0) {
+    send({ cmd: "jog_incr", axis: 2, vel: props.jogVel * dir, distance: props.jogIncrement * dir });
+  } else {
+    send({ cmd: "jog_cont", axis: 2, vel: props.jogVel * dir });
+  }
+}
+
+function stopZ(dir: 1 | -1, e?: PointerEvent) {
+  const id = dir > 0 ? "zp" : "zn";
+  if (!zActive.has(id)) return;
+  zActive.delete(id);
+  if (props.jogIncrement <= 0) {
+    send({ cmd: "jog_stop", axis: 2 });
   }
   if (e) {
     try { (e.currentTarget as Element)?.releasePointerCapture?.(e.pointerId); } catch {}
@@ -113,36 +208,57 @@ function onVelInput(ev: Event) {
         :disabled="disabled"
         @input="onVelInput"
       />
-      <span class="velLabel">{{ jogVel.toFixed(1) }}</span>
+      <span class="velLabel">{{ (jogVel * 60).toFixed(0) }} {{ linearUnit }}/min</span>
     </div>
 
-    <!-- Direction pad -->
+    <!-- Wheel + Z column -->
     <div class="padRow">
-      <div class="xyPad">
-        <button
-          v-for="a in xyAxes"
-          :key="a.id"
-          class="jogBtn"
-          :class="a.id"
-          :disabled="disabled"
-          @pointerdown.prevent="startJog(a, $event)"
-          @pointerup.prevent="stopJog(a, $event)"
-          @pointercancel.prevent="stopJog(a, $event)"
-          @pointerleave.prevent="stopJog(a, $event)"
-        >{{ a.label }}</button>
-      </div>
+      <svg class="jogwheel" viewBox="0 0 200 200">
+        <path
+          v-for="s in sectors"
+          :key="s.id"
+          class="sector"
+          :class="{ active: activeSectors.has(s.id), disabled }"
+          :d="s.path"
+          @pointerdown.prevent="startJog(s, $event)"
+          @pointerup.prevent="stopJog(s, $event)"
+          @pointercancel.prevent="stopJog(s, $event)"
+          @pointerleave.prevent="stopJog(s, $event)"
+          @contextmenu.prevent
+        />
+        <!-- Center hub -->
+        <circle cx="100" cy="100" r="30" class="hub" />
+        <text x="100" y="100" class="hubLabel">XY</text>
+        <!-- Sector labels -->
+        <text
+          v-for="s in sectors"
+          :key="s.id + '-lbl'"
+          :x="s.labelX"
+          :y="s.labelY"
+          class="sectorLabel"
+          :class="{ small: s.axis2 != null }"
+        >{{ s.label }}</text>
+      </svg>
 
       <div class="zCol">
         <button
-          v-for="a in zAxes"
-          :key="a.id"
-          class="jogBtn zBtn"
+          class="zBtn"
+          :class="{ active: zActive.has('zp') }"
           :disabled="disabled"
-          @pointerdown.prevent="startJog(a, $event)"
-          @pointerup.prevent="stopJog(a, $event)"
-          @pointercancel.prevent="stopJog(a, $event)"
-          @pointerleave.prevent="stopJog(a, $event)"
-        >{{ a.label }}</button>
+          @pointerdown.prevent="startZ(1, $event)"
+          @pointerup.prevent="stopZ(1, $event)"
+          @pointercancel.prevent="stopZ(1, $event)"
+          @pointerleave.prevent="stopZ(1, $event)"
+        >Z+</button>
+        <button
+          class="zBtn"
+          :class="{ active: zActive.has('zn') }"
+          :disabled="disabled"
+          @pointerdown.prevent="startZ(-1, $event)"
+          @pointerup.prevent="stopZ(-1, $event)"
+          @pointercancel.prevent="stopZ(-1, $event)"
+          @pointerleave.prevent="stopZ(-1, $event)"
+        >Z-</button>
       </div>
     </div>
   </div>
@@ -211,27 +327,89 @@ function onVelInput(ev: Event) {
   font-size: 10px;
   color: var(--fg);
   opacity: 0.7;
-  min-width: 32px;
+  white-space: nowrap;
   text-align: right;
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
 }
 
-/* Direction pad row */
+/* Wheel + Z layout */
 .padRow {
   display: flex;
   gap: 8px;
   align-items: center;
 }
 
-/* XY pad — 3x3 grid, center empty */
-.xyPad {
-  display: grid;
-  grid-template-columns: 36px 36px 36px;
-  grid-template-rows: 36px 36px 36px;
-  gap: 3px;
+.jogwheel {
+  width: 140px;
+  height: 140px;
+  flex-shrink: 0;
+  touch-action: none;
 }
 
-.jogBtn {
+.sector {
+  fill: var(--button-bg);
+  stroke: var(--border);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  cursor: pointer;
+  transition: fill 0.12s, opacity 0.15s;
+}
+
+.sector:hover:not(.disabled) {
+  fill: color-mix(in oklab, var(--fg) 10%, var(--button-bg));
+}
+
+.sector.active:not(.disabled) {
+  fill: color-mix(in oklab, var(--fg) 20%, var(--button-bg));
+}
+
+.sector.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.hub {
+  fill: var(--panel);
+  stroke: var(--border);
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.hubLabel {
+  text-anchor: middle;
+  dominant-baseline: central;
+  font-size: 14px;
+  font-weight: 600;
+  fill: var(--fg);
+  opacity: 0.6;
+  user-select: none;
+  pointer-events: none;
+}
+
+.sectorLabel {
+  text-anchor: middle;
+  dominant-baseline: central;
+  font-size: 12px;
+  font-weight: 650;
+  fill: var(--fg);
+  pointer-events: none;
+  user-select: none;
+}
+
+.sectorLabel.small {
+  font-size: 9px;
+}
+
+/* Z column */
+.zCol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.zBtn {
+  width: 36px;
+  height: 52px;
   padding: 0;
   font-size: 10px;
   font-weight: 600;
@@ -248,34 +426,16 @@ function onVelInput(ev: Event) {
   transition: background 0.1s;
 }
 
-.jogBtn:hover:not(:disabled) {
+.zBtn:hover:not(:disabled) {
   background: color-mix(in oklab, var(--fg) 10%, var(--button-bg));
 }
 
-.jogBtn:active:not(:disabled) {
+.zBtn.active:not(:disabled) {
   background: color-mix(in oklab, var(--fg) 20%, var(--button-bg));
 }
 
-.jogBtn:disabled {
+.zBtn:disabled {
   opacity: 0.35;
   cursor: default;
-}
-
-/* Place XY buttons in the cross pattern */
-.yp { grid-column: 2; grid-row: 1; }
-.xn { grid-column: 1; grid-row: 2; }
-.xp { grid-column: 3; grid-row: 2; }
-.yn { grid-column: 2; grid-row: 3; }
-
-/* Z column */
-.zCol {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.zBtn {
-  width: 36px;
-  height: 36px;
 }
 </style>
