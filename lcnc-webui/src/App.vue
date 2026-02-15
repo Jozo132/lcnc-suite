@@ -818,7 +818,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </template>
 
           <template #settings>
-            <SettingsPanel />
+            <SettingsPanel :lastReply="lastReply" :status="status" />
           </template>
         </TabPanel>
       </div>
@@ -830,20 +830,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
       >+</button>
     </div>
 
-    <!-- Debug widget -->
-    <section class="card">
-      <details>
-        <summary class="sub" style="cursor: pointer">Debug</summary>
-
-        <div class="debugSection">
-          <div class="sub" style="margin-top: 10px">Last reply</div>
-          <pre class="pre">{{ lastReply }}</pre>
-
-          <div class="sub" style="margin-top: 10px">Raw status</div>
-          <pre class="pre">{{ status }}</pre>
-        </div>
-      </details>
-    </section>
 
     </div><!-- /mainCol -->
     </div><!-- /bodyLayout -->

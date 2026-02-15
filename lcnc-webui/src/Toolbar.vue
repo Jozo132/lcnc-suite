@@ -13,13 +13,13 @@
         <div class="pillPopover">
           <div class="viewGrid">
             <button class="viewBtn" @click="$emit('setView', 'top')">Top</button>
+            <button class="viewBtn" @click="$emit('setView', 'bottom')">Bottom</button>
             <button class="viewBtn" @click="$emit('setView', 'front')">Front</button>
             <button class="viewBtn" @click="$emit('setView', 'back')">Back</button>
             <button class="viewBtn" @click="$emit('setView', 'left')">Left</button>
             <button class="viewBtn" @click="$emit('setView', 'right')">Right</button>
-            <button class="viewBtn" @click="$emit('setView', 'dimetric')">Dimetric</button>
-            <button class="viewBtn" @click="$emit('setView', 'reset')">Reset</button>
-            <button class="viewBtn" @click="$emit('resetBackplot')">Backplot</button>
+            <button class="viewBtn wide" @click="$emit('setView', 'dimetric')">Dimetric</button>
+            <button class="viewBtn wide" @click="$emit('setView', 'reset')">Reset</button>
           </div>
         </div>
       </div>
@@ -109,7 +109,7 @@
 <script setup lang="ts">
 import { reactive, ref } from "vue";
 
-type ViewPreset = "top" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
+type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
 type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "workzero" | "hud";
 type Vec3 = [number, number, number];
 
@@ -276,6 +276,10 @@ function updateOffset(axis: number, value: number) {
   background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
   font-weight: 600;
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
+}
+
+.viewBtn.wide {
+  grid-column: 1 / -1;
 }
 
 /* ---- Layer checkboxes ---- */

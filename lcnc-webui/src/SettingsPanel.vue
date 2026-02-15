@@ -2,6 +2,11 @@
 import { ref, reactive, watch } from "vue";
 import TabPanel from "./TabPanel.vue";
 
+const props = defineProps<{
+  lastReply?: unknown;
+  status?: unknown;
+}>();
+
 type Vec3 = [number, number, number];
 type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "workzero" | "hud";
 
@@ -91,6 +96,7 @@ const subTabs = [
   { id: "viewer", label: "3D Viewer" },
   { id: "dro", label: "DRO" },
   { id: "jog", label: "Jogging" },
+  { id: "debug", label: "Debug" },
 ];
 const activeTab = ref("viewer");
 
@@ -251,6 +257,19 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
       <template #jog>
         <div class="placeholder">
           <div class="placeholderText">Jogging settings coming soon</div>
+        </div>
+      </template>
+
+      <template #debug>
+        <div class="scrollContent">
+          <div class="section">
+            <div class="sectionTitle">Last reply</div>
+            <pre class="debugPre">{{ props.lastReply }}</pre>
+          </div>
+          <div class="section">
+            <div class="sectionTitle">Raw status</div>
+            <pre class="debugPre">{{ props.status }}</pre>
+          </div>
         </div>
       </template>
     </TabPanel>
@@ -477,5 +496,17 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
 .placeholderText {
   font-size: 13px;
   opacity: 0.4;
+}
+
+.debugPre {
+  font-size: 11px;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 300px;
+  overflow: auto;
+  margin: 0;
+  padding: 6px;
+  background: color-mix(in oklab, var(--fg) 5%, var(--bg));
+  border-radius: 4px;
 }
 </style>

@@ -87,7 +87,7 @@ type ViewerInit = {
 
 type Vec3N = [number, number, number];
 
-type ViewPreset = "top" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
+type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
 type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "tool" | "workzero" | "hud";
 
 
@@ -247,6 +247,7 @@ function setView(p: ViewPreset) {
 
   switch (p) {
     case "top":      dir.set(0, 0, 1);     up = [0, 1, 0]; break;
+    case "bottom":   dir.set(0, 0, -1);    up = [0, -1, 0]; break;
     case "front":    dir.set(1, 0, 0);     break;
     case "back":     dir.set(-1, 0, 0);    break;
     case "left":     dir.set(0, -1, 0);    break;
@@ -901,15 +902,17 @@ function animate() {
     pendingState = null;
   }
 
-  // Camera tracking
-  if (trackingMode === "tool" && toolMarker && controls) {
-    const tmp = new THREE.Vector3();
-    toolMarker.getWorldPosition(tmp);
-    controls.target.copy(tmp);
-  } else if (trackingMode === "workpiece" && workOrigin && controls) {
-    const tmp = new THREE.Vector3();
-    workOrigin.getWorldPosition(tmp);
-    controls.target.copy(tmp);
+  // Camera tracking — move both target and camera to maintain viewing angle
+  if (trackingMode !== "none" && controls && camera) {
+    const target = new THREE.Vector3();
+    if (trackingMode === "tool" && toolMarker) {
+      toolMarker.getWorldPosition(target);
+    } else if (trackingMode === "workpiece" && workOrigin) {
+      workOrigin.getWorldPosition(target);
+    }
+    const delta = target.sub(controls.target);
+    controls.target.add(delta);
+    camera.position.add(delta);
   }
 
   controls?.update();
