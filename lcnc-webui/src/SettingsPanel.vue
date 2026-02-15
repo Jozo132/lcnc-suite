@@ -1,94 +1,31 @@
 <script setup lang="ts">
-import { ref, reactive, watch } from "vue";
+import { ref, reactive } from "vue";
 import TabPanel from "./TabPanel.vue";
+import {
+  loadViewerDefaults, saveViewerDefaults,
+  type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
+  type TrackMode, type Projection,
+} from "./defaults";
 
 const props = defineProps<{
   lastReply?: unknown;
   status?: unknown;
 }>();
 
-type Vec3 = [number, number, number];
-type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "workzero" | "hud";
-
-const STORAGE_KEY = "lcnc-defaults";
-
-interface ColorDefaults {
-  feed: string;
-  rapid: string;
-  backplot: string;
-  bounds: string;
-  workpiece: string;
-  tool: string;
-}
-
-interface OpacityDefaults {
-  workpiece: number;
-  bounds: number;
-  machine: number;
-  toolpath: number;
-  backplot: number;
-  hud: number;
-}
-
-type TrackMode = "none" | "tool" | "workpiece";
-type Projection = "perspective" | "parallel";
-
-interface Defaults {
-  workpieceSize: Vec3;
-  workpieceOffset: Vec3;
-  layers: Record<Layer, boolean>;
-  colors: ColorDefaults;
-  opacities: OpacityDefaults;
-  trackingMode: TrackMode;
-  pathOnTop: boolean;
-  projection: Projection;
-}
-
-const fallback: Defaults = {
-  workpieceSize: [100, 100, 20],
-  workpieceOffset: [0, 0, -20],
-  layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, workzero: true, hud: true },
-  colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", workpiece: "#ffffff", tool: "#ffdd00" },
-  opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
-  trackingMode: "none",
-  pathOnTop: true,
-  projection: "perspective",
-};
-
-function load(): Defaults {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        workpieceSize: parsed.workpieceSize ?? [...fallback.workpieceSize],
-        workpieceOffset: parsed.workpieceOffset ?? [...fallback.workpieceOffset],
-        layers: { ...fallback.layers, ...parsed.layers },
-        colors: { ...fallback.colors, ...parsed.colors },
-        opacities: { ...fallback.opacities, ...parsed.opacities },
-        trackingMode: parsed.trackingMode ?? fallback.trackingMode,
-        pathOnTop: parsed.pathOnTop ?? fallback.pathOnTop,
-        projection: parsed.projection ?? fallback.projection,
-      };
-    }
-  } catch { /* ignore */ }
-  return { ...fallback, workpieceSize: [...fallback.workpieceSize], workpieceOffset: [...fallback.workpieceOffset], layers: { ...fallback.layers }, colors: { ...fallback.colors }, opacities: { ...fallback.opacities } };
-}
-
 function save() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({
-    workpieceSize: wpSize,
-    workpieceOffset: wpOffset,
+  saveViewerDefaults({
+    workpieceSize: [...wpSize] as Vec3,
+    workpieceOffset: [...wpOffset] as Vec3,
     layers: { ...layers },
     colors: { ...colors },
     opacities: { ...opacities },
     trackingMode: trackingMode.value,
     pathOnTop: pathOnTop.value,
     projection: projection.value,
-  }));
+  });
 }
 
-const saved = load();
+const saved = loadViewerDefaults();
 const wpSize = reactive<Vec3>([...saved.workpieceSize] as Vec3);
 const wpOffset = reactive<Vec3>([...saved.workpieceOffset] as Vec3);
 const layers = reactive<Record<Layer, boolean>>({ ...saved.layers });

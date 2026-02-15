@@ -113,18 +113,15 @@
 
 <script setup lang="ts">
 import { reactive, ref } from "vue";
+import { loadViewerDefaults, type Vec3, type Layer, type TrackMode } from "./defaults";
 
 type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
-type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "workzero" | "hud";
-type Vec3 = [number, number, number];
+
+const vd = loadViewerDefaults();
 
 const props = defineProps<{
   workpieceSize: Vec3;
   workpieceOffset: Vec3;
-  layerDefaults?: Record<Layer, boolean>;
-  trackingDefault?: "none" | "tool" | "workpiece";
-  pathOnTopDefault?: boolean;
-  projectionDefault?: "perspective" | "parallel";
 }>();
 
 const emit = defineEmits<{
@@ -138,31 +135,22 @@ const emit = defineEmits<{
   (e: "toggleProjection"): void;
 }>();
 
-const pathOnTop = ref(props.pathOnTopDefault ?? true);
-const isOrtho = ref(props.projectionDefault === "parallel");
+const pathOnTop = ref(vd.pathOnTop);
+const isOrtho = ref(vd.projection === "parallel");
 
 function toggleProjection() {
   isOrtho.value = !isOrtho.value;
   emit("toggleProjection");
 }
 
-type TrackMode = "none" | "tool" | "workpiece";
-const trackMode = ref<TrackMode>(props.trackingDefault ?? "none");
+const trackMode = ref<TrackMode>(vd.trackingMode);
 
 function setTrack(mode: TrackMode) {
   trackMode.value = mode;
   emit("setTrackMode", mode);
 }
 
-const local = reactive<Record<Layer, boolean>>({
-  backplot: props.layerDefaults?.backplot ?? true,
-  toolpath: props.layerDefaults?.toolpath ?? true,
-  machine: props.layerDefaults?.machine ?? true,
-  workpiece: props.layerDefaults?.workpiece ?? true,
-  bounds: props.layerDefaults?.bounds ?? true,
-  workzero: props.layerDefaults?.workzero ?? true,
-  hud: props.layerDefaults?.hud ?? true,
-});
+const local = reactive<Record<Layer, boolean>>({ ...vd.layers });
 
 function emitToggle(layer: Layer) {
   emit("toggleLayer", layer, local[layer]);

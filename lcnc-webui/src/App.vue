@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
 import { evaluatePermissions, PERMISSIONS_KEY } from "./permissions";
 import { connectWs, connected, status, send, lastReply, viewerGcode, lcncError, latency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead } from "./lcncWs";
 import ThreeViewer from "./ThreeViewer.vue";
@@ -14,41 +14,9 @@ import SettingsPanel from "./SettingsPanel.vue";
 import SpindlePanel from "./SpindlePanel.vue";
 import MessagesPanel from "./MessagesPanel.vue";
 
-type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "workzero" | "hud";
-const ALL_LAYERS: Layer[] = ["backplot", "toolpath", "machine", "workpiece", "bounds", "workzero", "hud"];
+import { loadViewerDefaults } from "./defaults";
 
-/** Load startup defaults from localStorage (shared with SettingsPanel) */
-function loadDefaults() {
-  const fallback = {
-    workpieceSize: [100, 100, 20] as [number, number, number],
-    workpieceOffset: [0, 0, -20] as [number, number, number],
-    layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, workzero: true, hud: true } as Record<Layer, boolean>,
-    colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", workpiece: "#ffffff", tool: "#ffdd00" },
-    opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
-    trackingMode: "none" as "none" | "tool" | "workpiece",
-    pathOnTop: true,
-    projection: "perspective" as "perspective" | "parallel",
-  };
-  try {
-    const raw = localStorage.getItem("lcnc-defaults");
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      return {
-        workpieceSize: (parsed.workpieceSize ?? [...fallback.workpieceSize]) as [number, number, number],
-        workpieceOffset: (parsed.workpieceOffset ?? [...fallback.workpieceOffset]) as [number, number, number],
-        layers: { ...fallback.layers, ...parsed.layers } as Record<Layer, boolean>,
-        colors: { ...fallback.colors, ...parsed.colors },
-        opacities: { ...fallback.opacities, ...parsed.opacities },
-        trackingMode: (parsed.trackingMode ?? fallback.trackingMode) as "none" | "tool" | "workpiece",
-        pathOnTop: parsed.pathOnTop ?? fallback.pathOnTop,
-        projection: (parsed.projection ?? fallback.projection) as "perspective" | "parallel",
-      };
-    }
-  } catch { /* ignore */ }
-  return { ...fallback, workpieceSize: [...fallback.workpieceSize] as [number, number, number], workpieceOffset: [...fallback.workpieceOffset] as [number, number, number], layers: { ...fallback.layers }, colors: { ...fallback.colors }, opacities: { ...fallback.opacities } };
-}
-
-const defaults = loadDefaults();
+const _vd = loadViewerDefaults();
 
 onMounted(() => connectWs());
 
@@ -135,8 +103,8 @@ const mdiText = ref("G0 X0 Y0");
 const busy = ref(false);
 
 // Workpiece configuration (initialized from saved defaults)
-const workpieceSize = ref<[number, number, number]>(defaults.workpieceSize);
-const workpieceOffset = ref<[number, number, number]>(defaults.workpieceOffset);
+const workpieceSize = ref<[number, number, number]>(_vd.workpieceSize);
+const workpieceOffset = ref<[number, number, number]>(_vd.workpieceOffset);
 
 // G-code viewer
 const gcodeContent = ref<string | null>(null);
@@ -533,21 +501,6 @@ onMounted(() => {
   window.addEventListener("keydown", onKeyDown);
   window.addEventListener("keyup", onKeyUp);
   document.addEventListener("visibilitychange", visHandler);
-
-  // Apply saved defaults after viewers are mounted
-  nextTick(() => {
-    for (const layer of ALL_LAYERS) {
-      const on = defaults.layers[layer];
-      for (const viewer of viewerRefs.values()) {
-        viewer?.setLayerVisible?.(layer, on);
-      }
-    }
-    for (const viewer of viewerRefs.values()) {
-      viewer?.setTrackingMode?.(defaults.trackingMode);
-      viewer?.setPathAlwaysOnTop?.(defaults.pathOnTop);
-      if (defaults.projection === "parallel") viewer?.switchProjection?.();
-    }
-  });
 });
 
 onUnmounted(() => {
@@ -712,10 +665,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
               @setPathOnTop="(on: boolean) => viewerRefs.get(panel.id)?.setPathAlwaysOnTop?.(on)"
               @setTrackMode="(m: string) => viewerRefs.get(panel.id)?.setTrackingMode?.(m)"
               @toggleProjection="viewerRefs.get(panel.id)?.switchProjection?.()"
-              :layerDefaults="defaults.layers"
-              :trackingDefault="defaults.trackingMode"
-              :pathOnTopDefault="defaults.pathOnTop"
-              :projectionDefault="defaults.projection"
               :workpieceSize="workpieceSize"
               :workpieceOffset="workpieceOffset"
               @update:workpieceSize="workpieceSize = $event"
@@ -726,8 +675,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
                 :active="panel.tab === 'viewer'"
                 :workpieceSize="workpieceSize"
                 :workpieceOffset="workpieceOffset"
-                :colors="defaults.colors"
-                :opacities="defaults.opacities"
                 :g5xLabel="g5xLabel"
                 :linearUnit="linearUnit"
                 :jogVel="jogVel"

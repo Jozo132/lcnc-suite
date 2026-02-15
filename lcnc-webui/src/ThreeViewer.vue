@@ -63,15 +63,15 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
-// Adjust path as needed
 import { viewerInit, viewerGcode, status } from "./lcncWs";
+import { loadViewerDefaults, ALL_LAYERS, type Vec3, type ColorDefaults, type OpacityDefaults, type Layer } from "./defaults";
 import JogHUD from "./JogHUD.vue";
 import GcodeHUD from "./GcodeHUD.vue";
 import SetupHUD from "./SetupHUD.vue";
 import SpindleHUD from "./SpindleHUD.vue";
 import OverrideHUD from "./OverrideHUD.vue";
 
-type Vec3 = [number, number, number];
+const viewerDefaults = loadViewerDefaults();
 
 type ViewerInit = {
   units?: "mm" | "inch" | string;
@@ -93,7 +93,6 @@ type ViewerInit = {
 type Vec3N = [number, number, number];
 
 type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
-type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "tool" | "workzero" | "hud";
 
 
 type ViewerState = {
@@ -129,29 +128,9 @@ type ViewerGcode = {
   rapid?: number[][];
 };
 
-type ColorDefaults = {
-  feed: string;
-  rapid: string;
-  backplot: string;
-  bounds: string;
-  workpiece: string;
-  tool: string;
-};
-
-type OpacityDefaults = {
-  workpiece: number;
-  bounds: number;
-  machine: number;
-  toolpath: number;
-  backplot: number;
-  hud: number;
-};
-
 const props = defineProps<{
   workpieceSize: Vec3;
   workpieceOffset: Vec3;
-  colors?: ColorDefaults;
-  opacities?: OpacityDefaults;
   g5xLabel?: string;
   linearUnit?: string;
   active?: boolean;
@@ -362,7 +341,7 @@ function switchProjection() {
   controls.update();
 }
 
-function setLayerVisible(layer: Layer, on: boolean) {
+function setLayerVisible(layer: Layer | string, on: boolean) {
   if (pendingLayers) {
     pendingLayers.set(layer, on);
   }
@@ -600,8 +579,8 @@ function ensureCoreGroups() {
   backplotGeom.setAttribute("position", new THREE.BufferAttribute(backplotPos, 3));
   backplotGeom.setDrawRange(0, 0);
 
-  const bpColor = props.colors?.backplot ?? "#ff00ff";
-  const bpOpacity = props.opacities?.backplot ?? 0.55;
+  const bpColor = viewerDefaults.colors.backplot ?? "#ff00ff";
+  const bpOpacity = viewerDefaults.opacities.backplot ?? 0.55;
   const mat = new THREE.LineBasicMaterial({
     color: bpColor,
     transparent: true,
@@ -644,8 +623,8 @@ resetBackplot();
 
   // --- Machine bounds box (also sits on X, like your vismach limits_vis) ---
   {
-    const boundsColor = props.colors?.bounds ?? "#ffffff";
-    const boundsOp = props.opacities?.bounds ?? 0.10;
+    const boundsColor = viewerDefaults.colors.bounds ?? "#ffffff";
+    const boundsOp = viewerDefaults.opacities.bounds ?? 0.10;
     const geom = new THREE.BoxGeometry(1, 1, 1);
     const mat = new THREE.MeshBasicMaterial({
       color: boundsColor,
@@ -666,8 +645,8 @@ resetBackplot();
 
   // --- Workpiece box (in work coordinates, relative to DRO zero, and sits on X via workOrigin) ---
   {
-    const wpColor = props.colors?.workpiece ?? "#ffffff";
-    const wpOp = props.opacities?.workpiece ?? 0.16;
+    const wpColor = viewerDefaults.colors.workpiece ?? "#ffffff";
+    const wpOp = viewerDefaults.opacities.workpiece ?? 0.16;
     const geom = new THREE.BoxGeometry(1, 1, 1);
     const mat = new THREE.MeshBasicMaterial({
       color: wpColor,
@@ -688,10 +667,10 @@ resetBackplot();
   }
 
   // Apply machine STL opacity
-  applyMachineOpacity(props.opacities?.machine ?? 1.0);
+  applyMachineOpacity(viewerDefaults.opacities.machine ?? 1.0);
 
   // Apply tool color
-  MAT.tool.color.set(props.colors?.tool ?? "#ffdd00");
+  MAT.tool.color.set(viewerDefaults.colors.tool ?? "#ffdd00");
 }
 
 function sceneBgFromTheme(): THREE.Color {
@@ -928,9 +907,9 @@ function applyGcode(g: ViewerGcode) {
   }
 
   // Feed + Rapid toolpath lines (colors + opacity from props or defaults)
-  const feedColor = props.colors?.feed ?? "#22b8cf";
-  const rapidColor = props.colors?.rapid ?? "#f5a623";
-  const toolpathOp = props.opacities?.toolpath ?? 1.0;
+  const feedColor = viewerDefaults.colors.feed ?? "#22b8cf";
+  const rapidColor = viewerDefaults.colors.rapid ?? "#f5a623";
+  const toolpathOp = viewerDefaults.opacities.toolpath ?? 1.0;
   if (feedPts.length >= 2) {
     feedLine = makeLine(feedPts, feedColor, false, toolpathOp);
     workOrigin.add(feedLine);
@@ -1074,6 +1053,12 @@ onMounted(() => {
   // viewerInit/viewerGcode were already set before this component mounted)
   if (viewerInit.value) buildFromInit(viewerInit.value as ViewerInit);
   if (viewerGcode.value) applyGcode(viewerGcode.value as ViewerGcode);
+
+  // Apply saved defaults (self-contained — no external wiring needed)
+  for (const layer of ALL_LAYERS) setLayerVisible(layer, viewerDefaults.layers[layer]);
+  setTrackingMode(viewerDefaults.trackingMode);
+  setPathAlwaysOnTop(viewerDefaults.pathOnTop);
+  if (viewerDefaults.projection === "parallel") switchProjection();
 });
 
 onUnmounted(() => {
@@ -1172,7 +1157,7 @@ defineExpose({
     <div ref="host" class="viewerHost" />
 
     <!-- HUD Overlay -->
-    <div v-show="hudVisible" class="hud" :style="{ opacity: props.opacities?.hud ?? 1 }">
+    <div v-show="hudVisible" class="hud" :style="{ opacity: viewerDefaults.opacities.hud ?? 1 }">
       <div class="hudSection">
         <div class="hudLabel">Machine Position</div>
         <div class="hudCoords">
