@@ -1159,17 +1159,21 @@ watch(isHomed, (nowHomed, wasHomed) => {
 /* ---- Landscape layout — panels side by side ---- */
 @media (orientation: landscape) {
   .panels          { align-items: stretch; flex: 1; min-height: 0; overflow-x: auto; overflow-y: hidden; }
-  .panel           { flex: 0 0 auto; min-height: 400px; min-width: 320px; }
-  .panel-viewer    { flex: 1; min-width: 560px; overflow: hidden; }
-  .panel-dro       { min-width: 560px; }
+  .panel           { flex: 0 0 var(--panel-min-w); min-height: var(--panel-min-h); }
+  .panel-viewer    { flex: 1; min-width: var(--panel-min-w-wide); overflow: hidden; }
+  .panel-dro       { min-width: var(--panel-min-w-wide); }
   .panel-gcode     { flex: 0.5; }
+  .panel-messages  { flex: 0.5; }
 }
 
 /* ---- Portrait layout — panels stacked vertically ---- */
 @media (orientation: portrait) {
   .panels          { flex-direction: column; flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
-  .panel           { flex: 0 0 350px; min-width: 560px; }
-  .panel-viewer    { flex: 1; min-height: 500px; overflow: hidden; }
+  .panel           { flex: 0 0 auto; min-width: var(--panel-min-w-wide); }
+  .panel-viewer    { flex: 1; min-height: var(--viewer-min-h-portrait); overflow: hidden; }
+  .panel-gcode,
+  .panel-messages,
+  .panel-mdi       { flex: 0 0 var(--panel-h-portrait); }
   .addPanel        { flex: 0 0 auto; width: 100%; height: 36px; }
 }
 

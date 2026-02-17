@@ -73,23 +73,23 @@ Viewport-locked layout: `html { overflow: auto }`, `body { overflow: hidden; min
 | Panel | Width | Height |
 |-------|-------|--------|
 | viewer | `flex: 1`, `min-width: 560px` | stretch, `min-height: 400px` |
-| dro | `flex: 0 0 auto`, `min-width: 560px` | stretch, `min-height: 400px` |
+| dro | `flex: 0 0 320px`, `min-width: 560px` | stretch, `min-height: 400px` |
 | gcode | `flex: 0.5`, `min-width: 320px` | stretch, `min-height: 400px` |
-| settings | `flex: 0 0 auto`, `min-width: 320px` | stretch, `min-height: 400px` |
-| mdi | `flex: 0 0 auto`, `min-width: 320px` | stretch, `min-height: 400px` |
-| messages | `flex: 0 0 auto`, `min-width: 320px` | stretch, `min-height: 400px` |
+| messages | `flex: 0.5`, `min-width: 320px` | stretch, `min-height: 400px` |
+| jog | `flex: 0 0 320px` | stretch, `min-height: 400px` |
+| overrides | `flex: 0 0 320px` | stretch, `min-height: 400px` |
+| spindle | `flex: 0 0 320px` | stretch, `min-height: 400px` |
+| settings | `flex: 0 0 320px` | stretch, `min-height: 400px` |
+| mdi | `flex: 0 0 320px` | stretch, `min-height: 400px` |
 
-Viewer fills remaining width. Gcode grows at half rate (`flex: 0.5`). All others stay at their min-width. Height is uniform — all panels stretch to `.panels` container height.
+Viewer fills remaining width. Gcode and messages grow at half rate (`flex: 0.5`). All other panels stay fixed at 320px. DRO gets a wider `min-width: 560px` override. Height is uniform — all panels stretch to `.panels` container height.
 
 ### Portrait (stacked, `overflow-y: auto`)
 
 | Panel | Width | Height |
 |-------|-------|--------|
 | viewer | stretch, `min-width: 560px` | `flex: 1`, `min-height: 500px` |
-| dro | stretch, `min-width: 560px` | `flex: 0 0 350px` |
-| gcode | stretch, `min-width: 560px` | `flex: 0 0 350px` |
-| settings | stretch, `min-width: 560px` | `flex: 0 0 350px` |
-| mdi | stretch, `min-width: 560px` | `flex: 0 0 350px` |
-| messages | stretch, `min-width: 560px` | `flex: 0 0 350px` |
+| dro, jog, overrides, spindle, settings | stretch, `min-width: 560px` | `flex: 0 0 auto` (content-sized) |
+| gcode, messages, mdi | stretch, `min-width: 560px` | `flex: 0 0 500px` (fixed for internal scroll) |
 
-Viewer fills remaining height. All others get fixed 350px. Width is uniform — all panels stretch to `.panels` width with a shared `min-width: 560px`.
+Viewer fills remaining height. Static panels (dro, jog, overrides, spindle, settings) auto-size to their content — no manual height tracking needed. Scrollable panels (gcode, messages, mdi) use a fixed 500px height to bound their internal scroll areas. Width is uniform — all panels stretch to `.panels` width with a shared `min-width: 560px`.
