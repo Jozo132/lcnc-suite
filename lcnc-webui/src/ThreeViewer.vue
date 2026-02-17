@@ -204,7 +204,6 @@ let toolMarker: THREE.Object3D | null = null;
 let feedLine: THREE.Line | null = null;
 let rapidLine: THREE.Line | null = null;
 let highlightLine: THREE.Line | null = null;
-let highlightMarker: THREE.Mesh | null = null;
 let workAxes: THREE.AxesHelper | null = null;
 
 // Map g-code line number → { start, end } point-index range in feed arrays
@@ -354,7 +353,6 @@ function setLayerVisible(layer: Layer | string, on: boolean) {
       if (feedLine) feedLine.visible = on;
       if (rapidLine) rapidLine.visible = on;
       if (highlightLine) highlightLine.visible = on;
-      if (highlightMarker) highlightMarker.visible = on;
       break;
     case "machine":
       for (const m of machineMeshes) m.visible = on;
@@ -399,7 +397,12 @@ function setPathAlwaysOnTop(on: boolean) {
     m.depthWrite = dt;
     m.needsUpdate = true;
   }
-  // highlight line + marker stay always-on-top regardless (UI indicators)
+  if (highlightLine) {
+    const m = highlightLine.material as THREE.LineBasicMaterial;
+    m.depthTest = dt;
+    m.depthWrite = false;
+    m.needsUpdate = true;
+  }
 }
 
 function setTrackingMode(mode: "none" | "tool" | "workpiece") {
@@ -841,24 +844,18 @@ function applyState(init: ViewerInit, st: ViewerState) {
   }
 
   // ---- Highlight current motion line in toolpath ----
+  // motion_line can be ~1 line ahead during G64 blending; try previous line first
   if (highlightLine && curLine != null) {
-    const range = feedLineMap.get(curLine);
+    const effectiveLine = feedLineMap.has(curLine - 1) ? curLine - 1 : curLine;
+    const range = feedLineMap.get(effectiveLine);
     if (range) {
       const s = Math.max(0, range.start - 1);
       highlightLine.geometry.setDrawRange(s, range.end - s + 1);
-      // Position marker sphere at the endpoint of the current segment
-      if (highlightMarker && feedPtsCache[range.end]) {
-        const p = feedPtsCache[range.end];
-        highlightMarker.position.set(p[0], p[1], p[2]);
-        highlightMarker.visible = toolpathVisible;
-      }
     } else {
       highlightLine.geometry.setDrawRange(0, 0);
-      if (highlightMarker) highlightMarker.visible = false;
     }
   } else {
     if (highlightLine) highlightLine.geometry.setDrawRange(0, 0);
-    if (highlightMarker) highlightMarker.visible = false;
   }
 }
 
@@ -882,11 +879,6 @@ function applyGcode(g: ViewerGcode) {
     workOrigin.remove(highlightLine);
     disposeObject(highlightLine);
     highlightLine = null;
-  }
-  if (highlightMarker) {
-    workOrigin.remove(highlightMarker);
-    disposeObject(highlightMarker);
-    highlightMarker = null;
   }
   feedPtsCache = [];
   feedLineMap = new Map();
@@ -927,21 +919,13 @@ function applyGcode(g: ViewerGcode) {
     hlGeom.setAttribute("position", new THREE.BufferAttribute(flat, 3));
     hlGeom.setDrawRange(0, 0); // hidden until motion_line updates
     const hlMat = new THREE.LineBasicMaterial({ color: 0xff3333 });
-    hlMat.depthTest = false;
+    hlMat.depthTest = !pathAlwaysOnTop;
     hlMat.depthWrite = false;
     highlightLine = new THREE.Line(hlGeom, hlMat);
     highlightLine.renderOrder = 11;
     highlightLine.frustumCulled = false;
     workOrigin.add(highlightLine);
 
-    // Bright sphere marker at current segment endpoint
-    const markerGeom = new THREE.SphereGeometry(1.5, 8, 8);
-    const markerMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
-    markerMat.depthTest = false;
-    highlightMarker = new THREE.Mesh(markerGeom, markerMat);
-    highlightMarker.renderOrder = 12;
-    highlightMarker.visible = false;
-    workOrigin.add(highlightMarker);
   }
 
   // Apply stored toolpath visibility (may have been set before lines existed)
@@ -949,7 +933,6 @@ function applyGcode(g: ViewerGcode) {
     if (feedLine) feedLine.visible = false;
     if (rapidLine) rapidLine.visible = false;
     if (highlightLine) highlightLine.visible = false;
-    if (highlightMarker) highlightMarker.visible = false;
   }
 }
 

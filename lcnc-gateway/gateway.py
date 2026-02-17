@@ -16,7 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 
 # ---- Config ----
-POLL_HZ = 10  # status update rate
+POLL_HZ = 30  # status update rate
 BASE_DIR = Path(__file__).resolve().parent
 MACHINE_DIR = BASE_DIR / "machine"
 
