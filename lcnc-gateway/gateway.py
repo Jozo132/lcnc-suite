@@ -118,7 +118,7 @@ def _nml_connectable() -> bool:
 # ---- NML poisoning detection ----
 _reconnect_fails = 0
 _ever_connected = False     # set True on first successful connection
-_NML_POISON_THRESHOLD = 5  # consecutive probe-pass + main-fail = poisoned
+_NML_POISON_THRESHOLD = 60  # consecutive probe-pass + main-fail = poisoned (high: N client loops share counter)
 
 
 def _self_restart():
@@ -144,9 +144,10 @@ def try_connect_lcnc() -> bool:
         lcnc_connected = True
         _ever_connected = True
         _lcnc_pid = _get_lcnc_pid()
+        print(f"[VINIT] try_connect_lcnc OK, pid={_lcnc_pid}", flush=True)
         return True
     except Exception as e:
-        print(f"try_connect_lcnc failed: {e}")
+        print(f"[VINIT] try_connect_lcnc FAILED: {e}", flush=True)
         STAT = CMD = ERR = None
         lcnc_connected = False
         _lcnc_pid = None
@@ -159,14 +160,19 @@ def check_lcnc_instance() -> bool:
     pid = _get_lcnc_pid()
     if pid == _lcnc_pid:
         if pid is None and lcnc_connected:
+            print(f"[VINIT] check_lcnc_instance: PID=None but was connected, resetting", flush=True)
             lcnc_connected = False
             return True
         return False
     # PID changed (appeared, disappeared, or different instance)
+    old_pid = _lcnc_pid
     _lcnc_pid = pid
     if pid is None:
+        print(f"[VINIT] check_lcnc_instance: PID gone (was {old_pid}), disconnecting", flush=True)
         lcnc_connected = False
         _hal_disconnect()
+    else:
+        print(f"[VINIT] check_lcnc_instance: PID changed {old_pid} -> {pid}", flush=True)
     return True
 
 
@@ -1051,9 +1057,11 @@ def handle_command(msg: Dict[str, Any], armed: bool):
 # -----------------------------
 
 def build_viewer_init(stl_base_url: str) -> Dict[str, Any]:
-    STAT.poll()
+    """Build viewer init payload. Works with or without STAT — parts/kinematics are static."""
+    print(f"[VINIT] build_viewer_init called, STAT={'OK' if STAT else 'None'}, lcnc_connected={lcnc_connected}", flush=True)
+    # No STAT.poll() here — caller (poll_status) already polled, or STAT may be None
 
-    limits = read_machine_limits_from_ini(STAT)
+    limits = read_machine_limits_from_ini(STAT) if STAT else None
     if limits:
         bounds_origin, bounds_size = limits
     else:
@@ -1369,10 +1377,12 @@ async def ws_endpoint(ws: WebSocket):
     host = ws.headers.get("host", "127.0.0.1:8000")  # includes port
     stl_base_url = f"http://{host}/assets/"
 
+    print(f"[VINIT] client#{client_id} connect-time viewer_init: lcnc_connected={lcnc_connected}, STAT={'OK' if STAT else 'None'}", flush=True)
     try:
         await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-    except Exception:
-        pass  # will send viewer_init on reconnect
+        print(f"[VINIT] client#{client_id} connect-time viewer_init SENT OK", flush=True)
+    except Exception as e:
+        print(f"[VINIT] client#{client_id} connect-time viewer_init FAILED: {e}", flush=True)
 
     # Send initial G-code if a file is already loaded
     try:
@@ -1406,24 +1416,24 @@ async def ws_endpoint(ws: WebSocket):
         print(f"Error loading initial G-code: {e}")
 
     last_file: Optional[str] = None
+    viewer_init_sent = False
+    _poll_fails = 0  # consecutive poll failures (tolerates NML startup transient)
 
 
     async def status_loop():
-        nonlocal last_file, armed
+        nonlocal last_file, armed, viewer_init_sent, _poll_fails
         global lcnc_connected, STAT, CMD, ERR, _hal_last_hb, _reconnect_fails
         while True:
             try:
                 # If not connected to LinuxCNC, try to reconnect
                 if not lcnc_connected:
+                    viewer_init_sent = False
                     pid = _get_lcnc_pid()
                     if pid is not None and try_connect_lcnc():
                         _reconnect_fails = 0
                         _hal_connect()
-                        try:
-                            await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-                        except Exception:
-                            pass
                         last_file = None
+                        # viewer_init will be sent after first successful poll_status()
                     else:
                         if pid is not None and _ever_connected:
                             _reconnect_fails += 1
@@ -1450,17 +1460,27 @@ async def ws_endpoint(ws: WebSocket):
                         if try_connect_lcnc():
                             _reconnect_fails = 0
                             _hal_connect()
-                        try:
-                            await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-                        except Exception:
-                            pass
+                        viewer_init_sent = False
                         last_file = None  # force re-send of gcode
+                        # viewer_init will be sent after first successful poll_status()
                     else:
                         # Process gone — null handles, let top-of-loop handle reconnection
                         STAT = CMD = ERR = None
                         continue
 
                 st = poll_status()
+                _poll_fails = 0  # reset on success
+
+                # Send viewer_init AFTER a successful poll (STAT confirmed working)
+                if not viewer_init_sent:
+                    print(f"[VINIT] client#{client_id} sending viewer_init (post-poll), STAT={'OK' if STAT else 'None'}", flush=True)
+                    try:
+                        await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
+                        viewer_init_sent = True
+                        print(f"[VINIT] client#{client_id} viewer_init SENT OK", flush=True)
+                    except Exception as e:
+                        print(f"[VINIT] client#{client_id} viewer_init FAILED: {e}", flush=True)
+
                 errs = read_errors_nonblocking()
                 await ws_send_json(
                     ws,
@@ -1547,17 +1567,24 @@ async def ws_endpoint(ws: WebSocket):
 
                 await asyncio.sleep(1.0 / POLL_HZ)
             except Exception as e:
-                lcnc_connected = False
-                STAT = CMD = ERR = None
-                try:
-                    await ws_send_json(ws, {
-                        "type": "status_error",
-                        "error": f"{type(e).__name__}: {e}",
-                        "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
-                    })
-                except Exception:
-                    break  # WebSocket is dead — exit loop cleanly
-                await asyncio.sleep(2.0)
+                _poll_fails += 1
+                print(f"[VINIT] client#{client_id} status_loop EXCEPTION ({_poll_fails}): {type(e).__name__}: {e}", flush=True)
+                if _poll_fails >= 5:
+                    # Persistent failure — disconnect and let reconnect logic handle it
+                    lcnc_connected = False
+                    STAT = CMD = ERR = None
+                    _poll_fails = 0
+                    viewer_init_sent = False
+                    try:
+                        await ws_send_json(ws, {
+                            "type": "status_error",
+                            "error": f"{type(e).__name__}: {e}",
+                            "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
+                        })
+                    except Exception:
+                        break  # WebSocket is dead — exit loop cleanly
+                # Transient — retry after short delay (NML startup window)
+                await asyncio.sleep(0.5)
 
     status_task = asyncio.create_task(status_loop())
 
