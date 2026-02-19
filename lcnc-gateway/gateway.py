@@ -10,6 +10,7 @@ import linuxcnc
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, List
 from fastapi.staticfiles import StaticFiles
+import re
 import tempfile
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -156,17 +157,19 @@ def try_connect_lcnc() -> bool:
 
 def check_lcnc_instance() -> bool:
     """Check if linuxcncsvr PID changed. Returns True if reconnect needed."""
-    global _lcnc_pid, lcnc_connected
+    global _lcnc_pid, lcnc_connected, _tool_tbl_path
     pid = _get_lcnc_pid()
     if pid == _lcnc_pid:
         if pid is None and lcnc_connected:
             print(f"[VINIT] check_lcnc_instance: PID=None but was connected, resetting", flush=True)
             lcnc_connected = False
+            _tool_tbl_path = None  # re-resolve on next connection
             return True
         return False
     # PID changed (appeared, disappeared, or different instance)
     old_pid = _lcnc_pid
     _lcnc_pid = pid
+    _tool_tbl_path = None  # config may have changed, re-resolve from INI
     if pid is None:
         print(f"[VINIT] check_lcnc_instance: PID gone (was {old_pid}), disconnecting", flush=True)
         lcnc_connected = False
@@ -238,6 +241,148 @@ def get_nc_files_dir() -> str:
     _nc_files_dir = fallback
     os.makedirs(_nc_files_dir, exist_ok=True)
     return _nc_files_dir
+
+
+# ---- Tool Table ----
+TOOL_LIBRARY_PATH = BASE_DIR / "tool_library.json"
+_tool_tbl_path: Optional[str] = None
+
+_TOOL_LINE_RE = re.compile(
+    r"T(\d+)\s+P(\d+)"
+    r"(?:\s+X([+-]?[\d.]+))?"
+    r"(?:\s+Y([+-]?[\d.]+))?"
+    r"\s+Z([+-]?[\d.]+)"
+    r"\s+D([+-]?[\d.]+)"
+    r"(?:\s*;\s*(.*))?"
+)
+
+
+def get_tool_tbl_path() -> Optional[str]:
+    """Resolve the tool table file path from the LinuxCNC INI."""
+    global _tool_tbl_path
+    if _tool_tbl_path is not None:
+        return _tool_tbl_path
+    if STAT is None:
+        return None
+    try:
+        STAT.poll()
+        ini_path = getattr(STAT, "ini_filename", None)
+        if not ini_path:
+            return None
+        ini = linuxcnc.ini(ini_path)
+        tbl = ini.find("EMCIO", "TOOL_TABLE")
+        if not tbl:
+            return None
+        if not os.path.isabs(tbl):
+            tbl = os.path.join(os.path.dirname(ini_path), tbl)
+        tbl = os.path.realpath(tbl)
+        if os.path.isfile(tbl):
+            _tool_tbl_path = tbl
+            return _tool_tbl_path
+    except Exception:
+        pass
+    return None
+
+
+def parse_tool_table(path: str) -> list:
+    """Parse a LinuxCNC tool.tbl file → list of dicts."""
+    tools = []
+    with open(path, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith(";") or line.startswith("#"):
+                continue
+            m = _TOOL_LINE_RE.match(line)
+            if not m:
+                continue
+            tools.append({
+                "T": int(m.group(1)),
+                "P": int(m.group(2)),
+                "X": float(m.group(3)) if m.group(3) else 0.0,
+                "Y": float(m.group(4)) if m.group(4) else 0.0,
+                "Z": float(m.group(5)),
+                "D": float(m.group(6)),
+                "remark": (m.group(7) or "").strip(),
+            })
+    return tools
+
+
+def write_tool_table(path: str, tools: list):
+    """Write tools to a LinuxCNC tool.tbl file atomically."""
+    lines = [";Tool  Pocket Z Offset     Diameter     Remark\n"]
+    for t in sorted(tools, key=lambda x: x["T"]):
+        tn = t["T"]
+        pn = t.get("P", tn)
+        z = t.get("Z", 0.0)
+        d = t.get("D", 0.0)
+        remark = t.get("remark", "")
+        line = f"T{tn:<5d} P{pn:<5d} Z{z:+013.6f}  D{d:+012.6f}"
+        if remark:
+            line += f"   ; {remark}"
+        lines.append(line + "\n")
+    dir_name = os.path.dirname(path)
+    fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.writelines(lines)
+        os.rename(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        raise
+
+
+def load_tool_library() -> dict:
+    """Load extended tool metadata from tool_library.json."""
+    if TOOL_LIBRARY_PATH.exists():
+        try:
+            with open(TOOL_LIBRARY_PATH, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+def save_tool_library(library: dict):
+    """Write tool_library.json atomically."""
+    fd, tmp = tempfile.mkstemp(dir=str(TOOL_LIBRARY_PATH.parent), suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(library, f, indent=2)
+        os.rename(tmp, str(TOOL_LIBRARY_PATH))
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except Exception:
+            pass
+        raise
+
+
+def _merge_tool_data(tbl_tools: list, library: dict) -> list:
+    """Merge tool.tbl entries with metadata from tool_library.json."""
+    merged = []
+    for t in tbl_tools:
+        key = str(t["T"])
+        meta = library.get(key, {})
+        merged.append({
+            "T": t["T"],
+            "P": t["P"],
+            "Z": t["Z"],
+            "D": t["D"],
+            "remark": t.get("remark", ""),
+            "type": meta.get("type", ""),
+            "description": meta.get("description", t.get("remark", "")),
+            "flutes": meta.get("flutes"),
+            "oal": meta.get("oal"),
+            "flute_length": meta.get("flute_length"),
+            "corner_radius": meta.get("corner_radius"),
+            "unit": meta.get("unit", "mm"),
+        })
+    return merged
+
+
 
 
 def sanitize_filename(name: str) -> str:
@@ -765,6 +910,28 @@ def handle_command(msg: Dict[str, Any], armed: bool):
     cmd = msg.get("cmd")
     if not cmd:
         return {"ok": False, "error": "Missing cmd"}
+
+    # ---- Read-only commands (no LinuxCNC connection or arming needed) ----
+    try:
+        if cmd == "get_tool_table":
+            tbl_path = get_tool_tbl_path()
+            if not tbl_path:
+                return {"ok": False, "error": "Tool table path not available (LinuxCNC not connected yet?)"}
+            tbl_tools = parse_tool_table(tbl_path)
+            library = load_tool_library()
+            merged = _merge_tool_data(tbl_tools, library)
+            current_tool = None
+            try:
+                if STAT:
+                    STAT.poll()
+                    raw = safe_get("tool_in_spindle", None)
+                    current_tool = int(raw) if raw is not None else None
+            except Exception:
+                pass
+            return {"ok": True, "tools": merged, "current_tool": current_tool}
+    except Exception as e:
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
     if not lcnc_connected:
         return {"ok": False, "error": "LinuxCNC not connected"}
 
@@ -818,6 +985,120 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 return {"ok": False, "error": "Missing text"}
             set_mode(linuxcnc.MODE_MDI)
             CMD.mdi(text)
+            CMD.wait_complete()
+            return {"ok": True}
+
+        if cmd == "save_tool":
+            require_armed(armed)
+            tool_num = int(msg["tool_number"])
+            tbl_path = get_tool_tbl_path()
+            if not tbl_path:
+                return {"ok": False, "error": "Tool table path not available"}
+
+            # Update tool.tbl
+            tbl_tools = parse_tool_table(tbl_path)
+            found = False
+            for t in tbl_tools:
+                if t["T"] == tool_num:
+                    if "z_offset" in msg:
+                        t["Z"] = float(msg["z_offset"])
+                    if "diameter" in msg:
+                        t["D"] = float(msg["diameter"])
+                    if "remark" in msg:
+                        t["remark"] = str(msg["remark"])
+                    found = True
+                    break
+            if not found:
+                return {"ok": False, "error": f"Tool T{tool_num} not found"}
+
+            write_tool_table(tbl_path, tbl_tools)
+            if CMD:
+                CMD.load_tool_table()
+
+            # Update metadata
+            library = load_tool_library()
+            key = str(tool_num)
+            if key not in library:
+                library[key] = {}
+            for field in ("type", "description", "flutes", "oal", "flute_length"):
+                if field in msg:
+                    library[key][field] = msg[field]
+            save_tool_library(library)
+            return {"ok": True}
+
+        if cmd == "add_tool":
+            require_armed(armed)
+            tool_num = int(msg["tool_number"])
+            tbl_path = get_tool_tbl_path()
+            if not tbl_path:
+                return {"ok": False, "error": "Tool table path not available"}
+
+            tbl_tools = parse_tool_table(tbl_path)
+            for t in tbl_tools:
+                if t["T"] == tool_num:
+                    return {"ok": False, "error": f"Tool T{tool_num} already exists"}
+
+            tbl_tools.append({
+                "T": tool_num,
+                "P": tool_num,
+                "Z": float(msg.get("z_offset", 0.0)),
+                "D": float(msg.get("diameter", 0.0)),
+                "remark": str(msg.get("remark", "")),
+            })
+            write_tool_table(tbl_path, tbl_tools)
+            if CMD:
+                CMD.load_tool_table()
+
+            # Save metadata if provided
+            library = load_tool_library()
+            key = str(tool_num)
+            library[key] = {}
+            for field in ("type", "description", "flutes", "oal", "flute_length"):
+                if field in msg:
+                    library[key][field] = msg[field]
+            save_tool_library(library)
+            return {"ok": True}
+
+        if cmd == "delete_tool":
+            require_armed(armed)
+            tool_num = int(msg["tool_number"])
+
+            # Don't delete the currently loaded tool
+            STAT.poll()
+            current = safe_get("tool_in_spindle", None)
+            try:
+                current = int(current) if current is not None else None
+            except Exception:
+                current = None
+            if current == tool_num:
+                return {"ok": False, "error": f"Cannot delete T{tool_num} — currently in spindle"}
+
+            tbl_path = get_tool_tbl_path()
+            if not tbl_path:
+                return {"ok": False, "error": "Tool table path not available"}
+
+            tbl_tools = parse_tool_table(tbl_path)
+            new_tools = [t for t in tbl_tools if t["T"] != tool_num]
+            if len(new_tools) == len(tbl_tools):
+                return {"ok": False, "error": f"Tool T{tool_num} not found"}
+
+            write_tool_table(tbl_path, new_tools)
+            if CMD:
+                CMD.load_tool_table()
+
+            library = load_tool_library()
+            library.pop(str(tool_num), None)
+            save_tool_library(library)
+            return {"ok": True}
+
+        if cmd == "tool_change":
+            require_armed(armed)
+            blocked = reject_if_auto_running()
+            if blocked:
+                return blocked
+            tool_num = int(msg["tool_number"])
+            set_mode(linuxcnc.MODE_MDI)
+            CMD.mdi(f"T{tool_num} M6")
             CMD.wait_complete()
             return {"ok": True}
 

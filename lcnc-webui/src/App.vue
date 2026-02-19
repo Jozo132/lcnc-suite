@@ -13,6 +13,7 @@ import OverridePanel from "./OverridePanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 import SpindlePanel from "./SpindlePanel.vue";
 import MessagesPanel from "./MessagesPanel.vue";
+import ToolTablePanel from "./ToolTablePanel.vue";
 
 import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS } from "./defaults";
 import {
@@ -34,6 +35,7 @@ const tabs = [
   { id: "overrides", label: "Overrides" },
   { id: "spindle", label: "Spindle" },
   { id: "gcode", label: "Program" },
+  { id: "tools", label: "Tools" },
   { id: "messages", label: "Messages" },
   { id: "settings", label: "Settings" },
 ];
@@ -760,6 +762,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
             />
           </template>
 
+          <template #tools>
+            <ToolTablePanel
+              :currentTool="st.tool_number ?? null"
+              :iniFilename="st.ini_filename ?? null"
+            />
+          </template>
+
           <template #messages>
             <MessagesPanel
               :messages="messages"
@@ -1166,6 +1175,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   .panel-viewer    { flex: 1; min-width: var(--panel-min-w-wide); overflow: hidden; }
   .panel-dro       { min-width: var(--panel-min-w-wide); }
   .panel-gcode,
+  .panel-tools,
   .panel-messages,
   .panel-settings,
   .panel-mdi       { flex: 0.5; }
@@ -1177,6 +1187,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   .panel           { flex: 0 0 auto; min-width: var(--panel-min-w-wide); }
   .panel-viewer    { flex: 1; min-height: var(--viewer-min-h-portrait); overflow: hidden; }
   .panel-gcode,
+  .panel-tools,
   .panel-messages,
   .panel-mdi       { flex: 0 0 var(--panel-h-portrait); }
   .addPanel        { flex: 0 0 auto; width: 100%; height: 36px; }

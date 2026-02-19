@@ -66,5 +66,11 @@ export type WsCommand =
   | { cmd: "set_feed_override"; scale: number }
   | { cmd: "set_spindle_override"; scale: number }
   | { cmd: "set_rapid_override"; scale: number }
+  // Tool table
+  | { cmd: "get_tool_table" }
+  | { cmd: "save_tool"; tool_number: number; [key: string]: any }
+  | { cmd: "add_tool"; tool_number: number; [key: string]: any }
+  | { cmd: "delete_tool"; tool_number: number }
+  | { cmd: "tool_change"; tool_number: number }
   // Heartbeat
   | { cmd: "heartbeat" };
