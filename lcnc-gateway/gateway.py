@@ -1125,7 +1125,8 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             return {"ok": True}
 
         if cmd == "jog_stop":
-            require_armed(armed)
+            if not armed:
+                return {"ok": True}  # safety no-op — stopping is always safe
 
             blocked = reject_if_auto_running()
             if blocked:
@@ -1152,7 +1153,8 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             return {"ok": True}
 
         if cmd == "jog_stop_multi":
-            require_armed(armed)
+            if not armed:
+                return {"ok": True}  # safety no-op — stopping is always safe
 
             blocked = reject_if_auto_running()
             if blocked:
@@ -1348,8 +1350,13 @@ def build_viewer_init(stl_base_url: str) -> Dict[str, Any]:
     else:
         bounds_origin, bounds_size = [0, 0, 0], [0, 0, 0]
 
+    # Read machine linear units from INI ([TRAJ]LINEAR_UNITS = inch | mm)
+    _ini_obj = linuxcnc.ini(STAT.ini_filename) if STAT and getattr(STAT, "ini_filename", None) else None
+    _lu = (_ini_obj.find("TRAJ", "LINEAR_UNITS") or "mm").strip().lower() if _ini_obj else "mm"
+    units = "in" if _lu in ("inch", "in", "imperial") else "mm"
+
     return {
-        "units": "mm",
+        "units": units,
         "stl_base_url": stl_base_url,
         "machine_bounds": {
         "origin": bounds_origin,
@@ -1656,7 +1663,13 @@ async def ws_endpoint(ws: WebSocket):
 
     # Viewer: send static model/init once per connection
     host = ws.headers.get("host", "127.0.0.1:8000")  # includes port
-    stl_base_url = f"http://{host}/assets/"
+    # Use the gateway's own port (8000) for STL assets rather than the
+    # client-facing port.  In dev the client connects via Vite:5173 whose
+    # HTTP/1.1 proxy pool is shared with JS-chunk downloads — STL fetches
+    # stall behind them.  Gateway has CORS allow_origins=["*"] so a
+    # cross-origin fetch from :5173 → :8000 works fine.
+    host_only = host.split(":")[0]
+    stl_base_url = f"http://{host_only}:8000/assets/"
 
     print(f"[VINIT] client#{client_id} connect-time viewer_init: lcnc_connected={lcnc_connected}, STAT={'OK' if STAT else 'None'}", flush=True)
     try:
@@ -1842,7 +1855,7 @@ async def ws_endpoint(ws: WebSocket):
                         except Exception:
                             pass
                         try:
-                            await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety"})
+                            await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
                         except Exception:
                             pass
 

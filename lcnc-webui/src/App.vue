@@ -299,6 +299,16 @@ function arm(v: boolean) {
   send({ cmd: "arm", armed: v });
 }
 
+// Keep armed.value in sync with gateway state:
+// 1. Reset on disconnect — new connection starts unarmed on the gateway side.
+watch(connected, (isConnected) => {
+  if (!isConnected) armed.value = false;
+});
+// 2. Sync when the gateway explicitly sends armed:true/false (arm replies, heartbeat timeout).
+watch(lastReply, (reply) => {
+  if (reply?.armed !== undefined) armed.value = Boolean(reply.armed);
+});
+
 /** ---------- local UI jog ---------- */
 const jogVel = ref(10);
 const jogIncrement = ref(0); // 0 = continuous, >0 = increment distance in machine units
@@ -778,7 +788,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </template>
 
           <template #settings>
-            <SettingsPanel :lastReply="lastReply" :status="status" />
+            <SettingsPanel :lastReply="lastReply" :status="status" :linearUnit="linearUnit" />
           </template>
         </TabPanel>
       </div>

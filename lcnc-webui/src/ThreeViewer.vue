@@ -9,8 +9,8 @@ let _loadPromise: Promise<void> | null = null;
 let _loadedInitJson: string | null = null;
 export const machineReady = _ref(false);
 
-async function fetchAndParseStl(url: string): Promise<THREE.BufferGeometry> {
-  const res = await fetch(url);
+async function fetchAndParseStl(url: string, signal?: AbortSignal): Promise<THREE.BufferGeometry> {
+  const res = await fetch(url, { signal });
   if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
   const buf = await res.arrayBuffer();
   const bytes = new Uint8Array(buf);
@@ -28,28 +28,46 @@ async function fetchAndParseStl(url: string): Promise<THREE.BufferGeometry> {
   throw new Error(`STL too small / invalid: ${url}`);
 }
 
-export function loadMachineAssets(init: any): Promise<void> {
+export function loadMachineAssets(init: any, onProgress?: (msg: string) => void): Promise<void> {
   const json = JSON.stringify({ base: init.stl_base_url, parts: init.parts });
+  // Return in-progress OR completed promise (true deduplication).
+  // Rejected promises clear _loadPromise in the catch below so the next call retries.
   if (_loadPromise && json === _loadedInitJson) return _loadPromise;
 
   _loadedInitJson = json;
   machineReady.value = false;
 
   _loadPromise = (async () => {
-    const base = init.stl_base_url;
-    const toFetch = (init.parts ?? []).filter((p: any) => !_geometryCache.has(p.id));
+    const abort = new AbortController();
+    const timer = setTimeout(() => abort.abort(new DOMException("STL fetch timed out after 30s", "TimeoutError")), 30_000);
+    try {
+      const base = init.stl_base_url;
+      const toFetch = (init.parts ?? []).filter((p: any) => !_geometryCache.has(p.id));
 
-    await Promise.all(toFetch.map(async (p: any) => {
-      const url = base.endsWith("/") ? `${base}${p.file}` : `${base}/${p.file}`;
-      console.log(`[loader] fetching ${p.id}: ${url}`);
-      const geom = await fetchAndParseStl(url);
-      geom.computeVertexNormals();
-      geom.userData._shared = true;
-      _geometryCache.set(p.id, geom);
-    }));
+      if (toFetch.length === 0) {
+        onProgress?.("All STLs already cached");
+      }
 
-    machineReady.value = true;
-    console.log(`[loader] all assets ready (${_geometryCache.size} geometries)`);
+      await Promise.all(toFetch.map(async (p: any) => {
+        const url = base.endsWith("/") ? `${base}${p.file}` : `${base}/${p.file}`;
+        const t0 = performance.now();
+        onProgress?.(`Fetching ${p.id}…`);
+        console.log(`[loader] fetching ${p.id}: ${url}`);
+        const geom = await fetchAndParseStl(url, abort.signal);
+        geom.computeVertexNormals();
+        geom.userData._shared = true;
+        _geometryCache.set(p.id, geom);
+        onProgress?.(`✓ ${p.id} (${((performance.now() - t0) / 1000).toFixed(1)}s)`);
+      }));
+
+      machineReady.value = true;
+      console.log(`[loader] all assets ready (${_geometryCache.size} geometries)`);
+    } catch (err) {
+      _loadPromise = null; // clear so the next buildFromInit call retries fresh
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   })();
 
   return _loadPromise;
@@ -61,7 +79,7 @@ export function getCachedGeometry(id: string): THREE.BufferGeometry | undefined 
 </script>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
@@ -178,6 +196,17 @@ const overridesActive = computed(() =>
   (props.rapidOverride != null && props.rapidOverride !== 1.0)
 );
 
+// ---------- Loading state ----------
+const isLoading = ref(false);
+const loadingLog = ref<string[]>([]);
+const loadingLogEl = ref<HTMLDivElement | null>(null);
+function _log(msg: string) {
+  loadingLog.value = [...loadingLog.value, msg];
+  nextTick(() => {
+    if (loadingLogEl.value) loadingLogEl.value.scrollTop = loadingLogEl.value.scrollHeight;
+  });
+}
+
 // ---------- DOM ----------
 const host = ref<HTMLDivElement | null>(null);
 const hudVisible = ref(true);
@@ -220,6 +249,10 @@ let trackingMode: "none" | "tool" | "workpiece" = "none";
 // ---- Path rendering ----
 let pathAlwaysOnTop = true; // default; overridden by setPathAlwaysOnTop()
 
+// ---- Unit scale ----
+// 1 for mm machines, 1/25.4 for inch machines. Set in buildFromInit() from viewer_init.units.
+let _unitScale = 1;
+
 // ---- Backplot (live toolpath history) ----
 let backplotLine: THREE.Line | null = null;
 let backplotGeom: THREE.BufferGeometry | null = null;
@@ -246,31 +279,41 @@ function resetBackplot() {
   }
 }
 
+// Frame camera to show the given bounding box.
+// Handles both PerspectiveCamera (moves camera) and OrthographicCamera (sets frustum).
+function frameToBounds(box: THREE.Box3) {
+  if (!camera || !controls || box.isEmpty()) return;
+  const size = new THREE.Vector3(); box.getSize(size);
+  const center = new THREE.Vector3(); box.getCenter(center);
+  const maxDim = Math.max(size.x, size.y, size.z);
+
+  controls.target.copy(center);
+  camera.up.set(0, 0, 1);
+  camera.near = Math.max(0.1, maxDim / 1000);
+  camera.far  = Math.max(200000, maxDim * 20);
+
+  if (camera instanceof THREE.OrthographicCamera) {
+    const aspect = host.value ? (host.value.clientWidth / host.value.clientHeight) || 1 : 1;
+    const halfH  = maxDim * 1.2;
+    camera.top    =  halfH;  camera.bottom = -halfH;
+    camera.right  =  halfH * aspect; camera.left = -halfH * aspect;
+    camera.zoom   = 1;
+    camera.position.set(center.x + maxDim, center.y - maxDim, center.z + maxDim);
+  } else {
+    // 1.5× offset → distance ≈ 2.35 × maxDim, fills ~90% of 45° FOV
+    camera.position.set(center.x + maxDim * 1.5, center.y - maxDim * 1.5, center.z + maxDim);
+  }
+
+  camera.updateProjectionMatrix();
+  controls.update();
+}
+
 function setView(p: ViewPreset) {
   if (!camera || !controls) return;
 
   if (p === "reset") {
     if (!groups?.root) return;
-    const box = new THREE.Box3().setFromObject(groups.root);
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-    controls.target.copy(center);
-    const maxDim = Math.max(size.x, size.y, size.z);
-    camera.position.set(center.x + maxDim, center.y - maxDim, center.z + maxDim * 0.8);
-    camera.near = Math.max(0.1, maxDim / 1000);
-    camera.far = Math.max(200000, maxDim * 20);
-    camera.up.set(0, 0, 1);
-    if (camera instanceof THREE.OrthographicCamera) {
-      const aspect = host.value ? (host.value.clientWidth / host.value.clientHeight) || 1 : 1;
-      const halfH = maxDim * 1.2;
-      camera.top = halfH; camera.bottom = -halfH;
-      camera.right = halfH * aspect; camera.left = -halfH * aspect;
-      camera.zoom = 1;
-    }
-    camera.updateProjectionMatrix();
-    controls.update();
+    frameToBounds(new THREE.Box3().setFromObject(groups.root));
     return;
   }
 
@@ -572,7 +615,7 @@ function ensureCoreGroups() {
   groups.x.add(workOrigin);
 
   // Work/DRO axes helper (the one you kept)
-  workAxes = new THREE.AxesHelper(120);
+  workAxes = new THREE.AxesHelper(120 * _unitScale);
   workOrigin.add(workAxes);
 
   // ---- Backplot line (tool history in WORK coordinates) ----
@@ -619,7 +662,7 @@ resetBackplot();
   }
 
   // Default until viewer_state arrives
-  toolMarker = makeToolMesh(6, 60);
+  toolMarker = makeToolMesh(6 * _unitScale, 60 * _unitScale);
   groups.tool.add(toolMarker);
 
 
@@ -689,71 +732,89 @@ async function buildFromInit(init: ViewerInit) {
 
   clearScene();
 
-  scene.background = sceneBgFromTheme();
+  isLoading.value = true;
+  loadingLog.value = [];
+  _log(`Units: ${init.units ?? 'mm'}`);
 
-  // lights (no grid)
-  scene.add(new THREE.AmbientLight());
+  try {
+    _unitScale = (init.units === "in" || init.units === "inch") ? 1 / 25.4 : 1;
 
-  const dl = new THREE.DirectionalLight();
-  dl.position.set(800, -800, 1200);
-  scene.add(dl);
+    scene.background = sceneBgFromTheme();
 
-  ensureCoreGroups();
-  // Apply machine bounds from viewer_init (INI-derived)
-  const mb = (init as any).machine_bounds;
-  if (machineBoundsMesh && mb?.size && mb?.origin) {
-    applyBox(machineBoundsMesh, mb.size as Vec3, mb.origin as Vec3);
-  } else {
-    console.warn("No machine_bounds in viewer_init; bounds box will remain default");
-  }
+    // lights (no grid)
+    scene.add(new THREE.AmbientLight());
 
-  // Load all STL assets via the central cache (first caller fetches, others await same Promise)
-  await loadMachineAssets(init);
-  if (myToken !== buildToken) return;
+    const dl = new THREE.DirectionalLight();
+    dl.position.set(800, -800, 1200);
+    scene.add(dl);
 
-  const parts = init.parts ?? [];
-  for (const p of parts) {
-    const geom = getCachedGeometry(p.id);
-    if (!geom) { console.warn(`No cached geometry for ${p.id}`); continue; }
-
-    let mat = MAT.frame;
-    if (p.parent === "x") mat = MAT.axisX;
-    else if (p.parent === "y") mat = MAT.axisY;
-    else if (p.parent === "z") mat = MAT.axisZ;
-
-    const mesh = new THREE.Mesh(geom, mat);  // shares GPU geometry, no copy
-    if (p.t) mesh.position.set(p.t[0], p.t[1], p.t[2]);
-    if (p.r) mesh.rotation.set(p.r[0], p.r[1], p.r[2]);
-
-    const parent = (p.parent ? groups[p.parent] : groups.root) ?? groups.root;
-    parent.add(mesh);
-    machineMeshes.push(mesh);
-  }
-
-  // Auto-frame camera to model (makes it impossible to "miss" the machine)
-  if (camera && controls) {
-    const box = new THREE.Box3().setFromObject(groups.root);
-    const size = new THREE.Vector3();
-    box.getSize(size);
-    const center = new THREE.Vector3();
-    box.getCenter(center);
-
-    controls.target.copy(center);
-
-    const maxDim = Math.max(size.x, size.y, size.z);
-    camera.position.set(center.x + maxDim, center.y - maxDim, center.z + maxDim * 0.8);
-    camera.near = Math.max(0.1, maxDim / 1000);
-    camera.far = Math.max(200000, maxDim * 20);
-    camera.updateProjectionMatrix();
-    controls.update();
-  }
-
-  // Apply any layer visibility that was requested before objects existed
-  if (pendingLayers) {
-    for (const [layer, on] of pendingLayers) {
-      setLayerVisible(layer, on);
+    ensureCoreGroups();
+    // Apply machine bounds from viewer_init (INI-derived)
+    const mb = (init as any).machine_bounds;
+    if (machineBoundsMesh && mb?.size && mb?.origin) {
+      applyBox(machineBoundsMesh, mb.size as Vec3, mb.origin as Vec3);
+    } else {
+      console.warn("No machine_bounds in viewer_init; bounds box will remain default");
     }
-    pendingLayers = null;
+
+    // Load all STL assets via the central cache (first caller fetches, others await same Promise)
+    _log(`Loading ${(init.parts ?? []).length} STL model(s)…`);
+    await loadMachineAssets(init, _log);
+    if (myToken !== buildToken) return;
+
+    const parts = init.parts ?? [];
+    _log(`Building scene…`);
+    for (const p of parts) {
+      const geom = getCachedGeometry(p.id);
+      if (!geom) { console.warn(`No cached geometry for ${p.id}`); continue; }
+
+      let mat = MAT.frame;
+      if (p.parent === "x") mat = MAT.axisX;
+      else if (p.parent === "y") mat = MAT.axisY;
+      else if (p.parent === "z") mat = MAT.axisZ;
+
+      const mesh = new THREE.Mesh(geom, mat);  // shares GPU geometry, no copy
+      if (p.t) mesh.position.set(p.t[0] * _unitScale, p.t[1] * _unitScale, p.t[2] * _unitScale);
+      if (p.r) mesh.rotation.set(p.r[0], p.r[1], p.r[2]);
+      mesh.scale.setScalar(_unitScale);  // convert mm STL geometry → machine-unit world
+
+      const parent = (p.parent ? groups[p.parent] : groups.root) ?? groups.root;
+      parent.add(mesh);
+      machineMeshes.push(mesh);
+    }
+
+    // Auto-frame to machine work envelope — use raw INI data (not setFromObject) so
+    // the frame is immune to axis movement that may have shifted groups.x/y/z above.
+    // Falls back to STL mesh world bounds if no bounds data present.
+    {
+      let autoBox = new THREE.Box3();
+      const mb = (init as any).machine_bounds;
+      if (mb?.size && mb?.origin) {
+        const [ox, oy, oz] = mb.origin as [number, number, number];
+        const [sx, sy, sz] = mb.size as [number, number, number];
+        autoBox.set(new THREE.Vector3(ox, oy, oz),
+                    new THREE.Vector3(ox + sx, oy + sy, oz + sz));
+      } else if (machineMeshes.length > 0) {
+        for (const m of machineMeshes) autoBox.expandByObject(m);
+      }
+      frameToBounds(autoBox);
+    }
+
+    // Apply any layer visibility that was requested before objects existed
+    if (pendingLayers) {
+      for (const [layer, on] of pendingLayers) {
+        setLayerVisible(layer, on);
+      }
+      pendingLayers = null;
+    }
+
+  } catch (err) {
+    _log(`Error: ${(err as Error).message ?? err}`);
+    console.error("buildFromInit failed:", err);
+  } finally {
+    // Only clear if we're still the active build — stale earlier calls must not clear
+    // the overlay that was set by a later call that is still in progress.
+    if (myToken === buildToken) isLoading.value = false;
   }
 }
 
@@ -794,11 +855,11 @@ function applyState(init: ViewerInit, st: ViewerState) {
 
   // ---- Tool visual: diameter + length (TIP stays at local z=0) ----
   if (toolMarker && (toolMarker as any).geometry) {
-    const diam = st.tool_diameter ?? 6.0;
-    const rawLen = st.tool_length ?? 60.0;
+    const diam   = st.tool_diameter ?? 6.0  * _unitScale;
+    const rawLen = st.tool_length   ?? 60.0 * _unitScale;
 
-    const sinkIntoHolder = 20;  // mm visual “embed”
-    const minVisualLen = 40;    // mm minimum so short tools don’t float
+    const sinkIntoHolder = 20 * _unitScale;
+    const minVisualLen   = 40 * _unitScale;
     const visLen = Math.max(minVisualLen, rawLen + sinkIntoHolder);
 
     const r = Math.max(0.2, diam * 0.5);
@@ -1139,6 +1200,14 @@ defineExpose({
   <div class="viewerWrapper">
     <div ref="host" class="viewerHost" />
 
+    <!-- Loading overlay — visible during buildFromInit, clears after first rendered frame -->
+    <div v-if="isLoading" class="loadingOverlay">
+      <div class="loadingTitle">Loading machine model</div>
+      <div ref="loadingLogEl" class="loadingLog" @wheel.stop>
+        <div v-for="(msg, i) in loadingLog" :key="i" class="loadingLogEntry">{{ msg }}</div>
+      </div>
+    </div>
+
     <!-- HUD Overlay -->
     <div v-show="hudVisible" class="hud" :style="{ opacity: viewerDefaults.opacities.hud ?? 1 }">
       <div class="hudSection">
@@ -1366,6 +1435,42 @@ defineExpose({
   color: var(--fg);
   opacity: 0.5;
   margin-right: 4px;
+}
+
+.loadingOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 20;
+  pointer-events: auto;
+  backdrop-filter: blur(2px);
+  -webkit-backdrop-filter: blur(2px);
+}
+.loadingTitle {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--fg);
+  opacity: 0.7;
+  margin-bottom: 10px;
+}
+.loadingLog {
+  font-size: 11px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  color: var(--fg);
+  opacity: 0.5;
+  text-align: left;
+  max-width: 360px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+.loadingLogEntry {
+  padding: 1px 0;
 }
 </style>
 
