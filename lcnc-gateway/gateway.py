@@ -1674,6 +1674,7 @@ async def ws_endpoint(ws: WebSocket):
     print(f"[VINIT] client#{client_id} connect-time viewer_init: lcnc_connected={lcnc_connected}, STAT={'OK' if STAT else 'None'}", flush=True)
     try:
         await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
+        viewer_init_sent = True  # prevents status_loop re-send; reset on LinuxCNC reconnect
         print(f"[VINIT] client#{client_id} connect-time viewer_init SENT OK", flush=True)
     except Exception as e:
         print(f"[VINIT] client#{client_id} connect-time viewer_init FAILED: {e}", flush=True)
@@ -1747,6 +1748,7 @@ async def ws_endpoint(ws: WebSocket):
                                 "type": "status_error",
                                 "error": "LinuxCNC not connected",
                                 "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
+                                "armed": armed,
                             })
                         except Exception:
                             break
@@ -1793,6 +1795,7 @@ async def ws_endpoint(ws: WebSocket):
                         "data": asdict(st),
                         "errors": errs,
                         "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
+                        "armed": armed,
                     },
                 )
 
@@ -1891,6 +1894,7 @@ async def ws_endpoint(ws: WebSocket):
                             "type": "status_error",
                             "error": f"{type(e).__name__}: {e}",
                             "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
+                            "armed": armed,
                         })
                     except Exception:
                         break  # WebSocket is dead — exit loop cleanly

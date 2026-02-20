@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
 import { evaluatePermissions, PERMISSIONS_KEY } from "./permissions";
-import { connectWs, connected, status, send, lastReply, viewerGcode, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead } from "./lcncWs";
+import { connectWs, connected, status, send, armed, lastReply, viewerGcode, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead } from "./lcncWs";
 import ThreeViewer from "./ThreeViewer.vue";
 import Toolbar from "./Toolbar.vue";
 import TabPanel from "./TabPanel.vue";
@@ -83,7 +83,6 @@ const connLabel = computed(() => {
   const h = location.hostname;
   return (h === "localhost" || h === "127.0.0.1") ? "local" : h;
 });
-const armed = ref(false);
 const mdiText = ref("G0 X0 Y0");
 const busy = ref(false);
 
@@ -298,23 +297,9 @@ const spindleDirection = computed(() => st.value.spindle_direction ?? null);
 
 /** ---------- actions ---------- */
 function arm(v: boolean) {
-  armed.value = v;
   send({ cmd: "arm", armed: v });
+  // armed.value updates when the gateway reply arrives (server-authoritative)
 }
-
-// Keep armed.value in sync with gateway state:
-// 1. Reset on disconnect — new connection starts unarmed on the gateway side.
-watch(connected, (isConnected) => {
-  if (!isConnected) armed.value = false;
-});
-// 2. Sync when the gateway explicitly sends armed:true/false (arm replies, heartbeat timeout).
-watch(lastReply, (reply) => {
-  if (reply?.armed !== undefined) armed.value = Boolean(reply.armed);
-});
-// 3. Disarm when LinuxCNC connection is lost (WS stays up, gateway sends status_error).
-watch(lcncError, (err) => {
-  if (err) armed.value = false;
-});
 
 /** ---------- local UI jog ---------- */
 const jogVel = ref(10);

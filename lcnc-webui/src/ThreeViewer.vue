@@ -1080,9 +1080,7 @@ onMounted(() => {
   resize();
   animate();
 
-  // Initialize from existing data (for dynamically added viewers where
-  // viewerInit/viewerGcode were already set before this component mounted)
-  if (viewerInit.value) buildFromInit(viewerInit.value as ViewerInit);
+  // viewerGcode may already be set before this component mounted
   if (viewerGcode.value) applyGcode(viewerGcode.value as ViewerGcode);
 
   // Apply saved defaults (self-contained — no external wiring needed)
@@ -1117,11 +1115,16 @@ onUnmounted(() => {
 
 // ---------- reactive wiring ----------
 
-// Rebuild when init arrives
+// Rebuild when init arrives — dedup by content to prevent unnecessary scene rebuilds
+let _lastInitJson = "";
 watch(
   () => viewerInit.value as ViewerInit | null,
   (init) => {
-    if (init) buildFromInit(init);
+    if (!init) return;
+    const json = JSON.stringify(init);
+    if (json === _lastInitJson) return;
+    _lastInitJson = json;
+    buildFromInit(init);
   },
   { immediate: true }
 );
