@@ -146,11 +146,25 @@ export interface PanelsDefaults {
   tabs: string[];
 }
 
-registerSection<PanelsDefaults>("panels", { tabs: ["viewer", "dro"] }, (saved, fb) => {
+registerSection<PanelsDefaults>("panels", { tabs: ["viewer", "manual"] }, (saved, fb) => {
   if (!saved) return { ...fb };
   const tabs = saved.tabs;
-  if (Array.isArray(tabs) && tabs.length > 0) return { tabs: tabs.slice(0, MAX_PANELS) };
-  return { ...fb };
+  if (!Array.isArray(tabs) || tabs.length === 0) return { ...fb };
+
+  // Migration: replace old dro/jog/mdi tabs with "manual"
+  const OLD_TABS = new Set(["dro", "jog", "mdi"]);
+  let migrated = false;
+  const result: string[] = [];
+  for (const t of tabs) {
+    if (OLD_TABS.has(t)) {
+      if (!migrated) { result.push("manual"); migrated = true; }
+      // skip subsequent old tabs
+    } else {
+      result.push(t);
+    }
+  }
+
+  return { tabs: result.slice(0, MAX_PANELS) };
 });
 
 /** Load panels defaults (typed convenience wrapper). */

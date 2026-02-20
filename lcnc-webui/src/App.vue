@@ -5,9 +5,7 @@ import { connectWs, connected, status, send, armed, lastReply, viewerGcode, lcnc
 import ThreeViewer from "./ThreeViewer.vue";
 import Toolbar from "./Toolbar.vue";
 import TabPanel from "./TabPanel.vue";
-import DroPanel from "./DroPanel.vue";
-import JogPanel from "./JogPanel.vue";
-import MdiPanel from "./MdiPanel.vue";
+import ManualPanel from "./ManualPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
 import OverridePanel from "./OverridePanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
@@ -36,9 +34,7 @@ function reloadPage() { location.reload(); }
 /** ---------- tab definitions ---------- */
 const tabs = [
   { id: "viewer", label: "3D Viewer" },
-  { id: "dro", label: "DRO" },
-  { id: "jog", label: "Jogging" },
-  { id: "mdi", label: "MDI" },
+  { id: "manual", label: "Manual" },
   { id: "overrides", label: "Overrides" },
   { id: "spindle", label: "Spindle" },
   { id: "gcode", label: "Program" },
@@ -63,7 +59,7 @@ function setViewerRef(panelId: number, el: any) {
 
 function addPanel() {
   if (panels.value.length >= MAX_PANELS) return;
-  panels.value.push({ id: _nextPanelId++, tab: "dro" });
+  panels.value.push({ id: _nextPanelId++, tab: "manual" });
 }
 
 function removePanel(panelId: number) {
@@ -709,31 +705,21 @@ watch(isHomed, (nowHomed, wasHomed) => {
             </Toolbar>
           </template>
 
-          <template #dro>
-            <DroPanel
-              :workPos="workPos"
-              :machinePos="machinePos"
-              :dtg="dtg"
-              :g5xLabel="g5xLabel"
-              :linearUnit="linearUnit"
-              :homed="isHomed"
-              @zeroAxis="zeroAxis"
-              @zeroAll="zeroAll"
-              @setG5x="setG5x"
-              @homeAll="homeAll"
-              @unhomeAll="unhomeAll"
-            />
-          </template>
-
-          <template #jog>
-            <JogPanel :jogVel="jogVel" :isTeleop="isTeleop" :isHomed="isHomed" :linearUnit="linearUnit" :maxJogVel="maxJogVel" :activeJogKeys="jogKeys" :jogIncrement="jogIncrement" @update:jogVel="jogVel = $event" @update:jogIncrement="jogIncrement = $event" @toggleTeleop="toggleTeleop" />
-          </template>
-
-          <template #mdi>
-            <MdiPanel
+          <template #manual>
+            <ManualPanel
+              :workPos="workPos" :machinePos="machinePos" :dtg="dtg"
+              :g5xLabel="g5xLabel" :linearUnit="linearUnit" :homed="isHomed"
+              :jogVel="jogVel" :isTeleop="isTeleop" :isHomed="isHomed"
+              :maxJogVel="maxJogVel" :activeJogKeys="jogKeys"
+              :jogIncrement="jogIncrement"
               :mdiText="mdiText"
+              @zeroAxis="zeroAxis" @zeroAll="zeroAll" @setG5x="setG5x"
+              @homeAll="homeAll" @unhomeAll="unhomeAll"
+              @update:jogVel="jogVel = $event"
+              @update:jogIncrement="jogIncrement = $event"
+              @toggleTeleop="toggleTeleop"
               @update:mdiText="mdiText = $event"
-              @send="sendMdi"
+              @sendMdi="sendMdi"
             />
           </template>
 
@@ -942,7 +928,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   flex-shrink: 0;
   width: 150px;
   gap: 12px;
-  overflow-y: auto;
+  position: relative;
   z-index: 50;
 }
 
@@ -1200,12 +1186,11 @@ watch(isHomed, (nowHomed, wasHomed) => {
   .panels          { align-items: stretch; flex: 1; min-height: 0; overflow-x: auto; overflow-y: hidden; }
   .panel           { flex: 0 0 var(--panel-min-w); min-height: var(--panel-min-h); }
   .panel-viewer    { flex: 1; min-width: var(--panel-min-w-wide); overflow: hidden; }
-  .panel-dro       { min-width: var(--panel-min-w-wide); }
+  .panel-manual    { min-width: var(--panel-min-w-wide); }
   .panel-gcode,
   .panel-tools,
   .panel-messages,
-  .panel-settings,
-  .panel-mdi       { flex: 0.5; }
+  .panel-settings  { flex: 0.5; }
 }
 
 /* ---- Portrait layout — panels stacked vertically ---- */
@@ -1215,8 +1200,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   .panel-viewer    { flex: 1; min-height: var(--viewer-min-h-portrait); overflow: hidden; }
   .panel-gcode,
   .panel-tools,
-  .panel-messages,
-  .panel-mdi       { flex: 0 0 var(--panel-h-portrait); }
+  .panel-messages  { flex: 0 0 var(--panel-h-portrait); }
   .addPanel        { flex: 0 0 auto; width: 100%; height: 36px; }
 }
 
