@@ -131,7 +131,8 @@ function onMdiKeydown(e: KeyboardEvent) {
       <div class="sub">MDI</div>
       <div class="mdiRow">
         <input
-          class="inp mdiInput"
+          type="text"
+          class="mdiInput"
           :value="mdiText"
           @input="emit('update:mdiText', ($event.target as HTMLInputElement).value)"
           @keyup.enter="handleSend"
@@ -171,15 +172,8 @@ function onMdiKeydown(e: KeyboardEvent) {
 .mdiInput {
   flex: 1;
   min-width: 0;
-  padding: 10px 12px;
-  border-radius: 12px;
-  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
-  font-size: 13px;
-}
-
-.btn {
-  padding: 10px 12px;
-  border-radius: 12px;
-  white-space: nowrap;
+  padding: 0.6em 1.2em;
+  font-size: 1em;
+  border-radius: 8px;
 }
 </style>
