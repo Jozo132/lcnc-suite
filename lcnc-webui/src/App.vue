@@ -843,7 +843,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <button
           class="btn controlBtn"
           :class="{ active: isSpinning }"
-          :disabled="!permissions.ready"
           @click.stop="toggleChip('spindle')"
         >
           <span class="controlIcon">&#x2699;</span>
@@ -945,7 +944,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <button
           class="btn controlBtn"
           :class="{ active: coolantActive }"
-          :disabled="!permissions.ready"
           @click.stop="toggleChip('coolant')"
         >
           <span class="controlIcon">&#x1F4A7;</span>
@@ -958,7 +956,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             <button
               class="btn coolantToggle"
               :class="floodOn ? 'active' : ''"
-              :disabled="!permissions.ready"
+              :disabled="!permissions.override"
               @click="toggleFlood"
             >{{ floodOn ? 'ON' : 'OFF' }}</button>
           </div>
@@ -967,7 +965,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             <button
               class="btn coolantToggle"
               :class="mistOn ? 'active' : ''"
-              :disabled="!permissions.ready"
+              :disabled="!permissions.override"
               @click="toggleMist"
             >{{ mistOn ? 'ON' : 'OFF' }}</button>
           </div>

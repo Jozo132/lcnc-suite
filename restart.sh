@@ -14,7 +14,7 @@ WEBUI_DIR="$ROOT_DIR/lcnc-webui"
 GATEWAY_PORT="8000"
 WEBUI_PORT="5173"
 
-OPEN_BROWSER="1"   # 0 = don't open browser
+OPEN_BROWSER="0"   # 0 = don't open browser
 USE_RELOAD="0"     # 1 = uvicorn --reload
 
 LOG_DIR="$ROOT_DIR/runlogs"

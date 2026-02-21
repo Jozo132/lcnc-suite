@@ -1473,25 +1473,21 @@ def handle_command(msg: Dict[str, Any], armed: bool):
 
         if cmd == "flood_on":
             require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
             CMD.flood(linuxcnc.FLOOD_ON)
             return {"ok": True}
 
         if cmd == "flood_off":
             require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
             CMD.flood(linuxcnc.FLOOD_OFF)
             return {"ok": True}
 
         if cmd == "mist_on":
             require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
             CMD.mist(linuxcnc.MIST_ON)
             return {"ok": True}
 
         if cmd == "mist_off":
             require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
             CMD.mist(linuxcnc.MIST_OFF)
             return {"ok": True}
 

@@ -219,6 +219,7 @@ function onDragLeave(_e: DragEvent) {
 
 function onDrop(e: DragEvent) {
   dragOver.value = false;
+  if (!can.value.idle) return;
   const file = e.dataTransfer?.files[0];
   if (file) handleUpload(file);
 }
@@ -310,13 +311,17 @@ function formatSize(bytes: number): string {
     <!-- Code area wrapper (drop overlay target) -->
     <div class="codeArea">
       <!-- Drop overlay -->
-      <div v-if="dragOver" class="dropOverlay">
-        <svg class="dropIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <div v-if="dragOver" class="dropOverlay" :class="{ denied: !can.idle }">
+        <svg v-if="can.idle" class="dropIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="7 10 12 15 17 10"/>
           <line x1="12" y1="15" x2="12" y2="3"/>
         </svg>
-        <div class="dropText">Drop program file to upload</div>
+        <svg v-else class="dropIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+        </svg>
+        <div class="dropText">{{ can.idle ? 'Drop program file to upload' : 'Not permitted' }}</div>
       </div>
 
       <!-- Code viewer (virtual scroll) -->
@@ -625,6 +630,11 @@ function formatSize(bytes: number): string {
   pointer-events: none;
 }
 
+.dropOverlay.denied {
+  border-color: var(--danger);
+  background: color-mix(in oklab, var(--danger) 10%, var(--panel) 90%);
+}
+
 .dropIcon {
   width: 48px;
   height: 48px;
@@ -632,11 +642,19 @@ function formatSize(bytes: number): string {
   opacity: 0.8;
 }
 
+.denied .dropIcon {
+  color: var(--danger);
+}
+
 .dropText {
   font-size: 14px;
   font-weight: 600;
   color: var(--info);
   opacity: 0.9;
+}
+
+.denied .dropText {
+  color: var(--danger);
 }
 
 .codeViewer {
