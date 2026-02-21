@@ -9,6 +9,7 @@ import ManualPanel from "./ManualPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 import ToolTablePanel from "./ToolTablePanel.vue";
+import ProbePanel from "./ProbePanel.vue";
 
 import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS } from "./defaults";
 import {
@@ -49,6 +50,7 @@ const tabs = [
   { id: "manual", label: "Manual" },
   { id: "gcode", label: "Program" },
   { id: "tools", label: "Tools" },
+  { id: "probe", label: "Probe" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -645,6 +647,21 @@ onUnmounted(() => {
   document.removeEventListener("visibilitychange", visHandler);
 });
 
+/** ---------- Probe var file sync ---------- */
+const probeVarsFromFile = ref<Record<string, number> | null>(null);
+const PROBE_VAR_NUMS = [3014, 3015, 3016, 3017, 3018, 3019, 3020, 3021, 3030, 3032];
+
+function requestProbeVars() {
+  send({ cmd: "get_probe_vars", vars: PROBE_VAR_NUMS });
+}
+
+// When a reply containing "vars" arrives, treat it as a get_probe_vars response
+watch(lastReply, (reply) => {
+  if (reply?.ok && reply.vars && typeof reply.vars === "object") {
+    probeVarsFromFile.value = reply.vars;
+  }
+});
+
 /** ---------- G-code content watcher ---------- */
 watch(viewerGcode, (newGcode) => {
   console.log("viewerGcode updated:", newGcode);
@@ -1079,6 +1096,21 @@ watch(isHomed, (nowHomed, wasHomed) => {
             />
           </template>
 
+
+          <template #probe>
+            <ProbePanel
+              :probing="st.probing === true"
+              :probeTripped="st.probe_tripped === true"
+              :probedPosition="st.probed_position ?? null"
+              :workPos="workPos"
+              :initialVars="probeVarsFromFile"
+              @mdi="send({ cmd: 'mdi', text: $event })"
+              @abort="send({ cmd: 'abort' })"
+              @simulateProbeTrip="send({ cmd: 'simulate_probe_trip' })"
+              @setProbeVars="send({ cmd: 'set_probe_vars', vars: $event })"
+              @getProbeVars="requestProbeVars"
+            />
+          </template>
 
           <template #settings>
             <SettingsPanel :lastReply="lastReply" :status="status" />

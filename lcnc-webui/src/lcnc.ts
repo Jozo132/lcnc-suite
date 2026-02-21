@@ -72,5 +72,15 @@ export type WsCommand =
   | { cmd: "add_tool"; tool_number: number; [key: string]: any }
   | { cmd: "delete_tool"; tool_number: number }
   | { cmd: "tool_change"; tool_number: number }
+  // Coolant
+  | { cmd: "flood_on" }
+  | { cmd: "flood_off" }
+  | { cmd: "mist_on" }
+  | { cmd: "mist_off" }
+  // Probing
+  | { cmd: "list_probe_macros" }
+  | { cmd: "simulate_probe_trip" }
+  | { cmd: "set_probe_vars"; vars: Record<string, number> }
+  | { cmd: "get_probe_vars"; vars: number[] }
   // Heartbeat
   | { cmd: "heartbeat" };

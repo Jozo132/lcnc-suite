@@ -262,11 +262,44 @@ def get_ini_config() -> dict:
                 config["min_spindle_speed"] = _ini_float(ini, section, "MIN_FORWARD_VELOCITY")
                 break
 
+        # Subroutine paths for probe macros [RS274NGC]SUBROUTINE_PATH
+        sub_raw = ini.find("RS274NGC", "SUBROUTINE_PATH")
+        if sub_raw:
+            ini_dir = os.path.dirname(ini_path)
+            sub_dirs = []
+            for p in sub_raw.split(":"):
+                p = p.strip()
+                if not p:
+                    continue
+                if not os.path.isabs(p):
+                    p = os.path.join(ini_dir, p)
+                p = os.path.realpath(p)
+                if os.path.isdir(p):
+                    sub_dirs.append(p)
+            config["subroutine_paths"] = sub_dirs
+
         _ini_config = config
     except Exception:
         pass
 
     return config
+
+
+def get_probe_macros() -> list:
+    """List probe macro names from subroutine paths."""
+    cfg = get_ini_config()
+    paths = cfg.get("subroutine_paths", [])
+    macros = []
+    seen = set()
+    for d in paths:
+        try:
+            for f in sorted(os.listdir(d)):
+                if f.startswith("probe_") and f.endswith(".ngc") and f not in seen:
+                    seen.add(f)
+                    macros.append(f[:-4])  # strip .ngc
+        except OSError:
+            continue
+    return macros
 
 
 def get_nc_files_dir() -> str:
@@ -1581,6 +1614,66 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             CMD.wait_complete()
             return {"ok": True}
 
+        if cmd == "list_probe_macros":
+            return {"ok": True, "macros": get_probe_macros()}
+
+        if cmd == "set_probe_vars":
+            vars_to_set = msg.get("vars", {})
+            if not vars_to_set or not isinstance(vars_to_set, dict):
+                return {"ok": False, "error": "Missing vars dict"}
+            # 1) Always write to var file for persistence across restarts
+            file_ok = False
+            ini_path = getattr(STAT, "ini_filename", None)
+            if ini_path:
+                ini = linuxcnc.ini(ini_path)
+                var_file = ini.find("RS274NGC", "PARAMETER_FILE")
+                if var_file:
+                    if not os.path.isabs(var_file):
+                        var_file = os.path.join(os.path.dirname(ini_path), var_file)
+                    str_vars = {str(k): float(v) for k, v in vars_to_set.items()}
+                    lines = open(var_file).readlines()
+                    for i, line in enumerate(lines):
+                        parts = line.split()
+                        if len(parts) >= 2 and parts[0] in str_vars:
+                            lines[i] = f"{parts[0]}\t{str_vars[parts[0]]:.6f}\n"
+                    open(var_file, "w").writelines(lines)
+                    file_ok = True
+            # 2) Best-effort: set in interpreter memory via MDI (requires armed + idle)
+            mdi_ok = False
+            if armed and not reject_if_auto_running():
+                try:
+                    assignments = " ".join(
+                        f"#{k}={float(v)}" for k, v in vars_to_set.items()
+                    )
+                    set_mode(linuxcnc.MODE_MDI)
+                    CMD.mdi(assignments)
+                    ret = CMD.wait_complete(5)
+                    mdi_ok = (ret == 0)
+                except Exception:
+                    pass
+            return {"ok": True, "file_saved": file_ok, "mdi_set": mdi_ok}
+
+        if cmd == "get_probe_vars":
+            var_nums = msg.get("vars", [])
+            if not var_nums or not isinstance(var_nums, list):
+                return {"ok": False, "error": "Missing vars list"}
+            ini_path = getattr(STAT, "ini_filename", None)
+            if not ini_path:
+                return {"ok": False, "error": "No INI file"}
+            ini = linuxcnc.ini(ini_path)
+            var_file = ini.find("RS274NGC", "PARAMETER_FILE")
+            if not var_file:
+                return {"ok": False, "error": "No PARAMETER_FILE in INI"}
+            if not os.path.isabs(var_file):
+                var_file = os.path.join(os.path.dirname(ini_path), var_file)
+            wanted = {str(v) for v in var_nums}
+            result = {}
+            for line in open(var_file):
+                parts = line.split()
+                if len(parts) >= 2 and parts[0] in wanted:
+                    result[parts[0]] = float(parts[1])
+            return {"ok": True, "vars": result}
+
         return {"ok": False, "error": f"Unknown cmd: {cmd}"}
 
     except PermissionError as pe:
@@ -2209,6 +2302,32 @@ async def ws_endpoint(ws: WebSocket):
                     _clients[client_id]["armed"] = armed
                     _clients[client_id]["last_hb"] = time.time()  # reset on arm change
                 await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
+                continue
+
+            if msg.get("cmd") == "simulate_probe_trip":
+                if not armed:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
+                    continue
+                if not lcnc_connected:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": "LinuxCNC not connected"})
+                    continue
+                try:
+                    _loop = asyncio.get_event_loop()
+                    # Unlink any existing writer on probe-in (e.g. qtpyvcp.probe-in.out)
+                    # so halcmd sets works. Ignore errors if already unlinked.
+                    await _loop.run_in_executor(None, lambda: subprocess.run(
+                        ['halcmd', 'unlinkp', 'qtpyvcp.probe-in.out'],
+                        capture_output=True, text=True, timeout=2))
+                    await _loop.run_in_executor(None, lambda: subprocess.run(
+                        ['halcmd', 'sets', 'probe-in', '1'],
+                        capture_output=True, text=True, timeout=2, check=True))
+                    await asyncio.sleep(0.15)
+                    await _loop.run_in_executor(None, lambda: subprocess.run(
+                        ['halcmd', 'sets', 'probe-in', '0'],
+                        capture_output=True, text=True, timeout=2, check=True))
+                    await ws_send_json(ws, {"type": "reply", "ok": True})
+                except Exception as e:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": f"simulate_probe_trip: {e}"})
                 continue
 
             reply = handle_command(msg, armed)
