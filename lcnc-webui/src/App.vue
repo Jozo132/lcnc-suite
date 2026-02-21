@@ -258,6 +258,9 @@ const rapidOverrideValue = computed(() => {
 const overridesActive = computed(() =>
   feedOverrideValue.value !== 1.0 || spindleOverrideValue.value !== 1.0 || rapidOverrideValue.value !== 1.0
 );
+const feedOvrEnabled = computed(() => st.value.feed_override_enabled !== false);
+const spindleOvrEnabled = computed(() => st.value.spindle_override_enabled !== false);
+const overridesDisabled = computed(() => !feedOvrEnabled.value || !spindleOvrEnabled.value);
 
 // Status chip popovers (click-to-toggle, only one open at a time)
 const openChip = ref<string | null>(null);
@@ -776,26 +779,26 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
         </div>
 
-        <div class="statusChip overridesChip" :class="{ warn: overridesActive }" @click.stop="toggleChip('overrides')">
+        <div class="statusChip overridesChip" :class="{ warn: overridesActive && !overridesDisabled, bad: overridesDisabled }" @click.stop="toggleChip('overrides')">
           <span class="chipIcon">%</span>
           <span class="chipLabel">Overrides</span>
-          <span class="chipValue">{{ overridesActive ? 'ACTIVE' : 'DEFAULT' }}</span>
+          <span class="chipValue">{{ overridesDisabled ? 'DISABLED' : (overridesActive ? 'ACTIVE' : 'DEFAULT') }}</span>
           <div class="popover chipPopover overridesPopover" :class="{ open: openChip === 'overrides' }" @click.stop>
             <div class="ovrRow">
               <span class="ovrLabel">Feed</span>
-              <input type="range" v-model.number="feedSlider" @change="onFeedChange" min="0" :max="maxFeedOverride" step="5" :disabled="!permissions.override" />
+              <input type="range" v-model.number="feedSlider" @change="onFeedChange" min="0" :max="maxFeedOverride" step="5" :disabled="!permissions.override || !feedOvrEnabled" />
               <span class="ovrVal" :class="{ warn: feedSlider !== 100 }">{{ feedSlider }}%</span>
             </div>
             <div class="ovrPresets">
-              <button v-for="p in [50, 100, 150, 200]" :key="'f'+p" class="ovrPresetBtn" :disabled="!permissions.override" @click="setOverridePreset('feed', p)">{{ p }}%</button>
+              <button v-for="p in [50, 100, 150, 200]" :key="'f'+p" class="ovrPresetBtn" :disabled="!permissions.override || !feedOvrEnabled" @click="setOverridePreset('feed', p)">{{ p }}%</button>
             </div>
             <div class="ovrRow">
               <span class="ovrLabel">Spindle</span>
-              <input type="range" v-model.number="spindleSlider" @change="onSpindleSliderChange" :min="minSpindleOverride" :max="maxSpindleOverride" step="5" :disabled="!permissions.override" />
+              <input type="range" v-model.number="spindleSlider" @change="onSpindleSliderChange" :min="minSpindleOverride" :max="maxSpindleOverride" step="5" :disabled="!permissions.override || !spindleOvrEnabled" />
               <span class="ovrVal" :class="{ warn: spindleSlider !== 100 }">{{ spindleSlider }}%</span>
             </div>
             <div class="ovrPresets">
-              <button v-for="p in [50, 100, 150, 200]" :key="'s'+p" class="ovrPresetBtn" :disabled="!permissions.override" @click="setOverridePreset('spindle', p)">{{ p }}%</button>
+              <button v-for="p in [50, 100, 150, 200]" :key="'s'+p" class="ovrPresetBtn" :disabled="!permissions.override || !spindleOvrEnabled" @click="setOverridePreset('spindle', p)">{{ p }}%</button>
             </div>
             <div class="ovrRow">
               <span class="ovrLabel">Rapid</span>
@@ -931,10 +934,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :min="minSpindleOverride"
               :max="maxSpindleOverride"
               step="5"
-              :disabled="!permissions.override"
+              :disabled="!permissions.override || !spindleOvrEnabled"
             />
             <div class="spOvrPresets">
-              <button v-for="p in [50, 100, 150, 200]" :key="'sp'+p" class="ovrPresetBtn" :disabled="!permissions.override" @click="setSpindleOvrPreset(p)">{{ p }}%</button>
+              <button v-for="p in [50, 100, 150, 200]" :key="'sp'+p" class="ovrPresetBtn" :disabled="!permissions.override || !spindleOvrEnabled" @click="setSpindleOvrPreset(p)">{{ p }}%</button>
             </div>
           </div>
         </div>

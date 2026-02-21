@@ -520,6 +520,8 @@ class StatusPayload:
     feed_override: Optional[float]
     spindle_override: Optional[float]
     rapid_override: Optional[float]
+    feed_override_enabled: Optional[bool]
+    spindle_override_enabled: Optional[bool]
     max_velocity: Optional[float]
     max_jog_velocity: Optional[float]
     current_vel: Optional[float]
@@ -994,6 +996,8 @@ def poll_status() -> StatusPayload:
         feed_override=safe_get("feedrate", None),
         spindle_override=spindle_ovr,
         rapid_override=safe_get("rapidrate", None),
+        feed_override_enabled=bool(safe_get("feed_override_enabled", True)),
+        spindle_override_enabled=bool(safe_get("spindle_override_enabled", True)),
         max_velocity=safe_get("max_velocity", None),
         max_jog_velocity=get_max_jog_velocity(),
         current_vel=current_vel,
