@@ -8,7 +8,6 @@ import TabPanel from "./TabPanel.vue";
 import ManualPanel from "./ManualPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
-import MessagesPanel from "./MessagesPanel.vue";
 import ToolTablePanel from "./ToolTablePanel.vue";
 
 import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS } from "./defaults";
@@ -36,7 +35,6 @@ const tabs = [
   { id: "manual", label: "Manual" },
   { id: "gcode", label: "Program" },
   { id: "tools", label: "Tools" },
-  { id: "messages", label: "Messages" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -66,16 +64,9 @@ function removePanel(panelId: number) {
 }
 
 
-const tabBadges = computed((): Record<string, number> =>
-  unreadCount.value > 0 ? { messages: unreadCount.value } : {}
-);
-
 watch(
   () => panels.value.map(p => p.tab),
-  (tabs) => {
-    if (tabs.includes("messages")) markMessagesRead();
-    savePanelsDefaults({ tabs });
-  }
+  (tabs) => savePanelsDefaults({ tabs })
 );
 
 /** ---------- local UI state ---------- */
@@ -346,6 +337,25 @@ function formatRpm(val: number | null): string {
   if (val == null || !Number.isFinite(val)) return "\u2014";
   return Math.round(val).toLocaleString();
 }
+
+// Message popover helpers
+function msgKindClass(kind: number): string {
+  if (kind <= 2) return "error";
+  if (kind <= 4) return "info";
+  return "display";
+}
+function msgKindLabel(kind: number): string {
+  if (kind <= 2) return "ERROR";
+  if (kind <= 4) return "INFO";
+  return "DISPLAY";
+}
+function msgFormatTime(ts: number): string {
+  return new Date(ts).toLocaleTimeString();
+}
+
+watch(openChip, (chip) => {
+  if (chip === "messages") markMessagesRead();
+});
 
 /** ---------- actions ---------- */
 function arm(v: boolean) {
@@ -705,6 +715,31 @@ watch(isHomed, (nowHomed, wasHomed) => {
             <button class="ovrResetBtn" :disabled="!permissions.override" @click="resetAllOverrides">Reset All</button>
           </div>
         </div>
+
+        <div class="statusChip" :class="{ warn: unreadCount > 0 }" @click.stop="toggleChip('messages')">
+          <span class="chipLabel">Messages</span>
+          <span class="chipValue">{{ unreadCount > 0 ? unreadCount : 'NONE' }}</span>
+          <div class="popover chipPopover messagesPopover" :class="{ open: openChip === 'messages' }" @click.stop>
+            <div class="msgPopHeader">
+              <span class="msgPopTitle">Messages</span>
+              <button v-if="messages.length > 0" class="ovrPresetBtn" @click="clearAllMessages">Clear All</button>
+            </div>
+            <div v-if="messages.length === 0" class="msgPopEmpty">No messages</div>
+            <div v-else class="msgPopList">
+              <div v-for="msg in [...messages].reverse()" :key="msg.id" class="msgPopItem" :class="msgKindClass(msg.kind)">
+                <div class="msgPopIndicator"></div>
+                <div class="msgPopBody">
+                  <div class="msgPopMeta">
+                    <span class="msgPopBadge" :class="msgKindClass(msg.kind)">{{ msgKindLabel(msg.kind) }}</span>
+                    <span class="msgPopTime">{{ msgFormatTime(msg.ts) }}</span>
+                  </div>
+                  <div class="msgPopText">{{ msg.text }}</div>
+                </div>
+                <button class="msgPopDismiss" @click="dismissMessage(msg.id)">&times;</button>
+              </div>
+            </div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -824,7 +859,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
           :tabs="tabs"
           :modelValue="panel.tab"
           @update:modelValue="panel.tab = $event"
-          :badges="tabBadges"
           :closable="idx > 0"
           @close="removePanel(panel.id)"
         >
@@ -923,13 +957,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
             />
           </template>
 
-          <template #messages>
-            <MessagesPanel
-              :messages="messages"
-              @dismiss="dismissMessage"
-              @clearAll="clearAllMessages"
-            />
-          </template>
 
           <template #settings>
             <SettingsPanel :lastReply="lastReply" :status="status" :linearUnit="linearUnit" />
@@ -1479,6 +1506,47 @@ watch(isHomed, (nowHomed, wasHomed) => {
   gap: 4px;
   flex-wrap: wrap;
 }
+
+/* ---- Messages popover ---- */
+.messagesPopover { min-width: 320px; max-height: 400px; }
+.msgPopHeader { display: flex; justify-content: space-between; align-items: center; }
+.msgPopTitle { font-weight: 600; font-size: 13px; }
+.msgPopEmpty { padding: 20px 0; text-align: center; font-size: 12px; opacity: 0.4; }
+
+.msgPopList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.msgPopItem {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--button-bg);
+}
+
+.msgPopIndicator { width: 3px; border-radius: 2px; flex-shrink: 0; }
+.msgPopItem.error .msgPopIndicator { background: var(--err); }
+.msgPopItem.info .msgPopIndicator { background: var(--fg); opacity: 0.4; }
+.msgPopItem.display .msgPopIndicator { background: #22b8cf; }
+
+.msgPopBody { flex: 1; min-width: 0; }
+.msgPopMeta { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.msgPopBadge { font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.5px; }
+.msgPopBadge.error { background: color-mix(in oklab, var(--err) 20%, var(--panel)); color: #e05555; }
+.msgPopBadge.info { background: color-mix(in oklab, var(--fg) 10%, var(--panel)); color: var(--fg); opacity: 0.7; }
+.msgPopBadge.display { background: color-mix(in oklab, #22b8cf 20%, var(--panel)); color: #22b8cf; }
+
+.msgPopTime { font-size: 10px; font-family: 'SF Mono', 'Monaco', 'Consolas', monospace; opacity: 0.5; }
+.msgPopText { font-size: 12px; line-height: 1.3; word-break: break-word; }
+.msgPopDismiss { align-self: flex-start; font-size: 16px; line-height: 1; background: none; border: none; color: var(--fg); opacity: 0.4; cursor: pointer; padding: 0 2px; }
+.msgPopDismiss:hover { opacity: 1; }
 
 .btnrow {
   display: flex;
