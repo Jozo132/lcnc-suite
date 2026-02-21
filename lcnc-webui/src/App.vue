@@ -421,6 +421,19 @@ function unhomeAll() {
   fire({ cmd: "unhome_all" });
 }
 
+const homedJoints = computed<boolean[]>(() => {
+  const hj = st.value.homed_joints;
+  return Array.isArray(hj) ? hj.map(Boolean) : [];
+});
+
+function homeAxis(joint: number) {
+  fire({ cmd: "home", joint });
+}
+
+function unhomeAxis(joint: number) {
+  fire({ cmd: "unhome", joint });
+}
+
 function toggleTeleop() {
   fire(isTeleop.value ? { cmd: "teleop_disable" } : { cmd: "teleop_enable" });
 }
@@ -972,12 +985,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
             <ManualPanel
               :workPos="workPos" :machinePos="machinePos" :dtg="dtg"
               :g5xLabel="g5xLabel" :linearUnit="linearUnit" :homed="isHomed"
+              :homedJoints="homedJoints"
               :jogVel="jogVel" :isTeleop="isTeleop" :isHomed="isHomed"
               :maxJogVel="maxJogVel" :activeJogKeys="jogKeys"
               :jogIncrement="jogIncrement"
               :mdiText="mdiText"
               @zeroAxis="zeroAxis" @zeroAll="zeroAll" @setG5x="setG5x"
-              @homeAll="homeAll" @unhomeAll="unhomeAll"
+              @homeAll="homeAll" @unhomeAll="unhomeAll" @homeAxis="homeAxis" @unhomeAxis="unhomeAxis"
               @update:jogVel="jogVel = $event"
               @update:jogIncrement="jogIncrement = $event"
               @toggleTeleop="toggleTeleop"

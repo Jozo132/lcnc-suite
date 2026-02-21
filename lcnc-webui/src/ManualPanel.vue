@@ -14,6 +14,7 @@ const props = defineProps<{
   g5xLabel: string;
   linearUnit: string;
   homed: boolean;
+  homedJoints: boolean[];
   // Jog props
   jogVel: number;
   isTeleop: boolean;
@@ -31,6 +32,8 @@ const emit = defineEmits<{
   (e: "zeroAll"): void;
   (e: "homeAll"): void;
   (e: "unhomeAll"): void;
+  (e: "homeAxis", joint: number): void;
+  (e: "unhomeAxis", joint: number): void;
   (e: "setG5x", gcode: string): void;
   // Jog emits
   (e: "update:jogVel", vel: number): void;
@@ -101,11 +104,14 @@ function onMdiKeydown(e: KeyboardEvent) {
       :g5xLabel="g5xLabel"
       :linearUnit="linearUnit"
       :homed="homed"
+      :homedJoints="homedJoints"
       @zeroAxis="emit('zeroAxis', $event)"
       @zeroAll="emit('zeroAll')"
       @setG5x="emit('setG5x', $event)"
       @homeAll="emit('homeAll')"
       @unhomeAll="emit('unhomeAll')"
+      @homeAxis="emit('homeAxis', $event)"
+      @unhomeAxis="emit('unhomeAxis', $event)"
     />
 
     <div class="sep"></div>

@@ -447,6 +447,7 @@ class StatusPayload:
     estop: bool
     enabled: bool
     homed: Optional[bool]  # LinuxCNC stat truth (normalized)
+    homed_joints: Optional[list]  # per-joint homed mask (configured joints only)
 
     # task/motion
     task_mode: Optional[int]
@@ -693,6 +694,14 @@ def poll_status() -> StatusPayload:
     homed_val = safe_get("homed", None)
     homed = normalize_homed(homed_val)
 
+    homed_joints = None
+    if isinstance(homed_val, (list, tuple)):
+        nj = safe_get("joints", None)
+        if isinstance(nj, int) and nj > 0:
+            homed_joints = [bool(x) for x in homed_val[:nj]]
+        else:
+            homed_joints = [bool(x) for x in homed_val]
+
     # ---- offsets ----
     g5x_index = safe_get("g5x_index", None)
     g5x = to_float_list(safe_get("g5x_offset", None))
@@ -853,6 +862,7 @@ def poll_status() -> StatusPayload:
         estop=estop,
         enabled=enabled,
         homed=homed,
+        homed_joints=homed_joints,
         task_mode=safe_get("task_mode", None),
         interp_state=safe_get("interp_state", None),
         state=safe_get("state", None),
@@ -1253,6 +1263,20 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             require_armed(armed)
             set_mode(linuxcnc.MODE_MANUAL)
             CMD.unhome(-1)  # -1 unhomes all axes
+            return {"ok": True}
+
+        if cmd == "home":
+            require_armed(armed)
+            joint = int(msg.get("joint", -1))
+            set_mode(linuxcnc.MODE_MANUAL)
+            CMD.home(joint)
+            return {"ok": True}
+
+        if cmd == "unhome":
+            require_armed(armed)
+            joint = int(msg.get("joint", -1))
+            set_mode(linuxcnc.MODE_MANUAL)
+            CMD.unhome(joint)
             return {"ok": True}
 
         if cmd == "teleop_enable":

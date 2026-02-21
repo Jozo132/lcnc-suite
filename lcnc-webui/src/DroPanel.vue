@@ -8,6 +8,7 @@ const props = defineProps<{
   g5xLabel: string;
   linearUnit: string;
   homed: boolean;
+  homedJoints: boolean[];
 }>();
 
 const can = usePermissions();
@@ -17,6 +18,8 @@ const emit = defineEmits<{
   (e: "zeroAll"): void;
   (e: "homeAll"): void;
   (e: "unhomeAll"): void;
+  (e: "homeAxis", joint: number): void;
+  (e: "unhomeAxis", joint: number): void;
   (e: "setG5x", gcode: string): void;
 }>();
 
@@ -45,14 +48,14 @@ function fmt(n: any) {
       <div class="sub">Work Position ({{ g5xLabel }})</div>
       <div class="grid">
         <div class="axis"><span>X</span><b>{{ fmt(workPos[0]) }}</b></div>
-        <div class="dtg"><span>DTG</span>{{ fmt(dtg[0]) }}</div>
+        <div></div>
         <button class="zeroBtn" @click="emit('zeroAxis', 0)" :disabled="!can.idle">Zero X</button>
         <button class="homeBtn spanBtn" style="grid-column: 4" @click="emit('zeroAll')" :disabled="!can.idle">Zero All</button>
         <div class="axis"><span>Y</span><b>{{ fmt(workPos[1]) }}</b></div>
-        <div class="dtg"><span>DTG</span>{{ fmt(dtg[1]) }}</div>
+        <div></div>
         <button class="zeroBtn" @click="emit('zeroAxis', 1)" :disabled="!can.idle">Zero Y</button>
         <div class="axis"><span>Z</span><b>{{ fmt(workPos[2]) }}</b></div>
-        <div class="dtg"><span>DTG</span>{{ fmt(dtg[2]) }}</div>
+        <div></div>
         <button class="zeroBtn" @click="emit('zeroAxis', 2)" :disabled="!can.idle">Zero Z</button>
       </div>
     </div>
@@ -61,12 +64,17 @@ function fmt(n: any) {
 
     <div class="section">
       <div class="sub">Machine Position</div>
-      <div class="grid machineGrid">
+      <div class="grid">
         <div class="axis"><span>X</span><b>{{ fmt(machinePos[0]) }}</b></div>
+        <div></div>
+        <button class="zeroBtn" :disabled="!can.idle" @click="homedJoints[0] ? emit('unhomeAxis', 0) : emit('homeAxis', 0)">{{ homedJoints[0] ? 'Unhome X' : 'Home X' }}</button>
+        <button class="homeBtn spanBtn" style="grid-column: 4" :disabled="!can.idle" @click="homed ? emit('unhomeAll') : emit('homeAll')">{{ homed ? 'Unhome' : 'Home All' }}</button>
         <div class="axis"><span>Y</span><b>{{ fmt(machinePos[1]) }}</b></div>
+        <div></div>
+        <button class="zeroBtn" :disabled="!can.idle" @click="homedJoints[1] ? emit('unhomeAxis', 1) : emit('homeAxis', 1)">{{ homedJoints[1] ? 'Unhome Y' : 'Home Y' }}</button>
         <div class="axis"><span>Z</span><b>{{ fmt(machinePos[2]) }}</b></div>
-        <button class="homeBtn spanBtn" style="grid-column: 3" @click="emit('homeAll')" :disabled="!can.idle || homed">Home All</button>
-        <button class="homeBtn spanBtn" style="grid-column: 4" @click="emit('unhomeAll')" :disabled="!can.idle || !homed">Unhome</button>
+        <div></div>
+        <button class="zeroBtn" :disabled="!can.idle" @click="homedJoints[2] ? emit('unhomeAxis', 2) : emit('homeAxis', 2)">{{ homedJoints[2] ? 'Unhome Z' : 'Home Z' }}</button>
       </div>
     </div>
   </div>
@@ -98,24 +106,7 @@ function fmt(n: any) {
   align-self: stretch;
 }
 
-.machineGrid .axis {
-  grid-column: 1;
-}
 
-.dtg {
-  display: flex;
-  align-items: baseline;
-  gap: 6px;
-  font-size: 14px;
-  opacity: 0.45;
-  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
-  justify-content: flex-end;
-}
-
-.dtg span {
-  font-size: 10px;
-  opacity: 0.7;
-}
 
 .axis {
   display: flex;
