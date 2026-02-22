@@ -9,7 +9,6 @@ const props = defineProps<{
   probeTripped: boolean;
   probedPosition: number[] | null;
   workPos: number[];
-  initialVars: Record<string, number> | null;
   probeResults: Record<string, number> | null;
 }>();
 
@@ -161,7 +160,6 @@ function loadParams() {
       Object.assign(params.value, saved);
     }
   } catch { /* ignore */ }
-  // Var file values arrive via 1 Hz polling in status messages (initialVars watcher)
 }
 
 function saveParams() {
@@ -173,12 +171,10 @@ function saveParams() {
   emit("setProbeVars", varMap);
 }
 
-/** Sync machine-written vars (calOffset) from 1 Hz polling. UI-owned params are never overwritten. */
-watch(() => props.initialVars, (vars) => {
-  if (!vars) return;
-  console.log("[probe] initialVars received ←", { ...vars });
-  if (vars["3032"] != null) {
-    params.value.calOffset = vars["3032"];
+/** Sync cal offset from DEBUG EVAL messages (emitted by cal subroutines and reset). */
+watch(() => props.probeResults?.cal_offset, (v) => {
+  if (v != null) {
+    params.value.calOffset = v;
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   }
 });

@@ -18,7 +18,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # ---- Config ----
 POLL_HZ = 30  # status update rate
-PROBE_VAR_POLL = {"3032"}  # calOffset — polled at 1 Hz from var file
 BASE_DIR = Path(__file__).resolve().parent
 MACHINE_DIR = BASE_DIR / "machine"
 
@@ -1686,27 +1685,6 @@ def handle_command(msg: Dict[str, Any], armed: bool):
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def _read_probe_vars():
-    """Read probe vars from var file (for 1 Hz polling). Returns dict or None."""
-    try:
-        ini_path = getattr(STAT, "ini_filename", None)
-        if not ini_path:
-            return None
-        ini = linuxcnc.ini(ini_path)
-        var_file = ini.find("RS274NGC", "PARAMETER_FILE")
-        if not var_file:
-            return None
-        if not os.path.isabs(var_file):
-            var_file = os.path.join(os.path.dirname(ini_path), var_file)
-        result = {}
-        for line in open(var_file):
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] in PROBE_VAR_POLL:
-                result[parts[0]] = float(parts[1])
-        return result
-    except Exception:
-        return None
-
 
 # Probe result widget names from DEBUG EVAL messages → friendly keys
 _PROBE_WIDGET_MAP = {
@@ -2140,13 +2118,11 @@ async def ws_endpoint(ws: WebSocket):
     last_file: Optional[str] = None
     viewer_init_sent = False
     _poll_fails = 0  # consecutive poll failures (tolerates NML startup transient)
-    _probe_poll_counter = 0
-    _last_probe_vars: Optional[dict] = None
     _probe_results: dict = {}  # populated from DEBUG EVAL messages in real-time
 
 
     async def status_loop():
-        nonlocal last_file, armed, viewer_init_sent, _poll_fails, _probe_poll_counter, _last_probe_vars, _probe_results
+        nonlocal last_file, armed, viewer_init_sent, _poll_fails, _probe_results
         global lcnc_connected, STAT, CMD, ERR, _hal_last_hb, _reconnect_fails
         loop = asyncio.get_event_loop()
         while True:
@@ -2236,14 +2212,6 @@ async def ws_endpoint(ws: WebSocket):
                                 continue  # don't forward EVAL messages to UI
                     errs.append((kind, text))
 
-                # Probe var polling (~1 Hz) — calOffset #3032
-                _probe_poll_counter += 1
-                if _probe_poll_counter >= POLL_HZ:
-                    _probe_poll_counter = 0
-                    pv = await loop.run_in_executor(None, _read_probe_vars)
-                    if pv is not None:
-                        _last_probe_vars = pv
-
                 status_msg: dict = {
                     "type": "status",
                     "data": asdict(st),
@@ -2251,8 +2219,6 @@ async def ws_endpoint(ws: WebSocket):
                     "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
                     "armed": armed,
                 }
-                if _last_probe_vars:
-                    status_msg["probe_vars"] = _last_probe_vars
                 if _probe_results:
                     status_msg["probe_results"] = _probe_results
                 await ws_send_json(ws, status_msg)

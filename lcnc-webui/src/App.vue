@@ -647,15 +647,10 @@ onUnmounted(() => {
   document.removeEventListener("visibilitychange", visHandler);
 });
 
-/** ---------- Probe var file sync (1 Hz via status message) ---------- */
-const probeVarsFromFile = ref<Record<string, number> | null>(null);
+/** ---------- Probe results from DEBUG EVAL messages ---------- */
 const probeResults = ref<Record<string, number> | null>(null);
 
-// Gateway includes probe_vars and probe_results in status messages (~1 Hz)
 watch(status, (st) => {
-  if (st?.probe_vars && typeof st.probe_vars === "object") {
-    probeVarsFromFile.value = st.probe_vars;
-  }
   if (st?.probe_results && typeof st.probe_results === "object") {
     probeResults.value = st.probe_results;
   }
@@ -1102,7 +1097,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :probeTripped="st.probe_tripped === true"
               :probedPosition="st.probed_position ?? null"
               :workPos="workPos"
-              :initialVars="probeVarsFromFile"
               :probeResults="probeResults"
               @mdi="send({ cmd: 'mdi', text: $event })"
               @abort="send({ cmd: 'abort' })"
