@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # ---- Config ----
 POLL_HZ = 30  # status update rate
+PROBE_VAR_POLL = {"3032"}  # vars written by subroutines (calOffset) — polled at 1 Hz
 BASE_DIR = Path(__file__).resolve().parent
 MACHINE_DIR = BASE_DIR / "machine"
 
@@ -1631,6 +1632,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                     if not os.path.isabs(var_file):
                         var_file = os.path.join(os.path.dirname(ini_path), var_file)
                     str_vars = {str(k): float(v) for k, v in vars_to_set.items()}
+                    print(f"[probe] set_probe_vars: {str_vars}", flush=True)
                     lines = open(var_file).readlines()
                     for i, line in enumerate(lines):
                         parts = line.split()
@@ -1649,8 +1651,9 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                     CMD.mdi(assignments)
                     ret = CMD.wait_complete(5)
                     mdi_ok = (ret == 0)
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[probe] MDI set failed: {e}", flush=True)
+            print(f"[probe] set_probe_vars result: file_saved={file_ok} mdi_set={mdi_ok}", flush=True)
             return {"ok": True, "file_saved": file_ok, "mdi_set": mdi_ok}
 
         if cmd == "get_probe_vars":
@@ -1672,6 +1675,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 parts = line.split()
                 if len(parts) >= 2 and parts[0] in wanted:
                     result[parts[0]] = float(parts[1])
+            print(f"[probe] get_probe_vars: {result}", flush=True)
             return {"ok": True, "vars": result}
 
         return {"ok": False, "error": f"Unknown cmd: {cmd}"}
@@ -1680,6 +1684,58 @@ def handle_command(msg: Dict[str, Any], armed: bool):
         return {"ok": False, "error": str(pe)}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+def _read_probe_vars():
+    """Read probe vars from var file (for 1 Hz polling). Returns dict or None."""
+    try:
+        ini_path = getattr(STAT, "ini_filename", None)
+        if not ini_path:
+            return None
+        ini = linuxcnc.ini(ini_path)
+        var_file = ini.find("RS274NGC", "PARAMETER_FILE")
+        if not var_file:
+            return None
+        if not os.path.isabs(var_file):
+            var_file = os.path.join(os.path.dirname(ini_path), var_file)
+        result = {}
+        for line in open(var_file):
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in PROBE_VAR_POLL:
+                result[parts[0]] = float(parts[1])
+        return result
+    except Exception:
+        return None
+
+
+# Probe result channels — M68 analog outputs written by probe subroutines
+_PROBE_RESULT_PINS = {
+    "x_width":      "motion.analog-out-00",
+    "y_width":      "motion.analog-out-01",
+    "diameter":     "motion.analog-out-02",
+    "edge_angle":   "motion.analog-out-03",
+    "edge_delta":   "motion.analog-out-04",
+    "x_minus":      "motion.analog-out-05",
+    "y_minus":      "motion.analog-out-06",
+    "z_minus":      "motion.analog-out-07",
+    "x_plus":       "motion.analog-out-08",
+    "y_plus":       "motion.analog-out-09",
+    "x_center":     "motion.analog-out-10",
+    "y_center":     "motion.analog-out-11",
+}
+
+
+def _read_probe_results():
+    """Read probe result HAL pins (M68 analog outputs). Returns dict or None."""
+    try:
+        result = {}
+        for key, pin in _PROBE_RESULT_PINS.items():
+            val = hal_get(pin)
+            if val is not None:
+                result[key] = float(val)
+        return result if result else None
+    except Exception:
+        return None
 
 # -----------------------------
 # Viewer support (Web 3D)
@@ -2091,10 +2147,13 @@ async def ws_endpoint(ws: WebSocket):
     last_file: Optional[str] = None
     viewer_init_sent = False
     _poll_fails = 0  # consecutive poll failures (tolerates NML startup transient)
+    _probe_poll_counter = 0
+    _last_probe_vars: Optional[dict] = None
+    _last_probe_results: Optional[dict] = None
 
 
     async def status_loop():
-        nonlocal last_file, armed, viewer_init_sent, _poll_fails
+        nonlocal last_file, armed, viewer_init_sent, _poll_fails, _probe_poll_counter, _last_probe_vars, _last_probe_results
         global lcnc_connected, STAT, CMD, ERR, _hal_last_hb, _reconnect_fails
         loop = asyncio.get_event_loop()
         while True:
@@ -2166,16 +2225,30 @@ async def ws_endpoint(ws: WebSocket):
                         print(f"[VINIT] client#{client_id} viewer_init FAILED: {e}", flush=True)
 
                 errs = await loop.run_in_executor(None, read_errors_nonblocking)
-                await ws_send_json(
-                    ws,
-                    {
-                        "type": "status",
-                        "data": asdict(st),
-                        "errors": errs,
-                        "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
-                        "armed": armed,
-                    },
-                )
+
+                # Probe var + result polling (~1 Hz)
+                _probe_poll_counter += 1
+                if _probe_poll_counter >= POLL_HZ:
+                    _probe_poll_counter = 0
+                    pv = await loop.run_in_executor(None, _read_probe_vars)
+                    if pv is not None:
+                        _last_probe_vars = pv
+                    pr = await loop.run_in_executor(None, _read_probe_results)
+                    if pr is not None:
+                        _last_probe_results = pr
+
+                status_msg: dict = {
+                    "type": "status",
+                    "data": asdict(st),
+                    "errors": errs,
+                    "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
+                    "armed": armed,
+                }
+                if _last_probe_vars:
+                    status_msg["probe_vars"] = _last_probe_vars
+                if _last_probe_results:
+                    status_msg["probe_results"] = _last_probe_results
+                await ws_send_json(ws, status_msg)
 
                 # HAL watchdog: send pin updates to subprocess
                 has_armed = any(c["armed"] for c in _clients.values())

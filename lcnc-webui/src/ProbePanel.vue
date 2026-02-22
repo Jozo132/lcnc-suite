@@ -10,6 +10,7 @@ const props = defineProps<{
   probedPosition: number[] | null;
   workPos: number[];
   initialVars: Record<string, number> | null;
+  probeResults: Record<string, number> | null;
 }>();
 
 const emit = defineEmits<{
@@ -18,7 +19,6 @@ const emit = defineEmits<{
   (e: "listProbeMacros"): void;
   (e: "simulateProbeTrip"): void;
   (e: "setProbeVars", vars: Record<string, number>): void;
-  (e: "getProbeVars"): void;
 }>();
 
 const can = usePermissions();
@@ -100,8 +100,10 @@ const params = ref({
   slowFr: 50.0,
   fastFr: 200.0,
   traverseFr: 1000.0,
-  maxDistance: 10.0,
-  clearance: 2.0,
+  maxXYDistance: 10.0,
+  xyClearance: 2.0,
+  maxZDistance: 10.0,
+  zClearance: 2.0,
   calOffset: 0.0,
   stepOffWidth: 5.0,
   extraProbeDepth: 0.0,
@@ -127,10 +129,10 @@ function buildVarMap(probeMode: number): Record<string, number> {
     "3015": p.slowFr,
     "3016": p.fastFr,
     "3017": p.traverseFr,
-    "3018": p.maxDistance,   // XY max distance
-    "3019": p.clearance,     // XY clearance
-    "3020": p.maxDistance,   // Z max distance (same value)
-    "3021": p.clearance,     // Z clearance (same value)
+    "3018": p.maxXYDistance,
+    "3019": p.xyClearance,
+    "3020": p.maxZDistance,
+    "3021": p.zClearance,
     "3022": p.extraProbeDepth,
     "3023": p.stepOffWidth,
     "3024": p.edgeWidth,
@@ -153,47 +155,32 @@ function loadParams() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const saved = JSON.parse(raw);
+      console.log("[probe] loadParams from localStorage", saved);
       if (saved.autoZero != null) autoZero.value = saved.autoZero;
       delete saved.autoZero;
       Object.assign(params.value, saved);
     }
   } catch { /* ignore */ }
-  // Request current values from var file (overlay on next tick via initialVars watcher)
-  emit("getProbeVars");
+  // Var file values arrive via 1 Hz polling in status messages (initialVars watcher)
 }
 
 function saveParams() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
+  console.log("[probe] saveParams → localStorage", { ...params.value });
   // Sync to var file (and best-effort MDI) on every change
-  emit("setProbeVars", buildVarMap(autoZero.value ? 0 : 1));
+  const varMap = buildVarMap(autoZero.value ? 0 : 1);
+  console.log("[probe] saveParams → setProbeVars", varMap);
+  emit("setProbeVars", varMap);
 }
 
-/** When var file values arrive, overlay onto current params */
+/** Sync machine-written vars (calOffset) from 1 Hz polling. UI-owned params are never overwritten. */
 watch(() => props.initialVars, (vars) => {
   if (!vars) return;
-  const p = params.value;
-  if (vars["3014"] != null) p.probeTool = vars["3014"];
-  if (vars["3015"] != null) p.slowFr = vars["3015"];
-  if (vars["3016"] != null) p.fastFr = vars["3016"];
-  if (vars["3017"] != null) p.traverseFr = vars["3017"];
-  // Use XY distance/clearance as canonical (3018/3019)
-  if (vars["3018"] != null) p.maxDistance = vars["3018"];
-  if (vars["3019"] != null) p.clearance = vars["3019"];
-  if (vars["3022"] != null) p.extraProbeDepth = vars["3022"];
-  if (vars["3023"] != null) p.stepOffWidth = vars["3023"];
-  if (vars["3024"] != null) p.edgeWidth = vars["3024"];
-  if (vars["3025"] != null) p.diameterHint = vars["3025"];
-  if (vars["3026"] != null) p.xHintBP = vars["3026"];
-  if (vars["3027"] != null) p.yHintBP = vars["3027"];
-  if (vars["3028"] != null) p.xHintRV = vars["3028"];
-  if (vars["3029"] != null) p.yHintRV = vars["3029"];
-  if (vars["3031"] != null) p.wcoRotation = vars["3031"];
-  if (vars["3032"] != null) p.calOffset = vars["3032"];
-  if (vars["3033"] != null) p.calDiameter = vars["3033"];
-  if (vars["3034"] != null) p.xCalWidth = vars["3034"];
-  if (vars["3035"] != null) p.yCalWidth = vars["3035"];
-  // Persist to localStorage
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
+  console.log("[probe] initialVars received ←", { ...vars });
+  if (vars["3032"] != null) {
+    params.value.calOffset = vars["3032"];
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
+  }
 });
 
 onMounted(loadParams);
@@ -216,6 +203,7 @@ function runGridProbe(op: GridOp) {
   activeGridOp.value = op.id;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
+  console.log("[probe] runGridProbe → setProbeVars", op.macro, vars);
   emit("setProbeVars", vars);
   emit("mdi", `O<${op.macro}> CALL`);
 }
@@ -225,6 +213,7 @@ function runBossProbe(op: GridOp) {
   activeGridOp.value = op.id;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
+  console.log("[probe] runBossProbe → setProbeVars", op.macro, vars);
   emit("setProbeVars", vars);
   emit("mdi", `O<${op.macro}> CALL`);
 }
@@ -233,6 +222,7 @@ function runRidgeProbe(op: GridOp) {
   activeGridOp.value = op.id;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
+  console.log("[probe] runRidgeProbe → setProbeVars", op.macro, vars);
   emit("setProbeVars", vars);
   emit("mdi", `O<${op.macro}> CALL`);
 }
@@ -241,6 +231,7 @@ function runAngleProbe(op: GridOp) {
   activeGridOp.value = op.id;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
+  console.log("[probe] runAngleProbe → setProbeVars", op.macro, vars);
   emit("setProbeVars", vars);
   emit("mdi", `O<${op.macro}> CALL`);
 }
@@ -249,6 +240,7 @@ function runCalProbe(macro: string) {
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
   vars["3036"] = calAxis.value;
+  console.log("[probe] runCalProbe → setProbeVars", macro, vars);
   emit("setProbeVars", vars);
   emit("mdi", `O<${macro}> CALL`);
 }
@@ -260,6 +252,12 @@ function resetCal() {
 function fmt(n: number | undefined): string {
   if (n == null || !Number.isFinite(n)) return "---";
   return n.toFixed(4);
+}
+
+function fmtR(key: string): string {
+  const v = props.probeResults?.[key];
+  if (v == null || !Number.isFinite(v)) return "---";
+  return v.toFixed(4);
 }
 </script>
 
@@ -273,6 +271,36 @@ function fmt(n: number | undefined): string {
       <button class="viewTab" :class="{ active: probeView === 'ridge' }" @click="probeView = 'ridge'">Ridge/Valley</button>
       <button class="viewTab" :class="{ active: probeView === 'angle' }" @click="probeView = 'angle'">Angle</button>
       <button class="viewTab" :class="{ active: probeView === 'cal' }" @click="probeView = 'cal'">Calibrate</button>
+    </div>
+
+    <!-- Control bar -->
+    <div class="controlBar">
+      <label class="checkRow">
+        <input type="checkbox" v-model="autoZero" @change="saveParams" />
+        Auto Zero
+      </label>
+      <span class="calOffsetGroup">
+        <span class="calOffsetLabel">Calibration Offset <span class="varNum">#3032</span></span>
+        <span class="calOffsetVal">{{ fmt(params.calOffset) }}</span>
+        <button class="calResetBtn" :disabled="!can.ready || probing" @click="resetCal">Reset</button>
+      </span>
+      <div class="controlBarRight">
+        <div class="statusRow">
+          <span class="statusDot" :class="statusClass"></span>
+          <span class="statusText">{{ probeStatus }}</span>
+        </div>
+        <button
+          class="abortBtn compact"
+          :disabled="!probing"
+          @click="emit('abort')"
+        >Abort</button>
+        <button
+          class="simTripBtn compact"
+          :disabled="!probing"
+          @click="emit('simulateProbeTrip')"
+          title="Simulate probe contact (sim/debug only)"
+        >Sim Trip</button>
+      </div>
     </div>
 
     <!-- ═══ OUTSIDE CORNERS VIEW ═══ -->
@@ -525,17 +553,14 @@ function fmt(n: number | undefined): string {
         </div>
       </div>
 
-      <!-- Hint parameters (contextual) -->
-      <div class="section">
-        <div class="sub">Dimensional Hints</div>
-        <div class="paramGrid">
-          <label>Diameter</label>
-          <input type="number" v-model.number="params.diameterHint" min="0" step="0.5" @change="saveParams" />
-          <label>X Hint</label>
-          <input type="number" v-model.number="params.xHintBP" min="0" step="0.5" @change="saveParams" />
-          <label>Y Hint</label>
-          <input type="number" v-model.number="params.yHintBP" min="0" step="0.5" @change="saveParams" />
-        </div>
+      <!-- Hint parameters (inline) -->
+      <div class="inlineParams">
+        <label>Diameter <span class="varNum">#3025</span></label>
+        <input type="number" v-model.number="params.diameterHint" min="0" step="0.5" @change="saveParams" />
+        <label>X Hint <span class="varNum">#3026</span></label>
+        <input type="number" v-model.number="params.xHintBP" min="0" step="0.5" @change="saveParams" />
+        <label>Y Hint <span class="varNum">#3027</span></label>
+        <input type="number" v-model.number="params.yHintBP" min="0" step="0.5" @change="saveParams" />
       </div>
     </template>
 
@@ -632,13 +657,10 @@ function fmt(n: number | undefined): string {
         </div>
       </div>
 
-      <!-- Angle parameters -->
-      <div class="section">
-        <div class="sub">Angle Parameters</div>
-        <div class="paramGrid">
-          <label>Edge Width</label>
-          <input type="number" v-model.number="params.edgeWidth" min="0.1" step="0.1" @change="saveParams" />
-        </div>
+      <!-- Angle parameters (inline) -->
+      <div class="inlineParams">
+        <label>Edge Width <span class="varNum">#3024</span></label>
+        <input type="number" v-model.number="params.edgeWidth" min="0.1" step="0.1" @change="saveParams" />
         <label class="checkRow">
           <input type="checkbox" :checked="params.wcoRotation === 1" @change="params.wcoRotation = ($event.target as HTMLInputElement).checked ? 1 : 0; saveParams()" />
           Set Rotation WCO
@@ -648,20 +670,11 @@ function fmt(n: number | undefined): string {
 
     <!-- ═══ CALIBRATE VIEW ═══ -->
     <template v-else-if="probeView === 'cal'">
-      <!-- Cal offset display + reset -->
-      <div class="section">
-        <div class="calOffsetRow">
-          <span class="calOffsetLabel">Probe Cal Offset:</span>
-          <span class="calOffsetVal">{{ fmt(params.calOffset) }}</span>
-          <button class="calResetBtn" :disabled="!can.ready || probing" @click="resetCal">Reset</button>
-        </div>
-      </div>
-
-      <!-- Round hole calibration -->
-      <div class="section">
-        <div class="sub">Round Hole Calibration</div>
+      <!-- Round calibration: buttons + diameter -->
+      <div class="calSection">
+        <div class="sub">Round Hole</div>
         <div class="calRow">
-          <div class="calGrid">
+          <div class="calBtnPair">
             <button class="gridCell" :disabled="!can.ready || probing" title="Round hole — edge start" @click="runCalProbe('probe_cal_round_pocket')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M40 18a22 22 0 1 0 0 44a22 22 0 1 0 0-44Z" fill-rule="evenodd" class="workpiece" />
@@ -685,18 +698,20 @@ function fmt(n: number | undefined): string {
               </svg>
             </button>
           </div>
-          <div class="calParamsStacked">
-            <div class="calParamTitle">Cal Diameter</div>
-            <input type="number" v-model.number="params.calDiameter" min="0" step="0.001" @change="saveParams" />
+          <div class="calParamStacked">
+            <div class="calParamRow">
+              <label>Diameter <span class="varNum">#3033</span></label>
+              <input type="number" v-model.number="params.calDiameter" min="0" step="0.001" @change="saveParams" />
+            </div>
           </div>
         </div>
       </div>
 
-      <!-- Rectangular pocket calibration -->
-      <div class="section">
-        <div class="sub">Rectangular Pocket Calibration</div>
+      <!-- Rect calibration: buttons + x/y width -->
+      <div class="calSection">
+        <div class="sub">Rectangular Pocket</div>
         <div class="calRow">
-          <div class="calGrid">
+          <div class="calBtnPair">
             <button class="gridCell" :disabled="!can.ready || probing" title="Rect pocket — edge start" @click="runCalProbe('probe_cal_square_pocket')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M15 15H65V65H15Z" fill-rule="evenodd" class="workpiece" />
@@ -720,18 +735,21 @@ function fmt(n: number | undefined): string {
               </svg>
             </button>
           </div>
-          <div class="calParamsStacked">
-            <div class="calParamTitle">Cal Width</div>
-            <div class="calWidthRow">
-              <label>X</label>
+          <div class="calParamStacked">
+            <div class="calParamRow">
+              <label>X Width <span class="varNum">#3034</span></label>
               <input type="number" v-model.number="params.xCalWidth" min="0" step="0.001" @change="saveParams" />
             </div>
-            <div class="calWidthRow">
-              <label>Y</label>
+            <div class="calParamRow">
+              <label>Y Width <span class="varNum">#3035</span></label>
               <input type="number" v-model.number="params.yCalWidth" min="0" step="0.001" @change="saveParams" />
             </div>
           </div>
         </div>
+      </div>
+
+      <!-- Calibrate on axis selector -->
+      <div class="section">
         <div class="calParamTitle">Calibrate on:</div>
         <div class="calAxisRow">
           <button class="calAxisBtn" :class="{ active: calAxis === 0 }" @click="calAxis = 0">Avg XY</button>
@@ -811,15 +829,12 @@ function fmt(n: number | undefined): string {
         </div>
       </div>
 
-      <!-- Hint parameters -->
-      <div class="section">
-        <div class="sub">Dimensional Hints</div>
-        <div class="paramGrid">
-          <label>X Hint</label>
-          <input type="number" v-model.number="params.xHintRV" min="0" step="0.5" @change="saveParams" />
-          <label>Y Hint</label>
-          <input type="number" v-model.number="params.yHintRV" min="0" step="0.5" @change="saveParams" />
-        </div>
+      <!-- Hint parameters (inline) -->
+      <div class="inlineParams">
+        <label>X Hint <span class="varNum">#3028</span></label>
+        <input type="number" v-model.number="params.xHintRV" min="0" step="0.5" @change="saveParams" />
+        <label>Y Hint <span class="varNum">#3029</span></label>
+        <input type="number" v-model.number="params.yHintRV" min="0" step="0.5" @change="saveParams" />
       </div>
     </template>
 
@@ -828,87 +843,63 @@ function fmt(n: number | undefined): string {
     <!-- Parameters (shared across views) -->
     <div class="section">
       <div class="sub">Parameters</div>
-      <div class="paramGrid">
-        <label>Probe Tool</label>
+      <div class="paramGrid twoCol">
+        <label>Probe Tool # <span class="varNum">#3014</span></label>
         <input type="number" v-model.number="params.probeTool" min="1" step="1" @change="saveParams" />
 
-        <label>Max Distance</label>
-        <input type="number" v-model.number="params.maxDistance" min="0.1" step="0.5" @change="saveParams" />
-
-        <label>Clearance</label>
-        <input type="number" v-model.number="params.clearance" min="0.01" step="0.1" @change="saveParams" />
-
-        <label>Step Off</label>
-        <input type="number" v-model.number="params.stepOffWidth" min="0.1" step="0.5" @change="saveParams" />
-
-        <label>Extra Depth</label>
-        <input type="number" v-model.number="params.extraProbeDepth" min="0" step="0.1" @change="saveParams" />
-
-        <label>Slow Feed</label>
+        <label>Probe Slow FRate <span class="varNum">#3015</span></label>
         <input type="number" v-model.number="params.slowFr" min="0" step="1" @change="saveParams" />
 
-        <label>Fast Feed</label>
-        <input type="number" v-model.number="params.fastFr" min="1" step="10" @change="saveParams" />
-
-        <label>Traverse Feed</label>
+        <label>Probe Traverse FR <span class="varNum">#3017</span></label>
         <input type="number" v-model.number="params.traverseFr" min="1" step="100" @change="saveParams" />
 
-        <label>Cal Offset</label>
-        <input type="number" v-model.number="params.calOffset" step="0.001" @change="saveParams" />
-      </div>
-      <label class="checkRow">
-        <input type="checkbox" v-model="autoZero" @change="saveParams" />
-        Auto Zero
-      </label>
-    </div>
+        <label>Probe Fast FRate <span class="varNum">#3016</span></label>
+        <input type="number" v-model.number="params.fastFr" min="1" step="10" @change="saveParams" />
 
-    <div class="sep"></div>
+        <label>Max X/Y Distance <span class="varNum">#3018</span></label>
+        <input type="number" v-model.number="params.maxXYDistance" min="0" step="0.5" @change="saveParams" />
 
-    <!-- Abort + status -->
-    <div class="section">
-      <div class="btnRow">
-        <button
-          class="abortBtn"
-          :disabled="!probing"
-          @click="emit('abort')"
-        >Abort</button>
-        <button
-          class="simTripBtn"
-          :disabled="!probing"
-          @click="emit('simulateProbeTrip')"
-          title="Simulate probe contact (sim/debug only)"
-        >Sim Trip</button>
-      </div>
+        <label>X/Y Clearance <span class="varNum">#3019</span></label>
+        <input type="number" v-model.number="params.xyClearance" min="0" step="0.1" @change="saveParams" />
 
-      <div class="statusRow">
-        <span class="statusDot" :class="statusClass"></span>
-        <span class="statusText">{{ probeStatus }}</span>
+        <label>Max Z Distance <span class="varNum">#3020</span></label>
+        <input type="number" v-model.number="params.maxZDistance" min="0" step="0.5" @change="saveParams" />
+
+        <label>Z Clearance <span class="varNum">#3021</span></label>
+        <input type="number" v-model.number="params.zClearance" min="0" step="0.1" @change="saveParams" />
+
+        <label>Extra Probe Depth <span class="varNum">#3022</span></label>
+        <input type="number" v-model.number="params.extraProbeDepth" min="0" step="0.1" @change="saveParams" />
+
+        <label>Step Off Width <span class="varNum">#3023</span></label>
+        <input type="number" v-model.number="params.stepOffWidth" min="0.1" step="0.5" @change="saveParams" />
       </div>
     </div>
 
     <div class="sep"></div>
 
-    <!-- Results -->
+    <!-- Probe Results (PB-style feedback) -->
     <div class="section">
-      <div class="sub">Probed Position</div>
-      <div class="resultGrid">
-        <div class="resultAxis"><span class="axisLabel">X</span><span class="axisVal">{{ probeTripped ? fmt(probedPosition?.[0]) : '---' }}</span></div>
-        <div class="resultAxis"><span class="axisLabel">Y</span><span class="axisVal">{{ probeTripped ? fmt(probedPosition?.[1]) : '---' }}</span></div>
-        <div class="resultAxis"><span class="axisLabel">Z</span><span class="axisVal">{{ probeTripped ? fmt(probedPosition?.[2]) : '---' }}</span></div>
+      <div class="sub">Probe Results</div>
+      <div class="probeResultsGrid">
+        <div class="prCell"><span class="prLabel">X-</span><span class="prVal">{{ fmtR("x_minus") }}</span></div>
+        <div class="prCell"><span class="prLabel">X+</span><span class="prVal">{{ fmtR("x_plus") }}</span></div>
+        <div class="prCell"><span class="prLabel">X Width</span><span class="prVal">{{ fmtR("x_width") }}</span></div>
+
+        <div class="prCell"><span class="prLabel">Y-</span><span class="prVal">{{ fmtR("y_minus") }}</span></div>
+        <div class="prCell"><span class="prLabel">Y+</span><span class="prVal">{{ fmtR("y_plus") }}</span></div>
+        <div class="prCell"><span class="prLabel">Y Width</span><span class="prVal">{{ fmtR("y_width") }}</span></div>
+
+        <div class="prCell"><span class="prLabel">Z-</span><span class="prVal">{{ fmtR("z_minus") }}</span></div>
+        <div class="prCell"><span class="prLabel">Diam</span><span class="prVal">{{ fmtR("diameter") }}</span></div>
+        <div class="prCell"><span class="prLabel">X Center</span><span class="prVal">{{ fmtR("x_center") }}</span></div>
+
+        <div class="prCell"><span class="prLabel">Edge Delta</span><span class="prVal">{{ fmtR("edge_delta") }}</span></div>
+        <div class="prCell"><span class="prLabel">Edge Angle</span><span class="prVal">{{ fmtR("edge_angle") }}</span></div>
+        <div class="prCell"><span class="prLabel">Y Center</span><span class="prVal">{{ fmtR("y_center") }}</span></div>
       </div>
     </div>
 
-    <div class="sep"></div>
-
-    <!-- Current position reference -->
-    <div class="section">
-      <div class="sub">Current Work Position</div>
-      <div class="resultGrid">
-        <div class="resultAxis"><span class="axisLabel">X</span><span class="axisVal dim">{{ fmt(workPos[0]) }}</span></div>
-        <div class="resultAxis"><span class="axisLabel">Y</span><span class="axisVal dim">{{ fmt(workPos[1]) }}</span></div>
-        <div class="resultAxis"><span class="axisLabel">Z</span><span class="axisVal dim">{{ fmt(workPos[2]) }}</span></div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -919,6 +910,21 @@ function fmt(n: number | undefined): string {
   gap: 12px;
   overflow-y: auto;
   height: 100%;
+}
+
+/* Control bar (horizontal, between tabs and grid) */
+.controlBar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+}
+
+.controlBarRight {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
 }
 
 .section {
@@ -982,11 +988,13 @@ function fmt(n: number | undefined): string {
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }
 
-/* 3x3 grid */
+/* Grids (centered) */
 .gridWrap {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 6px;
+  max-width: 294px;
+  margin: 0 auto;
 }
 
 .gridWrap.bossGrid {
@@ -997,11 +1005,82 @@ function fmt(n: number | undefined): string {
   grid-template-columns: repeat(3, 1fr);
 }
 
-/* Calibration layout */
-.calOffsetRow {
+/* Calibration rows */
+.calSection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.calRow {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 12px;
+}
+
+.calBtnPair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  width: 196px;
+  flex-shrink: 0;
+}
+
+.calParamStacked {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-self: center;
+}
+
+.calParamRow {
+  display: grid;
+  grid-template-columns: 100px 80px;
+  align-items: center;
+  gap: 6px;
+}
+
+.calParamRow label {
+  font-size: 11px;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.calParamRow input {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Inline params (single horizontal row) */
+.inlineParams {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.inlineParams label {
+  font-size: 11px;
+  opacity: 0.7;
+  white-space: nowrap;
+}
+
+.inlineParams input {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  width: 80px;
+}
+
+/* Calibration layout */
+.calOffsetGroup {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
 }
 
 .calOffsetLabel {
@@ -1028,55 +1107,16 @@ function fmt(n: number | undefined): string {
   margin-left: auto;
 }
 
-.calRow {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.calGrid {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
-  gap: 6px;
-  flex-shrink: 0;
-  width: 140px;
-}
-
-.calParamsStacked {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  align-self: center;
-  flex: 1;
-}
-
 .calParamTitle {
   font-size: 11px;
   font-weight: 600;
   opacity: 0.6;
 }
 
-.calWidthRow {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.calWidthRow label {
-  font-size: 11px;
-  font-weight: 600;
-  opacity: 0.6;
-  min-width: 12px;
-}
-
-.calWidthRow input,
-.calParamsStacked > input {
-  width: 100%;
-}
-
 .calAxisRow {
   display: flex;
   gap: 4px;
+  max-width: 294px;
 }
 
 .calAxisBtn {
@@ -1154,9 +1194,19 @@ function fmt(n: number | undefined): string {
   align-items: center;
 }
 
+.paramGrid.twoCol {
+  grid-template-columns: auto 1fr auto 1fr;
+}
+
 .paramGrid label {
   font-size: 11px;
   opacity: 0.7;
+}
+
+.varNum {
+  opacity: 0.4;
+  font-size: 10px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
 }
 
 .paramGrid input {
@@ -1173,7 +1223,6 @@ function fmt(n: number | undefined): string {
   font-size: 12px;
   cursor: pointer;
   user-select: none;
-  margin-top: 4px;
 }
 
 /* Run / Abort buttons */
@@ -1190,6 +1239,13 @@ function fmt(n: number | undefined): string {
   background: color-mix(in oklab, var(--danger) 20%, var(--button-bg));
   border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
   color: var(--danger);
+}
+
+.abortBtn.compact,
+.simTripBtn.compact {
+  padding: 5px 10px;
+  font-size: 11px;
+  border-radius: 6px;
 }
 
 .abortBtn:disabled {
@@ -1223,7 +1279,6 @@ function fmt(n: number | undefined): string {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-top: 4px;
 }
 
 .statusDot {
@@ -1253,33 +1308,34 @@ function fmt(n: number | undefined): string {
   opacity: 0.7;
 }
 
-/* Results */
-.resultGrid {
-  display: flex;
-  flex-direction: column;
+/* Probe results (PB-style 3×4 grid) */
+.probeResultsGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
   gap: 4px;
 }
 
-.resultAxis {
+.prCell {
   display: flex;
-  align-items: baseline;
-  gap: 10px;
+  flex-direction: column;
+  padding: 4px 6px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--fg) 4%, var(--bg));
+  border: 1px solid var(--border);
 }
 
-.axisLabel {
-  font-size: 11px;
-  opacity: 0.6;
-  width: 14px;
+.prLabel {
+  font-size: 10px;
+  font-weight: 600;
+  opacity: 0.5;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
-.axisVal {
-  font-size: 16px;
+.prVal {
+  font-size: 13px;
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
   font-weight: 600;
 }
 
-.axisVal.dim {
-  opacity: 0.5;
-  font-size: 13px;
-}
 </style>

@@ -647,18 +647,17 @@ onUnmounted(() => {
   document.removeEventListener("visibilitychange", visHandler);
 });
 
-/** ---------- Probe var file sync ---------- */
+/** ---------- Probe var file sync (1 Hz via status message) ---------- */
 const probeVarsFromFile = ref<Record<string, number> | null>(null);
-const PROBE_VAR_NUMS = [3014, 3015, 3016, 3017, 3018, 3019, 3020, 3021, 3022, 3023, 3024, 3025, 3026, 3027, 3028, 3029, 3030, 3031, 3032, 3033, 3034, 3035, 3036];
+const probeResults = ref<Record<string, number> | null>(null);
 
-function requestProbeVars() {
-  send({ cmd: "get_probe_vars", vars: PROBE_VAR_NUMS });
-}
-
-// When a reply containing "vars" arrives, treat it as a get_probe_vars response
-watch(lastReply, (reply) => {
-  if (reply?.ok && reply.vars && typeof reply.vars === "object") {
-    probeVarsFromFile.value = reply.vars;
+// Gateway includes probe_vars and probe_results in status messages (~1 Hz)
+watch(status, (st) => {
+  if (st?.probe_vars && typeof st.probe_vars === "object") {
+    probeVarsFromFile.value = st.probe_vars;
+  }
+  if (st?.probe_results && typeof st.probe_results === "object") {
+    probeResults.value = st.probe_results;
   }
 });
 
@@ -1104,11 +1103,11 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :probedPosition="st.probed_position ?? null"
               :workPos="workPos"
               :initialVars="probeVarsFromFile"
+              :probeResults="probeResults"
               @mdi="send({ cmd: 'mdi', text: $event })"
               @abort="send({ cmd: 'abort' })"
               @simulateProbeTrip="send({ cmd: 'simulate_probe_trip' })"
               @setProbeVars="send({ cmd: 'set_probe_vars', vars: $event })"
-              @getProbeVars="requestProbeVars"
             />
           </template>
 
@@ -1822,7 +1821,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
   .panels          { align-items: stretch; flex: 1; min-height: 0; overflow-x: auto; overflow-y: hidden; }
   .panel           { flex: 0 0 var(--panel-min-w); min-height: var(--panel-min-h); }
   .panel-viewer    { flex: 1; min-width: var(--panel-min-w-wide); overflow: hidden; }
-  .panel-manual    { min-width: var(--panel-min-w-wide); }
+  .panel-manual,
+  .panel-probe     { min-width: var(--panel-min-w-wide); }
   .panel-gcode,
   .panel-tools,
   .panel-messages,
