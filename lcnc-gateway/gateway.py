@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # ---- Config ----
 POLL_HZ = 30  # status update rate
-PROBE_VAR_POLL = {"3032"}  # vars written by subroutines (calOffset) — polled at 1 Hz
+PROBE_VAR_POLL = {"3032"}  # calOffset — polled at 1 Hz from var file
 BASE_DIR = Path(__file__).resolve().parent
 MACHINE_DIR = BASE_DIR / "machine"
 
@@ -1708,34 +1708,27 @@ def _read_probe_vars():
         return None
 
 
-# Probe result channels — M68 analog outputs written by probe subroutines
-_PROBE_RESULT_PINS = {
-    "x_width":      "motion.analog-out-00",
-    "y_width":      "motion.analog-out-01",
-    "diameter":     "motion.analog-out-02",
-    "edge_angle":   "motion.analog-out-03",
-    "edge_delta":   "motion.analog-out-04",
-    "x_minus":      "motion.analog-out-05",
-    "y_minus":      "motion.analog-out-06",
-    "z_minus":      "motion.analog-out-07",
-    "x_plus":       "motion.analog-out-08",
-    "y_plus":       "motion.analog-out-09",
-    "x_center":     "motion.analog-out-10",
-    "y_center":     "motion.analog-out-11",
+# Probe result widget names from DEBUG EVAL messages → friendly keys
+_PROBE_WIDGET_MAP = {
+    "x_probed_width":          "x_width",
+    "x_center_probed":         "x_center",
+    "y_probed_width":          "y_width",
+    "y_center_probed":         "y_center",
+    "x_minus_probed_position": "x_minus",
+    "x_plus_probed_position":  "x_plus",
+    "y_minus_probed_position": "y_minus",
+    "y_plus_probed_position":  "y_plus",
+    "z_minus_probed_position": "z_minus",
+    "averaged_diam":           "diameter",
+    "edge_delta":              "edge_delta",
+    "edge_angle":              "edge_angle",
+    "calibration_offset_3032": "cal_offset",
 }
 
-
-def _read_probe_results():
-    """Read probe result HAL pins (M68 analog outputs). Returns dict or None."""
-    try:
-        result = {}
-        for key, pin in _PROBE_RESULT_PINS.items():
-            val = hal_get(pin)
-            if val is not None:
-                result[key] = float(val)
-        return result if result else None
-    except Exception:
-        return None
+_PROBE_EVAL_RE = re.compile(
+    r'EVAL\[vcp\.getWidget\{"(\w+)"\}\.setValue\{([^}]+)\}\]',
+    re.IGNORECASE,
+)
 
 # -----------------------------
 # Viewer support (Web 3D)
@@ -2149,11 +2142,11 @@ async def ws_endpoint(ws: WebSocket):
     _poll_fails = 0  # consecutive poll failures (tolerates NML startup transient)
     _probe_poll_counter = 0
     _last_probe_vars: Optional[dict] = None
-    _last_probe_results: Optional[dict] = None
+    _probe_results: dict = {}  # populated from DEBUG EVAL messages in real-time
 
 
     async def status_loop():
-        nonlocal last_file, armed, viewer_init_sent, _poll_fails, _probe_poll_counter, _last_probe_vars, _last_probe_results
+        nonlocal last_file, armed, viewer_init_sent, _poll_fails, _probe_poll_counter, _last_probe_vars, _probe_results
         global lcnc_connected, STAT, CMD, ERR, _hal_last_hb, _reconnect_fails
         loop = asyncio.get_event_loop()
         while True:
@@ -2224,18 +2217,32 @@ async def ws_endpoint(ws: WebSocket):
                     except Exception as e:
                         print(f"[VINIT] client#{client_id} viewer_init FAILED: {e}", flush=True)
 
-                errs = await loop.run_in_executor(None, read_errors_nonblocking)
+                raw_errs = await loop.run_in_executor(None, read_errors_nonblocking)
 
-                # Probe var + result polling (~1 Hz)
+                # Parse probe results from DEBUG EVAL messages and filter them out
+                errs = []
+                OPERATOR_DISPLAY = 13
+                for kind, text in raw_errs:
+                    if kind == OPERATOR_DISPLAY:
+                        m = _PROBE_EVAL_RE.search(text)
+                        if m:
+                            widget_name = m.group(1)
+                            key = _PROBE_WIDGET_MAP.get(widget_name)
+                            if key:
+                                try:
+                                    _probe_results[key] = float(m.group(2))
+                                except ValueError:
+                                    pass
+                                continue  # don't forward EVAL messages to UI
+                    errs.append((kind, text))
+
+                # Probe var polling (~1 Hz) — calOffset #3032
                 _probe_poll_counter += 1
                 if _probe_poll_counter >= POLL_HZ:
                     _probe_poll_counter = 0
                     pv = await loop.run_in_executor(None, _read_probe_vars)
                     if pv is not None:
                         _last_probe_vars = pv
-                    pr = await loop.run_in_executor(None, _read_probe_results)
-                    if pr is not None:
-                        _last_probe_results = pr
 
                 status_msg: dict = {
                     "type": "status",
@@ -2246,8 +2253,8 @@ async def ws_endpoint(ws: WebSocket):
                 }
                 if _last_probe_vars:
                     status_msg["probe_vars"] = _last_probe_vars
-                if _last_probe_results:
-                    status_msg["probe_results"] = _last_probe_results
+                if _probe_results:
+                    status_msg["probe_results"] = _probe_results
                 await ws_send_json(ws, status_msg)
 
                 # HAL watchdog: send pin updates to subprocess

@@ -123,7 +123,7 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - **Tool Management**: Tool number, diameter, and length offset tracking
 - **G-code Parser**: Preview generator for feed and rapid moves (G0/G1/G2/G3)
 - **G-code File Management**: Upload, browse, and load G-code files via REST API
-- **Probe Support**: 1 Hz polling of probe variables (#3032 cal offset) and probe result HAL pins (M68 analog outputs E0-E11)
+- **Probe Support**: 1 Hz polling of probe calibration offset (#3032) from parameter file; real-time probe results parsed from DEBUG EVAL messages on the error channel
 - **Error Channel**: Real-time LinuxCNC error/message forwarding
 - **STL Model Serving**: Static file server for 3D machine models
 
@@ -140,7 +140,7 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - G-code viewer with syntax highlighting, program controls, and progress bar
 - 3D machine visualization with Three.js (colorized toolpath, backplot, HUD overlays)
 - Probe panel with 6 views: Outside/Inside Corners (3x3 grid), Boss/Pocket, Ridge/Valley, Edge Angle, and Calibrate (round/rect)
-- Probe results grid (X/Y/Z probed, diameter, width, center, edge angle) from HAL analog output pins
+- Probe results grid (X/Y/Z probed, diameter, width, center, edge angle) from real-time DEBUG EVAL messages
 - Calibration offset display with reset in always-visible control bar
 - HUD overlay pills on 3D viewer: jog, gcode, spindle, override, and setup controls
 - Centralized permission system via Vue provide/inject — all button enable/disable logic defined once:
@@ -440,7 +440,7 @@ Clients should send a heartbeat every 1 second. If the gateway doesn't receive a
 {"cmd": "simulate_probe_trip"}
 ```
 
-`set_probe_vars` writes variables to the LinuxCNC parameter file and sets them via MDI. `probe_vars` (#3032 cal offset) and `probe_results` (HAL analog output pins from probe subroutines) are polled at 1 Hz and included in `status` messages automatically.
+`set_probe_vars` writes variables to the LinuxCNC parameter file and sets them via MDI. `probe_vars` (#3032 cal offset) is polled at 1 Hz from the parameter file. `probe_results` are parsed in real-time from ProbeBasic's `DEBUG EVAL` messages on the LinuxCNC error channel and included in `status` messages automatically.
 
 ### Error Handling
 

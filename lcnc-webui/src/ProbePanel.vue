@@ -200,7 +200,7 @@ const statusClass = computed(() => {
 
 // ─── Run probe ────────────────────────────────────────────────────
 function runGridProbe(op: GridOp) {
-  if (!can.ready || props.probing) return;
+  if (!can.value.ready || props.probing) return;
   activeGridOp.value = op.id;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
@@ -210,7 +210,7 @@ function runGridProbe(op: GridOp) {
 }
 
 function runBossProbe(op: GridOp) {
-  if (!can.ready || props.probing) return;
+  if (!can.value.ready || props.probing) return;
   activeBossOp.value = op.id;
   activeGridOp.value = op.id;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
@@ -221,7 +221,7 @@ function runBossProbe(op: GridOp) {
 }
 
 function runRidgeProbe(op: GridOp) {
-  if (!can.ready || props.probing) return;
+  if (!can.value.ready || props.probing) return;
   activeGridOp.value = op.id;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
@@ -231,7 +231,7 @@ function runRidgeProbe(op: GridOp) {
 }
 
 function runAngleProbe(op: GridOp) {
-  if (!can.ready || props.probing) return;
+  if (!can.value.ready || props.probing) return;
   activeGridOp.value = op.id;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
@@ -241,7 +241,7 @@ function runAngleProbe(op: GridOp) {
 }
 
 function runCalProbe(macro: string) {
-  if (!can.ready || props.probing) return;
+  if (!can.value.ready || props.probing) return;
   localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
   const vars = buildVarMap(autoZero.value ? 0 : 1);
   vars["3036"] = calAxis.value;
@@ -251,7 +251,7 @@ function runCalProbe(macro: string) {
 }
 
 function resetCal() {
-  if (!can.ready || props.probing) return;
+  if (!can.value.ready || props.probing) return;
   emit("mdi", `O<probe_cal_reset> CALL`);
 }
 
