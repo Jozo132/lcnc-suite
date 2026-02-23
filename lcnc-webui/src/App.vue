@@ -207,6 +207,71 @@ const g5xLabel = computed(() => {
   return `G5x[${idx}]`;
 });
 
+const hasRotation = computed(() => {
+  const rot = st.value.rotation_xy;
+  return rot != null && rot !== 0;
+});
+
+// Cycle chip value: "G54" → "ROT 45.0" → "G54" when rotation is active
+const offsetCyclePhase = ref(false);
+let _offsetCycleTimer: ReturnType<typeof setInterval> | null = null;
+
+watch(hasRotation, (active) => {
+  if (active && !_offsetCycleTimer) {
+    _offsetCycleTimer = setInterval(() => { offsetCyclePhase.value = !offsetCyclePhase.value; }, 2000);
+  } else if (!active) {
+    if (_offsetCycleTimer) { clearInterval(_offsetCycleTimer); _offsetCycleTimer = null; }
+    offsetCyclePhase.value = false;
+  }
+}, { immediate: true });
+
+const offsetChipValue = computed(() => {
+  if (hasRotation.value && offsetCyclePhase.value) {
+    return `ROT ${st.value.rotation_xy!.toFixed(1)}`;
+  }
+  return g5xLabel.value;
+});
+
+function fmtOff(v: number | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "0.0000";
+  return v.toFixed(4);
+}
+
+// WCS offset table (fetched on demand when popover opens)
+type WcsRow = { name: string; x: number; y: number; z: number; r: number };
+const wcsTable = ref<WcsRow[]>([]);
+const selectedWcs = ref<string | null>(null);
+
+function fetchWcsTable() {
+  send({ cmd: "get_wcs_table" });
+}
+
+// Reset selection to active WCS when popover opens
+function openOffsetsPopover() {
+  toggleChip("offsets");
+  if (openChip.value === "offsets") {
+    selectedWcs.value = g5xLabel.value;
+    fetchWcsTable();
+  }
+}
+
+function clearWcs(target: string) {
+  send({ cmd: "clear_wcs", target });
+  // Local zero for instant feedback; gateway reply will confirm with full table
+  if (target === "all") {
+    wcsTable.value = wcsTable.value.map(row => ({ ...row, x: 0, y: 0, z: 0, r: 0 }));
+  } else {
+    wcsTable.value = wcsTable.value.map(row =>
+      row.name === target ? { ...row, x: 0, y: 0, z: 0, r: 0 } : row
+    );
+  }
+}
+
+// Capture WCS table replies (sync flush to avoid missing rapid updates)
+watch(lastReply, (r) => {
+  if (r?.ok && r.table) wcsTable.value = r.table;
+}, { flush: "sync" });
+
 const taskModeLabel = computed(() => {
   const mode = st.value.task_mode;
   if (mode === TASK_MODE_MANUAL) return "MANUAL";
@@ -781,9 +846,49 @@ watch(isHomed, (nowHomed, wasHomed) => {
           <div class="popover chipPopover programPopover" :class="{ open: openChip === 'program' }">
             <div class="statusRow"><div class="k">Task Mode</div><div class="v">{{ taskModeLabel }}</div></div>
             <div class="statusRow"><div class="k">Interpreter</div><div class="v">{{ interpStateLabel }}</div></div>
-            <div class="statusRow"><div class="k">Work Coord</div><div class="v">{{ g5xLabel }}</div></div>
             <div class="statusRow"><div class="k">G-codes</div><div class="v codes">{{ activeGcodes }}</div></div>
             <div class="statusRow"><div class="k">M-codes</div><div class="v codes">{{ activeMcodes }}</div></div>
+          </div>
+        </div>
+
+        <div class="statusChip" :class="{ warn: hasRotation }" @click.stop="openOffsetsPopover()">
+          <span class="chipLabel">Offsets</span>
+          <span class="chipValue">{{ offsetChipValue }}</span>
+          <div class="popover chipPopover offsetsPopover" :class="{ open: openChip === 'offsets' }" @click.stop>
+            <table class="offsetTable">
+              <thead>
+                <tr><th></th><th>X</th><th>Y</th><th>Z</th><th>R</th></tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in wcsTable" :key="row.name"
+                    :class="{ activeRow: row.name === g5xLabel, selectedRow: row.name === selectedWcs }"
+                    @click="selectedWcs = row.name">
+                  <td class="offLabel">{{ row.name }}</td>
+                  <td>{{ fmtOff(row.x) }}</td>
+                  <td>{{ fmtOff(row.y) }}</td>
+                  <td>{{ fmtOff(row.z) }}</td>
+                  <td :class="{ warn: row.r !== 0 }">{{ fmtOff(row.r) }}</td>
+                </tr>
+                <tr v-if="st.g92_offset?.some((v: number) => v !== 0)" class="g92Row">
+                  <td class="offLabel">G92</td>
+                  <td>{{ fmtOff(st.g92_offset?.[0]) }}</td>
+                  <td>{{ fmtOff(st.g92_offset?.[1]) }}</td>
+                  <td>{{ fmtOff(st.g92_offset?.[2]) }}</td>
+                  <td></td>
+                </tr>
+                <tr v-if="st.tool_offset?.some((v: number) => v !== 0)" class="toolRow">
+                  <td class="offLabel">Tool</td>
+                  <td>{{ fmtOff(st.tool_offset?.[0]) }}</td>
+                  <td>{{ fmtOff(st.tool_offset?.[1]) }}</td>
+                  <td>{{ fmtOff(st.tool_offset?.[2]) }}</td>
+                  <td></td>
+                </tr>
+              </tbody>
+            </table>
+            <div class="offsetActions">
+              <button class="ovrPresetBtn" :disabled="!permissions.idle || !selectedWcs" @click="clearWcs(selectedWcs!)">Clear {{ selectedWcs }}</button>
+              <button class="ovrPresetBtn" :disabled="!permissions.idle" @click="clearWcs('all')">Clear All</button>
+            </div>
           </div>
         </div>
 
@@ -1454,6 +1559,19 @@ watch(isHomed, (nowHomed, wasHomed) => {
 .programPopover {
   min-width: 300px;
 }
+
+.offsetsPopover { min-width: 300px; }
+.offsetTable { width: 100%; border-collapse: collapse; font-size: 11px; font-variant-numeric: tabular-nums; }
+.offsetTable th { text-align: right; padding: 2px 6px; color: #999; font-weight: 500; }
+.offsetTable td { text-align: right; padding: 2px 6px; font-family: 'JetBrains Mono', monospace; }
+.offsetTable .offLabel { text-align: left; font-weight: 600; color: #ccc; }
+.offsetTable tbody tr { cursor: pointer; }
+.offsetTable tbody tr:hover { background: rgba(255,255,255,0.05); }
+.offsetTable .activeRow .offLabel { color: #4a90e2; }
+.offsetTable .selectedRow { background: rgba(74, 144, 226, 0.15); outline: 1px solid rgba(74, 144, 226, 0.4); }
+.offsetTable .g92Row, .offsetTable .toolRow { border-top: 1px solid rgba(255,255,255,0.1); cursor: default; }
+.offsetTable .warn { color: #f0ad4e; }
+.offsetActions { display: flex; gap: 6px; margin-top: 8px; justify-content: flex-end; }
 
 .overridesPopover {
   min-width: 260px;

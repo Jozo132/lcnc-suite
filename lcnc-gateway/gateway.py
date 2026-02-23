@@ -28,6 +28,13 @@ ERR: Optional[linuxcnc.error_channel] = None
 lcnc_connected = False
 _lcnc_pid: Optional[int] = None  # tracks linuxcncsvr PID
 
+# ---- WCS offset cache (populated from STAT at 30Hz) ----
+_WCS_BASES = [5220, 5240, 5260, 5280, 5300, 5320, 5340, 5360, 5380]
+_WCS_NAMES = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"]
+_G5X_MAP = {"G54": 1, "G55": 2, "G56": 3, "G57": 4, "G58": 5, "G59": 6, "G59.1": 7, "G59.2": 8, "G59.3": 9}
+_wcs_cache = [{"name": n, "x": 0.0, "y": 0.0, "z": 0.0, "r": 0.0} for n in _WCS_NAMES]
+_wcs_cache_seeded = False
+
 # ---- Connected WebSocket clients ----
 _clients: Dict[int, Dict[str, Any]] = {}
 _next_client_id = 0
@@ -168,10 +175,12 @@ def check_lcnc_instance() -> bool:
             return True
         return False
     # PID changed (appeared, disappeared, or different instance)
+    global _wcs_cache_seeded
     old_pid = _lcnc_pid
     _lcnc_pid = pid
     _tool_tbl_path = None  # config may have changed, re-resolve from INI
     _tool_tbl_ini = None
+    _wcs_cache_seeded = False  # re-seed WCS cache from var file on next poll
     if pid is None:
         print(f"[VINIT] check_lcnc_instance: PID gone (was {old_pid}), disconnecting", flush=True)
         lcnc_connected = False
@@ -552,6 +561,7 @@ class StatusPayload:
     g5x_index: Optional[int]  # 0=G54, 1=G55, 2=G56, etc.
     g5x_offset: Optional[List[float]]
     g92_offset: Optional[List[float]]
+    rotation_xy: Optional[float]
     joint_pos: Optional[List[float]]
     tool_offset: Optional[List[float]]
     machine_pos: Optional[List[float]]
@@ -850,6 +860,36 @@ def get_spindle_override() -> Optional[float]:
     return None
 
 
+def _seed_wcs_cache():
+    """One-time seed of _wcs_cache from the var file (correct at startup)."""
+    global _wcs_cache_seeded
+    try:
+        ini_path = getattr(STAT, "ini_filename", None)
+        if not ini_path:
+            return
+        ini = linuxcnc.ini(ini_path)
+        var_file = ini.find("RS274NGC", "PARAMETER_FILE")
+        if not var_file:
+            return
+        if not os.path.isabs(var_file):
+            var_file = os.path.join(os.path.dirname(ini_path), var_file)
+        wanted = {}
+        for i, base in enumerate(_WCS_BASES):
+            wanted[str(base + 1)] = (i, "x")
+            wanted[str(base + 2)] = (i, "y")
+            wanted[str(base + 3)] = (i, "z")
+            wanted[str(base + 10)] = (i, "r")
+        for line in open(var_file):
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in wanted:
+                idx, field = wanted[parts[0]]
+                _wcs_cache[idx][field] = float(parts[1])
+        _wcs_cache_seeded = True
+        print("[wcs] cache seeded from var file", flush=True)
+    except Exception as e:
+        print(f"[wcs] seed cache failed: {e}", flush=True)
+
+
 def poll_status() -> StatusPayload:
     if STAT is None:
         raise RuntimeError("LinuxCNC not connected")
@@ -875,6 +915,18 @@ def poll_status() -> StatusPayload:
     g5x_index = safe_get("g5x_index", None)
     g5x = to_float_list(safe_get("g5x_offset", None))
     g92 = to_float_list(safe_get("g92_offset", None))
+    rotation_xy = safe_get("rotation_xy", None)
+
+    # Update WCS cache with live active-WCS data from STAT
+    if not _wcs_cache_seeded:
+        _seed_wcs_cache()
+    if g5x_index is not None and g5x is not None:
+        ci = g5x_index - 1  # STAT.g5x_index is 1-based
+        if 0 <= ci < 9:
+            _wcs_cache[ci]["x"] = g5x[0] if len(g5x) > 0 else 0.0
+            _wcs_cache[ci]["y"] = g5x[1] if len(g5x) > 1 else 0.0
+            _wcs_cache[ci]["z"] = g5x[2] if len(g5x) > 2 else 0.0
+            _wcs_cache[ci]["r"] = rotation_xy if rotation_xy is not None else 0.0
 
     # ---- positions ----
     machine_pos = to_float_list(safe_get("actual_position", None))
@@ -1046,6 +1098,7 @@ def poll_status() -> StatusPayload:
         g5x_index=g5x_index,
         g5x_offset=g5x,
         g92_offset=g92,
+        rotation_xy=rotation_xy,
         joint_pos=joint_pos,
         tool_offset=tool_offset,
         machine_pos=machine_pos,
@@ -1676,6 +1729,35 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                     result[parts[0]] = float(parts[1])
             print(f"[probe] get_probe_vars: {result}", flush=True)
             return {"ok": True, "vars": result}
+
+        if cmd == "get_wcs_table":
+            return {"ok": True, "table": [row.copy() for row in _wcs_cache]}
+
+        if cmd == "clear_wcs":
+            require_armed(armed)
+            blocked = reject_if_auto_running()
+            if blocked:
+                return blocked
+            target = msg.get("target", "active")
+            if target == "active":
+                STAT.poll()
+                indices = [STAT.g5x_index]  # 1-based
+            elif target == "all":
+                indices = list(range(1, 10))
+            elif target in _G5X_MAP:
+                indices = [_G5X_MAP[target]]
+            else:
+                return {"ok": False, "error": f"Invalid target: {target}"}
+            set_mode(linuxcnc.MODE_MDI)
+            for p in indices:
+                CMD.mdi(f"G10 L2 P{p} X0 Y0 Z0 R0")
+                CMD.wait_complete(5)
+            # Update cache immediately
+            for p in indices:
+                ci = p - 1
+                if 0 <= ci < 9:
+                    _wcs_cache[ci] = {"name": _WCS_NAMES[ci], "x": 0.0, "y": 0.0, "z": 0.0, "r": 0.0}
+            return {"ok": True, "table": [row.copy() for row in _wcs_cache]}
 
         return {"ok": False, "error": f"Unknown cmd: {cmd}"}
 

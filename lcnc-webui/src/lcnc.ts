@@ -82,5 +82,8 @@ export type WsCommand =
   | { cmd: "simulate_probe_trip" }
   | { cmd: "set_probe_vars"; vars: Record<string, number> }
   | { cmd: "get_probe_vars"; vars: number[] }
+  // Offsets
+  | { cmd: "get_wcs_table" }
+  | { cmd: "clear_wcs"; target: string }
   // Heartbeat
   | { cmd: "heartbeat" };
