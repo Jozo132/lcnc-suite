@@ -101,6 +101,17 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button.primary {
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  background: color-mix(in oklab, var(--ok) 25%, var(--button-bg));
+  font-weight: 600;
+}
+
+button.danger {
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  background: color-mix(in oklab, var(--danger) 25%, var(--button-bg));
+}
+
 input[type="range"] {
   -webkit-appearance: none;
   appearance: none;

@@ -3,8 +3,9 @@ import { ref, reactive } from "vue";
 import TabPanel from "./TabPanel.vue";
 import {
   loadViewerDefaults, saveViewerDefaults,
+  loadMachineDefaults, saveMachineDefaults,
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
-  type TrackMode, type Projection,
+  type TrackMode, type Projection, type ToolChangeMode,
 } from "./defaults";
 
 const props = defineProps<{
@@ -35,9 +36,17 @@ const trackingMode = ref<TrackMode>(saved.trackingMode);
 const pathOnTop = ref(saved.pathOnTop);
 const projection = ref<Projection>(saved.projection);
 
+// ─── Machine defaults ──────────────────────
+const machSaved = loadMachineDefaults();
+const toolChangeMode = ref<ToolChangeMode>(machSaved.toolChangeMode);
+
+function saveMachine() {
+  saveMachineDefaults({ toolChangeMode: toolChangeMode.value });
+}
+
 const subTabs = [
   { id: "viewer", label: "3D Viewer" },
-  { id: "dro", label: "DRO" },
+  { id: "machine", label: "Machine" },
   { id: "jog", label: "Jogging" },
   { id: "debug", label: "Debug" },
 ];
@@ -203,9 +212,30 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
         </div>
       </template>
 
-      <template #dro>
-        <div class="placeholder">
-          <div class="placeholderText">DRO settings coming soon</div>
+      <template #machine>
+        <div class="scrollContent scroll-thin">
+          <div class="section">
+            <div class="sectionTitle">Tool Load Behavior</div>
+            <div class="settingDesc">Controls what happens when you load a tool from the Tool Table.</div>
+            <div class="btnGroup modeGroup">
+              <button
+                class="optBtn modeBtn"
+                :class="{ active: toolChangeMode === 'm6g43' }"
+                @click="toolChangeMode = 'm6g43'; saveMachine()"
+              >
+                <span class="modeName">M6 G43</span>
+                <span class="modeDesc">Load tool, activate length offset</span>
+              </button>
+              <button
+                class="optBtn modeBtn"
+                :class="{ active: toolChangeMode === 'm600' }"
+                @click="toolChangeMode = 'm600'; saveMachine()"
+              >
+                <span class="modeName">M600</span>
+                <span class="modeDesc">Load tool, measure with toolsetter, save offset</span>
+              </button>
+            </div>
+          </div>
         </div>
       </template>
 
@@ -411,6 +441,37 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
   font-size: 13px;
   cursor: pointer;
   user-select: none;
+}
+
+.settingDesc {
+  font-size: 12px;
+  opacity: 0.5;
+  margin-bottom: 12px;
+}
+
+.modeGroup {
+  flex-direction: column;
+  gap: 8px;
+}
+
+.modeBtn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: 10px 14px;
+  text-align: left;
+}
+
+.modeName {
+  font-size: 13px;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}
+
+.modeDesc {
+  font-size: 11px;
+  opacity: 0.5;
 }
 
 .placeholder {

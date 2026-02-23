@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from "vue";
 import { send, lastReply, connected } from "./lcncWs";
 import { usePermissions } from "./permissions";
+import { loadMachineDefaults, type ToolChangeMode } from "./defaults";
 
 const props = defineProps<{
   currentTool: number | null;
@@ -9,6 +10,7 @@ const props = defineProps<{
 }>();
 
 const can = usePermissions();
+const toolChangeMode = ref<ToolChangeMode>(loadMachineDefaults().toolChangeMode);
 
 interface Tool {
   T: number;
@@ -194,12 +196,18 @@ function cancelEditModal() {
 
 // ---- Tool change ----
 function requestToolChange(toolNum: number) {
+  // Re-read setting each time in case user changed it in Settings tab
+  toolChangeMode.value = loadMachineDefaults().toolChangeMode;
   confirmTool.value = toolNum;
 }
 
 function confirmToolChange() {
   if (confirmTool.value == null) return;
-  send({ cmd: "tool_change", tool_number: confirmTool.value });
+  if (toolChangeMode.value === "m600") {
+    send({ cmd: "mdi", text: `T${confirmTool.value} M600` });
+  } else {
+    send({ cmd: "tool_change", tool_number: confirmTool.value });
+  }
   confirmTool.value = null;
 }
 
@@ -208,10 +216,21 @@ function cancelToolChange() {
 }
 
 // ---- Delete ----
-function deleteTool(toolNum: number) {
-  if (!confirm(`Delete tool T${toolNum}?`)) return;
-  send({ cmd: "delete_tool", tool_number: toolNum });
+const deletingTool = ref<number | null>(null);
+
+function requestDelete(toolNum: number) {
+  deletingTool.value = toolNum;
+}
+
+function confirmDelete() {
+  if (deletingTool.value == null) return;
+  send({ cmd: "delete_tool", tool_number: deletingTool.value });
+  deletingTool.value = null;
   setTimeout(fetchTools, 300);
+}
+
+function cancelDelete() {
+  deletingTool.value = null;
 }
 
 function fmtNum(n: any, decimals = 4) {
@@ -236,21 +255,42 @@ function fmtNum(n: any, decimals = 4) {
     <div v-if="error" class="errorBanner">{{ error }}</div>
 
     <!-- Tool change confirm dialog -->
-    <div v-if="confirmTool != null" class="confirmOverlay" @click.self="cancelToolChange">
-      <div class="confirmDialog">
-        <div class="confirmText">Load tool T{{ confirmTool }} into spindle?</div>
-        <div class="confirmText confirmSub">This will send T{{ confirmTool }} M6</div>
-        <div class="confirmActions">
+    <div v-if="confirmTool != null" class="dialogOverlay" @click.self="cancelToolChange">
+      <div class="dialog">
+        <div class="dialogTitle">Load Tool into Spindle</div>
+        <div class="dialogBody">
+          Load tool <strong>T{{ confirmTool }}</strong>?
+        </div>
+        <div class="dialogHint">
+          {{ toolChangeMode === 'm600'
+            ? `T${confirmTool} M600 (toolsetter cycle)`
+            : `T${confirmTool} M6 G43` }}
+        </div>
+        <div class="dialogActions">
           <button class="btn" @click="cancelToolChange">Cancel</button>
-          <button class="btn primary" @click="confirmToolChange">Load Tool</button>
+          <button class="btn primary" @click="confirmToolChange">Confirm</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Delete confirm dialog -->
+    <div v-if="deletingTool != null" class="dialogOverlay" @click.self="cancelDelete">
+      <div class="dialog">
+        <div class="dialogTitle danger">Delete Tool</div>
+        <div class="dialogBody">
+          Remove tool <strong>T{{ deletingTool }}</strong> from the tool table?
+        </div>
+        <div class="dialogActions">
+          <button class="btn" @click="cancelDelete">Cancel</button>
+          <button class="btn danger" @click="confirmDelete">Delete</button>
         </div>
       </div>
     </div>
 
     <!-- Edit / Add modal -->
-    <div v-if="editTool" class="confirmOverlay" @click.self="cancelEditModal">
-      <div class="confirmDialog editDialog">
-        <div class="sub">{{ isNewTool ? "Add Tool" : `Edit Tool T${editTool.T}` }}</div>
+    <div v-if="editTool" class="dialogOverlay" @click.self="cancelEditModal">
+      <div class="dialog editDialog">
+        <div class="dialogTitle">{{ isNewTool ? "Add Tool" : `Edit Tool T${editTool.T}` }}</div>
         <div class="editFields">
           <label class="editLabel">
             <span class="editLabelText">Tool #</span>
@@ -280,7 +320,7 @@ function fmtNum(n: any, decimals = 4) {
             <input class="editInput editInputNum" type="number" step="1" v-model.number="editForm.flutes" />
           </label>
         </div>
-        <div class="confirmActions">
+        <div class="dialogActions">
           <button class="btn" @click="cancelEditModal">Cancel</button>
           <button class="btn primary" @click="saveEdit">{{ isNewTool ? "Add" : "Save" }}</button>
         </div>
@@ -361,7 +401,7 @@ function fmtNum(n: any, decimals = 4) {
           <button
             v-if="tool.T !== currentTool"
             class="btn danger"
-            @click.stop="deleteTool(tool.T)"
+            @click.stop="requestDelete(tool.T)"
             :disabled="!can.idle"
             title="Delete tool"
           >&times;</button>
@@ -406,25 +446,25 @@ function fmtNum(n: any, decimals = 4) {
   flex-shrink: 0;
 }
 
-/* ---- Confirm / Edit dialog ---- */
-.confirmOverlay {
-  position: absolute;
+/* ---- Dialogs (unified style) ---- */
+.dialogOverlay {
+  position: fixed;
   inset: 0;
-  background: rgba(0,0,0,0.5);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 10;
-  border-radius: 12px;
+  z-index: 1000;
 }
 
-.confirmDialog {
+.dialog {
   background: var(--panel);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 20px;
-  min-width: 260px;
+  padding: 24px 32px;
+  min-width: 280px;
   text-align: center;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
 }
 
 .editDialog {
@@ -433,21 +473,34 @@ function fmtNum(n: any, decimals = 4) {
   text-align: left;
 }
 
-.confirmText {
-  font-size: 14px;
-  margin-bottom: 8px;
+.dialogTitle {
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 10px;
 }
 
-.confirmSub {
+.dialogTitle.danger {
+  color: #e55;
+}
+
+.dialogBody {
+  font-size: 14px;
+  margin-bottom: 8px;
+  line-height: 1.5;
+  opacity: 0.8;
+}
+
+.dialogHint {
   font-size: 12px;
   opacity: 0.5;
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  margin-bottom: 8px;
 }
 
-.confirmActions {
+.dialogActions {
   display: flex;
-  gap: 10px;
-  justify-content: center;
+  gap: 16px;
+  justify-content: space-between;
   margin-top: 16px;
 }
 

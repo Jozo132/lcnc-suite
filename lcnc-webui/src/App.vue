@@ -1253,13 +1253,14 @@ watch(isHomed, (nowHomed, wasHomed) => {
     <!-- Global tool change dialog -->
     <div v-if="toolChangeRequested" class="toolChangeOverlay">
       <div class="toolChangeDialog">
-        <div class="toolChangeTitle">Tool Change Required</div>
+        <div class="toolChangeTitle">Load Tool into Spindle</div>
         <div class="toolChangeBody">
-          Please insert tool <strong>T{{ toolChangeTool }}</strong> and press Confirm
+          Insert tool <strong>T{{ toolChangeTool }}</strong> and press Confirm
         </div>
         <div class="toolChangeActions">
+          <button class="btn danger" @click="send({ cmd: 'abort' })">Cancel</button>
           <button class="btn primary" :disabled="!armed" @click="confirmToolChange">
-            Confirm Tool Loaded
+            Confirm
           </button>
         </div>
       </div>
@@ -1916,16 +1917,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   border-radius: 12px;
 }
 
-.btn.danger {
-  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
-  background: color-mix(in oklab, var(--danger) 25%, var(--button-bg));
-}
-
-.btn.primary {
-  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
-  background: color-mix(in oklab, var(--ok) 25%, var(--button-bg));
-  font-weight: 600;
-}
+/* .btn.primary and .btn.danger are in style.css (global) */
 
 .safetyBtn {
   display: flex;
@@ -2006,34 +1998,35 @@ watch(isHomed, (nowHomed, wasHomed) => {
 .toolChangeOverlay {
   position: fixed;
   inset: 0;
-  background: rgba(0, 0, 0, 0.6);
+  background: rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: 1000;
 }
 .toolChangeDialog {
-  background: var(--panel, #1e1e1e);
-  border: 2px solid var(--accent, #4fc3f7);
-  border-radius: 16px;
-  padding: 32px 40px;
-  min-width: 320px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px 32px;
+  min-width: 280px;
   text-align: center;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
 }
 .toolChangeTitle {
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 600;
-  margin-bottom: 12px;
-  color: var(--accent, #4fc3f7);
+  margin-bottom: 10px;
 }
 .toolChangeBody {
-  font-size: 15px;
-  margin-bottom: 24px;
+  font-size: 14px;
+  margin-bottom: 16px;
   line-height: 1.5;
+  opacity: 0.8;
 }
 .toolChangeActions {
   display: flex;
-  justify-content: center;
+  justify-content: space-between;
+  gap: 16px;
 }
 </style>

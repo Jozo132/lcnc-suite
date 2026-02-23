@@ -1429,8 +1429,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 return blocked
             tool_num = int(msg["tool_number"])
             set_mode(linuxcnc.MODE_MDI)
-            CMD.mdi(f"T{tool_num} M6")
-            CMD.wait_complete()
+            CMD.mdi(f"T{tool_num} M6 G43")
             return {"ok": True}
 
         if cmd == "auto_run":

@@ -138,6 +138,33 @@ export function saveViewerDefaults(data: ViewerDefaults): void {
   saveSection("viewer", data);
 }
 
+// ─── Machine section ─────────────────────────────────────────────
+
+export type ToolChangeMode = "m6g43" | "m600";
+
+export interface MachineDefaults {
+  toolChangeMode: ToolChangeMode;
+}
+
+const MACHINE_FALLBACK: MachineDefaults = {
+  toolChangeMode: "m6g43",
+};
+
+registerSection<MachineDefaults>("machine", MACHINE_FALLBACK, (saved, fb) => {
+  if (!saved) return { ...fb };
+  return {
+    toolChangeMode: (saved.toolChangeMode === "m600" ? "m600" : "m6g43") as ToolChangeMode,
+  };
+});
+
+export function loadMachineDefaults(): MachineDefaults {
+  return loadSection<MachineDefaults>("machine");
+}
+
+export function saveMachineDefaults(data: MachineDefaults): void {
+  saveSection("machine", data);
+}
+
 // ─── Panels section ─────────────────────────────────────────────
 
 export const MAX_PANELS = 3;
