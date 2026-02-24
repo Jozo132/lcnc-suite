@@ -10,9 +10,7 @@ import GcodePanel from "./GcodePanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 import ToolTablePanel from "./ToolTablePanel.vue";
 import ProbePanel from "./ProbePanel.vue";
-import ToolsetterPanel from "./ToolsetterPanel.vue";
-
-import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS } from "./defaults";
+import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults } from "./defaults";
 import {
   INTERP_IDLE, INTERP_READING, INTERP_PAUSED, INTERP_WAITING,
   TRAJ_MODE_FREE, TRAJ_MODE_TELEOP,
@@ -52,7 +50,6 @@ const tabs = [
   { id: "gcode", label: "Program" },
   { id: "tools", label: "Tools" },
   { id: "probe", label: "Probe" },
-  { id: "toolsetter", label: "Toolsetter" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -473,6 +470,64 @@ function toggleFlood() {
 }
 function toggleMist() {
   fire({ cmd: mistOn.value ? "mist_off" : "mist_on" });
+}
+
+// Tool sidebar state
+const toolNumber = ref(1);
+const TS_TOOL_KEY = "lcnc-tool-number";
+
+function loadToolNumber() {
+  try {
+    const raw = localStorage.getItem(TS_TOOL_KEY);
+    if (raw) { toolNumber.value = parseInt(raw, 10) || 1; return; }
+    // Migrate from old toolsetter params key
+    const old = localStorage.getItem("lcnc-toolsetter-params");
+    if (old) {
+      const saved = JSON.parse(old);
+      if (saved.toolNumber != null) toolNumber.value = saved.toolNumber;
+    }
+  } catch { /* ignore */ }
+}
+loadToolNumber();
+
+function saveToolNumber() {
+  localStorage.setItem(TS_TOOL_KEY, String(toolNumber.value));
+}
+
+const probeStatus = computed(() => {
+  if (st.value.probing) return "PROBING";
+  if (st.value.probe_tripped) return "TRIPPED";
+  return "IDLE";
+});
+
+const probeStatusClass = computed(() => {
+  if (st.value.probing) return "probing";
+  if (st.value.probe_tripped) return "tripped";
+  return "";
+});
+
+function measureAuto() {
+  if (!permissions.value.ready || st.value.probing) return;
+  saveToolNumber();
+  fire({ cmd: "mdi", text: `T${toolNumber.value} M600` });
+}
+
+function measureManual() {
+  if (!permissions.value.ready || st.value.probing) return;
+  saveToolNumber();
+  fire({ cmd: "mdi", text: `T${toolNumber.value} M601` });
+}
+
+function loadTool() {
+  if (!permissions.value.ready || st.value.probing) return;
+  saveToolNumber();
+  const n = toolNumber.value;
+  const mode = loadMachineDefaults().toolChangeMode;
+  if (mode === "m600") {
+    fire({ cmd: "mdi", text: `T${n} M600` });
+  } else {
+    fire({ cmd: "mdi", text: `T${n} M6 G43 H${n}` });
+  }
 }
 
 function formatRpm(val: number | null): string {
@@ -1094,6 +1149,46 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
         </div>
         </div>
+
+        <div class="controlGroup">
+        <button
+          class="btn controlBtn"
+          :class="{ active: !!st.probing }"
+          @click.stop="toggleChip('tool')"
+        >
+          <span class="controlIcon">&#x1F527;</span>
+          <span class="controlLabel">Tool</span>
+          <span class="controlStatus">{{ st.tool_number != null ? `T${st.tool_number}` : '---' }}</span>
+        </button>
+        <div class="popover toolPopover" :class="{ open: openChip === 'tool' }" @click.stop>
+          <div class="toolInputRow">
+            <span class="toolFieldLabel">Tool #</span>
+            <input
+              type="number"
+              class="toolNumInput"
+              v-model.number="toolNumber"
+              min="1"
+              step="1"
+              :disabled="!permissions.ready || !!st.probing"
+              @change="saveToolNumber"
+            />
+          </div>
+          <div class="toolActions">
+            <button class="btn toolActionBtn measure" :disabled="!permissions.ready || !!st.probing" @click="measureAuto">Measure</button>
+            <button class="btn toolActionBtn" :disabled="!permissions.ready || !!st.probing" @click="measureManual">Manual</button>
+            <button class="btn toolActionBtn load" :disabled="!permissions.ready || !!st.probing" @click="loadTool">Load</button>
+          </div>
+          <div class="toolActions">
+            <button class="btn toolActionBtn abort" :disabled="!st.probing" @click="fire({ cmd: 'abort' })">Abort</button>
+            <button class="btn toolActionBtn simtrip" :disabled="!st.probing" @click="send({ cmd: 'simulate_probe_trip' })" title="Simulate probe contact (sim/debug)">Sim Trip</button>
+          </div>
+          <div class="toolStatusRow">
+            <span class="toolStatusDot" :class="probeStatusClass"></span>
+            <span class="toolStatusText">{{ probeStatus }}</span>
+            <span class="toolLoadedInfo" v-if="st.tool_number != null">Loaded: <b>T{{ st.tool_number }}</b></span>
+          </div>
+        </div>
+        </div>
       </div>
     </section>
     </div>
@@ -1219,22 +1314,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
             />
           </template>
 
-          <template #toolsetter>
-            <ToolsetterPanel
-              :probing="st.probing === true"
-              :probeTripped="st.probe_tripped === true"
-              :currentTool="st.tool_number ?? null"
-              :machinePos="machinePos"
-              :isHomed="isHomed"
-              @mdi="send({ cmd: 'mdi', text: $event })"
-              @abort="send({ cmd: 'abort' })"
-              @simulateProbeTrip="send({ cmd: 'simulate_probe_trip' })"
-              @setProbeVars="send({ cmd: 'set_probe_vars', vars: $event })"
-            />
-          </template>
-
           <template #settings>
-            <SettingsPanel :lastReply="lastReply" :status="status" />
+            <SettingsPanel :lastReply="lastReply" :status="status" @setProbeVars="send({ cmd: 'set_probe_vars', vars: $event })" />
           </template>
         </TabPanel>
       </div>
@@ -1857,6 +1938,107 @@ watch(isHomed, (nowHomed, wasHomed) => {
   background: color-mix(in oklab, var(--ok) 25%, var(--button-bg));
 }
 
+/* ---- Tool popover ---- */
+.toolPopover {
+  top: 0;
+  left: 100%;
+  margin-left: 6px;
+  min-width: 240px;
+}
+.toolPopover.open {
+  display: flex !important;
+  flex-direction: column;
+  gap: 10px;
+}
+.toolInputRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolFieldLabel {
+  font-size: 12px;
+  font-weight: 500;
+  opacity: 0.8;
+  min-width: 48px;
+}
+.toolNumInput {
+  flex: 1;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  max-width: 80px;
+  text-align: center;
+}
+.toolActions {
+  display: flex;
+  gap: 6px;
+}
+.toolActionBtn {
+  flex: 1;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+.toolActionBtn.measure {
+  background: color-mix(in oklab, var(--ok) 20%, var(--button-bg));
+  border-color: color-mix(in oklab, var(--ok) 30%, var(--border));
+  color: var(--ok);
+}
+.toolActionBtn.measure:disabled { color: var(--fg); background: var(--button-bg); border-color: var(--border); }
+.toolActionBtn.load {
+  background: color-mix(in oklab, #4a90e2 20%, var(--button-bg));
+  border-color: color-mix(in oklab, #4a90e2 30%, var(--border));
+  color: #4a90e2;
+}
+.toolActionBtn.load:disabled { color: var(--fg); background: var(--button-bg); border-color: var(--border); }
+.toolActionBtn.abort {
+  background: color-mix(in oklab, var(--danger) 20%, var(--button-bg));
+  border-color: color-mix(in oklab, var(--danger) 30%, var(--border));
+  color: var(--danger);
+}
+.toolActionBtn.abort:disabled { color: var(--fg); background: var(--button-bg); border-color: var(--border); }
+.toolActionBtn.simtrip {
+  background: color-mix(in oklab, #6c63ff 15%, var(--button-bg));
+  border-color: color-mix(in oklab, #6c63ff 30%, var(--border));
+  color: #6c63ff;
+  font-style: italic;
+}
+.toolActionBtn.simtrip:disabled { color: var(--fg); background: var(--button-bg); border-color: var(--border); font-style: normal; }
+.toolStatusRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.toolStatusDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.toolStatusDot.probing {
+  background: var(--warn);
+  animation: pulse 0.8s ease-in-out infinite alternate;
+}
+.toolStatusDot.tripped {
+  background: var(--ok);
+}
+.toolStatusText {
+  font-size: 11px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  opacity: 0.7;
+}
+.toolLoadedInfo {
+  margin-left: auto;
+  font-size: 12px;
+  opacity: 0.7;
+}
+.toolLoadedInfo b {
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}
+
 /* ---- Messages popover ---- */
 .messagesPopover { min-width: 320px; max-height: 400px; }
 .msgPopHeader { display: flex; justify-content: space-between; align-items: center; }
@@ -1965,8 +2147,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   .panel           { flex: 0 0 var(--panel-min-w); min-height: var(--panel-min-h); }
   .panel-viewer    { flex: 1; min-width: var(--panel-min-w-wide); overflow: hidden; }
   .panel-manual,
-  .panel-probe,
-  .panel-toolsetter { min-width: var(--panel-min-w-wide); }
+  .panel-probe { min-width: var(--panel-min-w-wide); }
   .panel-gcode,
   .panel-tools,
   .panel-messages,
@@ -2026,7 +2207,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 }
 .toolChangeActions {
   display: flex;
-  justify-content: space-between;
-  gap: 16px;
+  justify-content: center;
+  gap: 8px;
 }
 </style>

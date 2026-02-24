@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive } from "vue";
+import { ref, reactive, computed, onMounted } from "vue";
 import TabPanel from "./TabPanel.vue";
 import {
   loadViewerDefaults, saveViewerDefaults,
@@ -8,11 +8,18 @@ import {
   type TrackMode, type Projection, type ToolChangeMode,
 } from "./defaults";
 
+const TS_STORAGE_KEY = "lcnc-toolsetter-params";
+
 const props = defineProps<{
   lastReply?: unknown;
   status?: unknown;
 }>();
 
+const emit = defineEmits<{
+  (e: "setProbeVars", vars: Record<string, number>): void;
+}>();
+
+// ─── Viewer defaults ───────────────────────
 function save() {
   saveViewerDefaults({
     workpieceSize: [...wpSize] as Vec3,
@@ -44,9 +51,88 @@ function saveMachine() {
   saveMachineDefaults({ toolChangeMode: toolChangeMode.value });
 }
 
+// ─── Toolsetter params ─────────────────────
+const tsParams = ref({
+  fastFeed: 500,
+  slowFeed: 50,
+  traverseFeed: 6000,
+  maxZTravel: 150,
+  retractDist: 2,
+  spindleZeroHeight: 180,
+  offsetDirection: 0,
+  touchX: 0,
+  touchY: 0,
+  touchZ: -180,
+  useToolTable: 0,
+  toolMinDis: 10,
+  brakeAfter: 0,
+  goBackToStart: 0,
+  spindleStopM: 5,
+  disablePrePos: 1,
+  addReps: 0,
+  lastTry: 0,
+  offsetDiameter: 0,
+  offsetValue: 50,
+  finderTouchX: 0,
+  finderTouchY: 0,
+  finderDiffZ: 0,
+});
+
+const OFFSET_DIR_LABELS: Record<number, string> = { 0: "X-", 1: "X+", 2: "Y-", 3: "Y+" };
+const BRAKE_LABELS: Record<number, string> = { 0: "None", 1: "M00", 2: "M01" };
+
+const probeTool = computed(() => {
+  try {
+    const raw = localStorage.getItem("lcnc-probe-params");
+    if (raw) {
+      const saved = JSON.parse(raw);
+      if (saved.probeTool != null) return saved.probeTool;
+    }
+  } catch { /* ignore */ }
+  return 99;
+});
+
+function buildVarMap(): Record<string, number> {
+  const p = tsParams.value;
+  return {
+    "3004": p.fastFeed, "3005": p.slowFeed, "3006": p.traverseFeed,
+    "3007": p.maxZTravel, "3009": p.retractDist, "3010": p.spindleZeroHeight,
+    "3013": p.offsetDirection,
+    "3100": p.touchX, "3101": p.touchY, "3102": p.touchZ,
+    "3103": p.useToolTable, "3104": p.toolMinDis, "3105": p.brakeAfter,
+    "3106": p.goBackToStart, "3107": p.spindleStopM, "3108": p.disablePrePos,
+    "3109": p.addReps, "3110": p.lastTry, "3111": p.offsetDiameter,
+    "3112": p.offsetValue, "3113": p.finderTouchX, "3114": p.finderTouchY,
+    "3115": p.finderDiffZ,
+  };
+}
+
+function loadTsParams() {
+  try {
+    const raw = localStorage.getItem(TS_STORAGE_KEY);
+    if (raw) {
+      const saved = JSON.parse(raw);
+      delete saved.toolNumber; // toolNumber now lives in App.vue sidebar
+      Object.assign(tsParams.value, saved);
+    }
+  } catch { /* ignore */ }
+}
+
+function saveTsParams() {
+  localStorage.setItem(TS_STORAGE_KEY, JSON.stringify(tsParams.value));
+  emit("setProbeVars", buildVarMap());
+}
+
+onMounted(() => {
+  loadTsParams();
+  emit("setProbeVars", buildVarMap());
+});
+
+// ─── Sub-tabs ──────────────────────────────
 const subTabs = [
   { id: "viewer", label: "3D Viewer" },
   { id: "machine", label: "Machine" },
+  { id: "toolsetter", label: "Toolsetter" },
   { id: "jog", label: "Jogging" },
   { id: "debug", label: "Debug" },
 ];
@@ -234,6 +320,108 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
                 <span class="modeName">M600</span>
                 <span class="modeDesc">Load tool, measure with toolsetter, save offset</span>
               </button>
+            </div>
+          </div>
+        </div>
+      </template>
+
+      <template #toolsetter>
+        <div class="scrollContent scroll-thin">
+          <div class="section">
+            <div class="sectionTitle">Toolsetter Position (G53)</div>
+            <div class="tsGrid">
+              <label>Touch X <span class="varNum">#3100</span></label>
+              <input type="number" v-model.number="tsParams.touchX" step="0.001" @change="saveTsParams" />
+              <label>Touch Y <span class="varNum">#3101</span></label>
+              <input type="number" v-model.number="tsParams.touchY" step="0.001" @change="saveTsParams" />
+              <label>Touch Z <span class="varNum">#3102</span></label>
+              <input type="number" v-model.number="tsParams.touchZ" step="0.001" @change="saveTsParams" />
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="sectionTitle">Probe Settings</div>
+            <div class="tsGrid">
+              <label>Fast Feed <span class="varNum">#3004</span></label>
+              <input type="number" v-model.number="tsParams.fastFeed" min="1" step="10" @change="saveTsParams" />
+              <label>Slow Feed <span class="varNum">#3005</span></label>
+              <input type="number" v-model.number="tsParams.slowFeed" min="0" step="1" @change="saveTsParams" />
+              <label>Traverse Feed <span class="varNum">#3006</span></label>
+              <input type="number" v-model.number="tsParams.traverseFeed" min="1" step="100" @change="saveTsParams" />
+              <label>Max Z Travel <span class="varNum">#3007</span></label>
+              <input type="number" v-model.number="tsParams.maxZTravel" min="1" step="5" @change="saveTsParams" />
+              <label>Retract Dist <span class="varNum">#3009</span></label>
+              <input type="number" v-model.number="tsParams.retractDist" min="0.1" step="0.5" @change="saveTsParams" />
+              <label>Spindle Zero H <span class="varNum">#3010</span></label>
+              <input type="number" v-model.number="tsParams.spindleZeroHeight" min="0" step="1" @change="saveTsParams" />
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="sectionTitle">Options</div>
+            <div class="tsCheckGrid">
+              <label class="checkRow">
+                <input type="checkbox" :checked="tsParams.useToolTable === 1" @change="tsParams.useToolTable = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
+                Use Tool Table <span class="varNum">#3103</span>
+              </label>
+              <label class="checkRow">
+                <input type="checkbox" :checked="tsParams.goBackToStart === 1" @change="tsParams.goBackToStart = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
+                Return to Start <span class="varNum">#3106</span>
+              </label>
+              <label class="checkRow">
+                <input type="checkbox" :checked="tsParams.disablePrePos === 1" @change="tsParams.disablePrePos = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
+                Skip G30 Pre-Pos <span class="varNum">#3108</span>
+              </label>
+              <label class="checkRow">
+                <input type="checkbox" :checked="tsParams.lastTry === 1" @change="tsParams.lastTry = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
+                Last Try w/o Table <span class="varNum">#3110</span>
+              </label>
+            </div>
+            <div class="tsGrid" style="margin-top: 12px;">
+              <label>Tool Min Dist <span class="varNum">#3104</span></label>
+              <input type="number" v-model.number="tsParams.toolMinDis" min="0" step="1" @change="saveTsParams" />
+              <label>Extra Retries <span class="varNum">#3109</span></label>
+              <input type="number" v-model.number="tsParams.addReps" min="0" step="1" @change="saveTsParams" />
+
+              <label>Brake After <span class="varNum">#3105</span></label>
+              <div class="tsBtnRow">
+                <button v-for="b in [0, 1, 2]" :key="b" class="optBtn tsToggle" :class="{ active: tsParams.brakeAfter === b }" @click="tsParams.brakeAfter = b; saveTsParams()">{{ BRAKE_LABELS[b] }}</button>
+              </div>
+
+              <label>Spindle Stop <span class="varNum">#3107</span></label>
+              <div class="tsBtnRow">
+                <button class="optBtn tsToggle" :class="{ active: tsParams.spindleStopM === 5 }" @click="tsParams.spindleStopM = 5; saveTsParams()">M5</button>
+                <button class="optBtn tsToggle" :class="{ active: tsParams.spindleStopM === 500 }" @click="tsParams.spindleStopM = 500; saveTsParams()">M500</button>
+              </div>
+
+              <label>Offset Dir <span class="varNum">#3013</span></label>
+              <div class="tsBtnRow">
+                <button v-for="d in [0, 1, 2, 3]" :key="d" class="optBtn tsToggle" :class="{ active: tsParams.offsetDirection === d }" @click="tsParams.offsetDirection = d; saveTsParams()">{{ OFFSET_DIR_LABELS[d] }}</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="sectionTitle">Diameter Offset</div>
+            <div class="tsGrid">
+              <label>Min Diameter <span class="varNum">#3111</span></label>
+              <input type="number" v-model.number="tsParams.offsetDiameter" min="0" step="1" @change="saveTsParams" />
+              <label>Offset % <span class="varNum">#3112</span></label>
+              <input type="number" v-model.number="tsParams.offsetValue" min="0" max="100" step="5" @change="saveTsParams" />
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="sectionTitle">Edge-Finder</div>
+            <div class="tsGrid">
+              <label>Probe Tool # <span class="varNum">#3014</span></label>
+              <span class="readonlyVal">T{{ probeTool }} <span class="varNum">(set in Probe tab)</span></span>
+              <label>Finder X <span class="varNum">#3113</span></label>
+              <input type="number" v-model.number="tsParams.finderTouchX" step="0.001" @change="saveTsParams" />
+              <label>Finder Y <span class="varNum">#3114</span></label>
+              <input type="number" v-model.number="tsParams.finderTouchY" step="0.001" @change="saveTsParams" />
+              <label>Finder Z Diff <span class="varNum">#3115</span></label>
+              <input type="number" v-model.number="tsParams.finderDiffZ" step="0.001" @change="saveTsParams" />
             </div>
           </div>
         </div>
@@ -494,5 +682,60 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
   padding: 6px;
   background: color-mix(in oklab, var(--fg) 5%, var(--bg));
   border-radius: 4px;
+}
+
+/* ─── Toolsetter sub-tab ───── */
+.tsGrid {
+  display: grid;
+  grid-template-columns: auto 1fr auto 1fr;
+  gap: 6px 10px;
+  align-items: center;
+}
+
+.tsGrid label {
+  font-size: 11px;
+  opacity: 0.7;
+}
+
+.tsGrid input {
+  padding: 4px 8px;
+  font-size: 12px;
+  border-radius: 4px;
+  max-width: 100px;
+}
+
+.varNum {
+  opacity: 0.4;
+  font-size: 10px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}
+
+.readonlyVal {
+  font-size: 12px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  font-weight: 600;
+  opacity: 0.7;
+}
+
+.tsCheckGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+}
+
+.tsBtnRow {
+  display: flex;
+  gap: 3px;
+}
+
+.tsToggle {
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  opacity: 0.6;
+}
+
+.tsToggle.active {
+  opacity: 1;
 }
 </style>
