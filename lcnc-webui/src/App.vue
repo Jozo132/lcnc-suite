@@ -225,6 +225,9 @@ watch(hasRotation, (active) => {
 }, { immediate: true });
 
 const offsetChipValue = computed(() => {
+  if (st.value.eoffset_enabled && offsetCyclePhase.value) {
+    return "COMP";
+  }
   if (hasRotation.value && offsetCyclePhase.value) {
     return `ROT ${st.value.rotation_xy!.toFixed(1)}`;
   }
@@ -783,6 +786,18 @@ watch(status, (st) => {
   }
 });
 
+/** ---------- Surface map probe results ---------- */
+const surfacePoints = ref<number[][] | null>(null);
+
+function requestProbeResults() {
+  send({ cmd: "get_probe_results" });
+}
+
+// Listen for get_probe_results reply
+watch(lastReply, (r: any) => {
+  if (r?.ok && r.points) surfacePoints.value = r.points;
+}, { flush: "sync" });
+
 /** ---------- G-code content watcher ---------- */
 watch(viewerGcode, (newGcode) => {
   console.log("viewerGcode updated:", newGcode);
@@ -913,7 +928,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
         </div>
 
-        <div class="statusChip" :class="{ warn: hasRotation }" @click.stop="openOffsetsPopover()">
+        <div class="statusChip" :class="{ warn: hasRotation || st.eoffset_enabled }" @click.stop="openOffsetsPopover()">
           <span class="chipLabel">Offsets</span>
           <span class="chipValue">{{ offsetChipValue }}</span>
           <div class="popover chipPopover offsetsPopover" :class="{ open: openChip === 'offsets' }" @click.stop>
@@ -943,6 +958,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
                   <td>{{ fmtOff(st.tool_offset?.[0]) }}</td>
                   <td>{{ fmtOff(st.tool_offset?.[1]) }}</td>
                   <td>{{ fmtOff(st.tool_offset?.[2]) }}</td>
+                  <td></td>
+                </tr>
+                <tr v-if="st.eoffset_z != null && st.eoffset_z !== 0" class="eoffsetRow">
+                  <td class="offLabel">Comp</td>
+                  <td></td>
+                  <td></td>
+                  <td>{{ fmtOff(st.eoffset_z) }}</td>
                   <td></td>
                 </tr>
               </tbody>
@@ -1305,11 +1327,15 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :workPos="workPos"
               :probeResults="probeResults"
               :g5xLabel="g5xLabel"
+              :eoffsetZ="st.eoffset_z ?? null"
+              :eoffsetEnabled="st.eoffset_enabled === true"
+              :surfacePoints="surfacePoints"
               @mdi="send({ cmd: 'mdi', text: $event })"
               @abort="send({ cmd: 'abort' })"
               @simulateProbeTrip="send({ cmd: 'simulate_probe_trip' })"
               @setProbeVars="send({ cmd: 'set_probe_vars', vars: $event })"
               @setG5x="setG5x"
+              @getProbeResults="requestProbeResults"
             />
           </template>
 

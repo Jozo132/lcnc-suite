@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { usePermissions } from "./permissions";
 
 const STORAGE_KEY = "lcnc-probe-params";
@@ -11,6 +11,9 @@ const props = defineProps<{
   workPos: number[];
   probeResults: Record<string, number> | null;
   g5xLabel: string;
+  eoffsetZ: number | null;
+  eoffsetEnabled: boolean;
+  surfacePoints: number[][] | null;
 }>();
 
 const emit = defineEmits<{
@@ -20,6 +23,7 @@ const emit = defineEmits<{
   (e: "simulateProbeTrip"): void;
   (e: "setProbeVars", vars: Record<string, number>): void;
   (e: "setG5x", gcode: string): void;
+  (e: "getProbeResults"): void;
 }>();
 
 const g5xOptions = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"];
@@ -27,7 +31,7 @@ const g5xOptions = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", 
 const can = usePermissions();
 
 // ─── Sub-view navigation ──────────────────────────────────────────
-const probeView = ref<"outside" | "inside" | "boss" | "ridge" | "angle" | "cal">("outside");
+const probeView = ref<"outside" | "inside" | "boss" | "ridge" | "angle" | "cal" | "surface">("outside");
 
 // ─── Grid probe operations ────────────────────────────────────────
 type GridOp = {
@@ -120,6 +124,15 @@ const params = ref({
   calDiameter: 0.0,
   xCalWidth: 0.0,
   yCalWidth: 0.0,
+  // Surface map scan params
+  scanX0: 10.0,
+  scanX1: 200.0,
+  scanY0: 10.0,
+  scanY1: 200.0,
+  scanXProbes: 5,
+  scanYProbes: 5,
+  scanSafeZ: 20.0,
+  scanDepthZ: 24.0,
 });
 
 const autoZero = ref(false);
@@ -150,6 +163,17 @@ function buildVarMap(probeMode: number): Record<string, number> {
     "3033": p.calDiameter,
     "3034": p.xCalWidth,
     "3035": p.yCalWidth,
+    // Surface map scan (#3050-#3059)
+    "3050": p.scanX0,
+    "3051": p.scanX1,
+    "3052": p.scanY0,
+    "3053": p.scanY1,
+    "3054": p.scanXProbes,
+    "3055": p.scanYProbes,
+    "3056": p.fastFr,     // shared with #3016
+    "3057": p.slowFr,     // shared with #3015
+    "3058": p.scanSafeZ,
+    "3059": p.scanDepthZ,
   };
 }
 
@@ -255,6 +279,267 @@ function resetCal() {
   emit("mdi", `O<probe_cal_reset> CALL`);
 }
 
+// ─── Surface map ──────────────────────────────────────────────────
+function runSurfaceScan() {
+  if (!can.value.ready || props.probing) return;
+  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
+  const vars = buildVarMap(autoZero.value ? 0 : 1);
+  emit("setProbeVars", vars);
+  emit("mdi", "O<surface_scan> CALL");
+}
+
+function enableComp() {
+  if (!can.value.ready || props.probing) return;
+  emit("mdi", "M64 P0");
+}
+
+function disableComp() {
+  if (!can.value.ready) return;
+  emit("mdi", "M65 P0");
+}
+
+function loadSurfaceMap() {
+  emit("getProbeResults");
+}
+
+// ─── 3D surface + 2D heatmap ─────────────────────────────────────
+const surfaceContainer = ref<HTMLDivElement | null>(null);
+const heatmapCanvas = ref<HTMLCanvasElement | null>(null);
+
+/** Viridis-like colormap (simplified 5-stop) */
+function viridis(t: number): [number, number, number] {
+  t = Math.max(0, Math.min(1, t));
+  const c = [
+    [68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37],
+  ];
+  const idx = t * (c.length - 1);
+  const i = Math.floor(idx);
+  const f = idx - i;
+  const a = c[Math.min(i, c.length - 1)];
+  const b = c[Math.min(i + 1, c.length - 1)];
+  return [
+    Math.round(a[0] + (b[0] - a[0]) * f),
+    Math.round(a[1] + (b[1] - a[1]) * f),
+    Math.round(a[2] + (b[2] - a[2]) * f),
+  ];
+}
+
+/** Inverse-distance weighted interpolation for a single point */
+function idwInterp(px: number, py: number, points: number[][], power = 2): number {
+  let wSum = 0, vSum = 0;
+  for (const p of points) {
+    const dx = px - p[0], dy = py - p[1];
+    const d2 = dx * dx + dy * dy;
+    if (d2 < 1e-10) return p[2];
+    const w = 1 / Math.pow(Math.sqrt(d2), power);
+    wSum += w;
+    vSum += w * p[2];
+  }
+  return wSum > 0 ? vSum / wSum : 0;
+}
+
+let _threeCleanup: (() => void) | null = null;
+
+function render3DSurface(pts: number[][]) {
+  if (!surfaceContainer.value || pts.length < 3) return;
+
+  // Dynamic import Three.js (already bundled)
+  import("three").then((THREE) => {
+    import("three/examples/jsm/controls/OrbitControls.js").then(({ OrbitControls }) => {
+      // Clean up previous
+      if (_threeCleanup) { _threeCleanup(); _threeCleanup = null; }
+
+      const container = surfaceContainer.value!;
+      const w = container.clientWidth || 300;
+      const h = container.clientHeight || 200;
+
+      const scene = new THREE.Scene();
+      scene.background = new THREE.Color(0x1a1a2e);
+      const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 10000);
+      const renderer = new THREE.WebGLRenderer({ antialias: true });
+      renderer.setSize(w, h);
+      container.innerHTML = "";
+      container.appendChild(renderer.domElement);
+
+      const controls = new OrbitControls(camera, renderer.domElement);
+      controls.enableDamping = true;
+
+      // Compute bounds
+      let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+      for (const p of pts) {
+        if (p[0] < xMin) xMin = p[0]; if (p[0] > xMax) xMax = p[0];
+        if (p[1] < yMin) yMin = p[1]; if (p[1] > yMax) yMax = p[1];
+        if (p[2] < zMin) zMin = p[2]; if (p[2] > zMax) zMax = p[2];
+      }
+      const xRange = xMax - xMin || 1, yRange = yMax - yMin || 1, zRange = zMax - zMin || 0.001;
+
+      // Create interpolated grid surface
+      const res = 30;
+      const geom = new THREE.PlaneGeometry(xRange, yRange, res - 1, res - 1);
+      const colors: number[] = [];
+      const posArr = geom.attributes.position;
+      for (let i = 0; i < posArr.count; i++) {
+        const gx = posArr.getX(i) + xRange / 2 + xMin;
+        const gy = posArr.getY(i) + yRange / 2 + yMin;
+        const gz = idwInterp(gx, gy, pts);
+        posArr.setZ(i, (gz - zMin) / zRange * Math.min(xRange, yRange) * 0.3);
+        const t = (gz - zMin) / zRange;
+        const [r, g, b] = viridis(t);
+        colors.push(r / 255, g / 255, b / 255);
+      }
+      geom.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
+      geom.computeVertexNormals();
+
+      const mat = new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide });
+      const mesh = new THREE.Mesh(geom, mat);
+      scene.add(mesh);
+
+      // Add measured points as red spheres
+      const dotGeom = new THREE.SphereGeometry(Math.min(xRange, yRange) * 0.015, 8, 8);
+      const dotMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
+      for (const p of pts) {
+        const dot = new THREE.Mesh(dotGeom, dotMat);
+        dot.position.set(
+          p[0] - xMin - xRange / 2,
+          p[1] - yMin - yRange / 2,
+          (p[2] - zMin) / zRange * Math.min(xRange, yRange) * 0.3,
+        );
+        scene.add(dot);
+      }
+
+      // Lighting
+      scene.add(new THREE.AmbientLight(0xffffff, 0.5));
+      const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+      dirLight.position.set(1, 1, 2);
+      scene.add(dirLight);
+
+      // Camera position
+      const maxDim = Math.max(xRange, yRange);
+      camera.position.set(maxDim * 0.8, -maxDim * 0.8, maxDim * 0.8);
+      camera.up.set(0, 0, 1);
+      controls.target.set(0, 0, 0);
+      controls.update();
+
+      let animId = 0;
+      function animate() {
+        animId = requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+      }
+      animate();
+
+      // Resize observer
+      const ro = new ResizeObserver(() => {
+        const cw = container.clientWidth || 1;
+        const ch = container.clientHeight || 1;
+        if (cw === 0 || ch === 0) return;
+        camera.aspect = cw / ch;
+        camera.updateProjectionMatrix();
+        renderer.setSize(cw, ch);
+      });
+      ro.observe(container);
+
+      _threeCleanup = () => {
+        cancelAnimationFrame(animId);
+        ro.disconnect();
+        renderer.dispose();
+        geom.dispose();
+        mat.dispose();
+        container.innerHTML = "";
+      };
+    });
+  });
+}
+
+function renderHeatmap(pts: number[][]) {
+  const canvas = heatmapCanvas.value;
+  if (!canvas || pts.length < 3) return;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return;
+
+  // Compute bounds
+  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity, zMin = Infinity, zMax = -Infinity;
+  for (const p of pts) {
+    if (p[0] < xMin) xMin = p[0]; if (p[0] > xMax) xMax = p[0];
+    if (p[1] < yMin) yMin = p[1]; if (p[1] > yMax) yMax = p[1];
+    if (p[2] < zMin) zMin = p[2]; if (p[2] > zMax) zMax = p[2];
+  }
+  const zRange = zMax - zMin || 0.001;
+
+  const margin = 30;
+  const cw = canvas.width;
+  const ch = canvas.height;
+  const pw = cw - margin * 2;
+  const ph = ch - margin * 2;
+  const res = 60;
+
+  ctx.fillStyle = "#1a1a2e";
+  ctx.fillRect(0, 0, cw, ch);
+
+  // Draw interpolated heatmap
+  const cellW = pw / res, cellH = ph / res;
+  for (let iy = 0; iy < res; iy++) {
+    for (let ix = 0; ix < res; ix++) {
+      const gx = xMin + (ix / (res - 1)) * (xMax - xMin);
+      const gy = yMin + (iy / (res - 1)) * (yMax - yMin);
+      const gz = idwInterp(gx, gy, pts);
+      const t = (gz - zMin) / zRange;
+      const [r, g, b] = viridis(t);
+      ctx.fillStyle = `rgb(${r},${g},${b})`;
+      ctx.fillRect(margin + ix * cellW, margin + (res - 1 - iy) * cellH, Math.ceil(cellW), Math.ceil(cellH));
+    }
+  }
+
+  // Draw measured points
+  ctx.fillStyle = "#ff3333";
+  for (const p of pts) {
+    const px = margin + ((p[0] - xMin) / (xMax - xMin)) * pw;
+    const py = margin + (1 - (p[1] - yMin) / (yMax - yMin)) * ph;
+    ctx.beginPath();
+    ctx.arc(px, py, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Axis labels
+  ctx.fillStyle = "#aaa";
+  ctx.font = "10px monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(xMin.toFixed(1), margin, ch - 5);
+  ctx.fillText(xMax.toFixed(1), cw - margin, ch - 5);
+  ctx.save();
+  ctx.translate(10, margin + ph / 2);
+  ctx.rotate(-Math.PI / 2);
+  ctx.fillText(`Y: ${yMin.toFixed(1)}..${yMax.toFixed(1)}`, 0, 0);
+  ctx.restore();
+
+  // Color bar
+  const barX = cw - 15, barW = 8;
+  for (let i = 0; i < ph; i++) {
+    const t = 1 - i / ph;
+    const [r, g, b] = viridis(t);
+    ctx.fillStyle = `rgb(${r},${g},${b})`;
+    ctx.fillRect(barX, margin + i, barW, 1);
+  }
+  ctx.fillStyle = "#aaa";
+  ctx.textAlign = "left";
+  ctx.fillText(zMax.toFixed(3), barX - 2, margin - 3);
+  ctx.fillText(zMin.toFixed(3), barX - 2, ch - margin + 10);
+}
+
+// Watch for surfacePoints changes and re-render
+watch(() => props.surfacePoints, (pts) => {
+  if (pts && pts.length > 0) {
+    nextTick(() => {
+      render3DSurface(pts);
+      renderHeatmap(pts);
+    });
+  }
+});
+
+onUnmounted(() => {
+  if (_threeCleanup) { _threeCleanup(); _threeCleanup = null; }
+});
+
 function fmt(n: number | undefined): string {
   if (n == null || !Number.isFinite(n)) return "---";
   return n.toFixed(4);
@@ -289,6 +574,7 @@ function fmtR(key: string): string {
       <button class="viewTab" :class="{ active: probeView === 'ridge' }" @click="probeView = 'ridge'">Ridge/Valley</button>
       <button class="viewTab" :class="{ active: probeView === 'angle' }" @click="probeView = 'angle'">Angle</button>
       <button class="viewTab" :class="{ active: probeView === 'cal' }" @click="probeView = 'cal'">Calibrate</button>
+      <button class="viewTab" :class="{ active: probeView === 'surface' }" @click="probeView = 'surface'">Surface</button>
     </div>
 
     <!-- Control bar -->
@@ -783,7 +1069,7 @@ function fmtR(key: string): string {
     </template>
 
     <!-- ═══ RIDGE / VALLEY VIEW ═══ -->
-    <template v-else>
+    <template v-else-if="probeView === 'ridge'">
       <div class="gridSection">
       <div class="section">
         <div class="sub">Probe Operation</div>
@@ -860,6 +1146,55 @@ function fmtR(key: string): string {
         <label>Y Hint <span class="varNum">#3029</span></label>
         <input type="number" v-model.number="params.yHintRV" min="0" step="0.5" :disabled="!can.ready" @change="saveParams" />
       </div>
+      </div>
+    </template>
+
+    <!-- ─── Surface Map ─── -->
+    <template v-else>
+      <div class="section">
+        <div class="sub">Scan Grid</div>
+        <div class="paramGrid twoCol">
+          <label>X0 <span class="varNum">#3050</span></label>
+          <input type="number" v-model.number="params.scanX0" step="1" :disabled="!can.ready" @change="saveParams" />
+          <label>X1 <span class="varNum">#3051</span></label>
+          <input type="number" v-model.number="params.scanX1" step="1" :disabled="!can.ready" @change="saveParams" />
+          <label>Y0 <span class="varNum">#3052</span></label>
+          <input type="number" v-model.number="params.scanY0" step="1" :disabled="!can.ready" @change="saveParams" />
+          <label>Y1 <span class="varNum">#3053</span></label>
+          <input type="number" v-model.number="params.scanY1" step="1" :disabled="!can.ready" @change="saveParams" />
+          <label>X Probes <span class="varNum">#3054</span></label>
+          <input type="number" v-model.number="params.scanXProbes" min="2" step="1" :disabled="!can.ready" @change="saveParams" />
+          <label>Y Probes <span class="varNum">#3055</span></label>
+          <input type="number" v-model.number="params.scanYProbes" min="2" step="1" :disabled="!can.ready" @change="saveParams" />
+          <label>Safe Z <span class="varNum">#3058</span></label>
+          <input type="number" v-model.number="params.scanSafeZ" step="1" :disabled="!can.ready" @change="saveParams" />
+          <label>Probe Depth <span class="varNum">#3059</span></label>
+          <input type="number" v-model.number="params.scanDepthZ" min="0.1" step="1" :disabled="!can.ready" @change="saveParams" />
+        </div>
+      </div>
+
+      <div class="surfaceActions">
+        <button class="btn" :disabled="!can.ready || probing" @click="runSurfaceScan">Start Scan</button>
+        <button class="btn" @click="loadSurfaceMap">Show Map</button>
+        <button class="btn" :class="{ active: eoffsetEnabled }" :disabled="!can.ready || probing" @click="enableComp">Enable Comp</button>
+        <button class="btn" :disabled="!can.ready" @click="disableComp">Disable Comp</button>
+      </div>
+
+      <div class="compStatus">
+        <span class="compDot" :class="{ on: eoffsetEnabled }"></span>
+        <span>Compensation: <b>{{ eoffsetEnabled ? 'ON' : 'OFF' }}</b></span>
+        <span v-if="eoffsetZ != null" class="compValue">Z: {{ eoffsetZ.toFixed(4) }}</span>
+      </div>
+
+      <div class="surfaceViz" v-if="surfacePoints && surfacePoints.length > 0">
+        <div class="vizPanel">
+          <div class="sub">3D Surface</div>
+          <div ref="surfaceContainer" class="surface3d"></div>
+        </div>
+        <div class="vizPanel">
+          <div class="sub">Height Map</div>
+          <canvas ref="heatmapCanvas" class="heatmapCanvas" width="400" height="300"></canvas>
+        </div>
       </div>
     </template>
 
@@ -1379,6 +1714,65 @@ function fmtR(key: string): string {
   font-size: 13px;
   font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
   font-weight: 600;
+}
+
+/* ─── Surface Map ─── */
+.surfaceActions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.surfaceActions .btn {
+  flex: 1;
+  min-width: 80px;
+}
+.surfaceActions .btn.active {
+  background: var(--ok);
+  color: #fff;
+}
+.compStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+}
+.compDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--border);
+}
+.compDot.on {
+  background: var(--ok);
+  box-shadow: 0 0 6px var(--ok);
+}
+.compValue {
+  margin-left: auto;
+  opacity: 0.7;
+}
+.surfaceViz {
+  display: flex;
+  gap: 8px;
+  min-height: 200px;
+}
+.vizPanel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.surface3d {
+  flex: 1;
+  min-height: 180px;
+  border-radius: 6px;
+  overflow: hidden;
+}
+.heatmapCanvas {
+  width: 100%;
+  height: 100%;
+  min-height: 180px;
+  border-radius: 6px;
 }
 
 </style>

@@ -613,6 +613,10 @@ class StatusPayload:
     probing: Optional[bool]
     probed_position: Optional[List[float]]
 
+    # external offset (surface compensation)
+    eoffset_z: Optional[float]
+    eoffset_enabled: Optional[bool]
+
     # coolant
     flood: Optional[bool]
     mist: Optional[bool]
@@ -1158,6 +1162,8 @@ def poll_status() -> StatusPayload:
         probed_position=to_float_list(safe_get("probed_position", None)),
         flood=bool(safe_get("flood", 0)),
         mist=bool(safe_get("mist", 0)),
+        eoffset_z=hal_get("axis.z.eoffset", None),
+        eoffset_enabled=hal_get("axis.z.eoffset-enable", None),
         linear_units=ini_cfg.get("linear_units"),
         default_jog_velocity=ini_cfg.get("default_jog_velocity"),
         min_jog_velocity=ini_cfg.get("min_jog_velocity"),
@@ -1261,6 +1267,22 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             except Exception:
                 pass
             return {"ok": True, "tools": merged, "current_tool": current_tool}
+
+        if cmd == "get_probe_results":
+            ini_path = getattr(STAT, "ini_filename", None)
+            config_dir = os.path.dirname(ini_path) if ini_path else ""
+            path = os.path.join(config_dir, "probe-results.txt")
+            points = []
+            if os.path.isfile(path):
+                with open(path, "r") as f:
+                    for line in f:
+                        parts = line.strip().split()
+                        if len(parts) >= 3:
+                            try:
+                                points.append([float(parts[0]), float(parts[1]), float(parts[2])])
+                            except ValueError:
+                                pass
+            return {"ok": True, "points": points}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -1729,16 +1751,27 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                     open(var_file, "w").writelines(lines)
                     file_ok = True
             # 2) Best-effort: set in interpreter memory via MDI (requires armed + idle)
+            # Split into chunks ≤250 chars to fit LinuxCNC's 256-char MDI buffer
             mdi_ok = False
             if armed and not reject_if_auto_running():
                 try:
-                    assignments = " ".join(
-                        f"#{k}={float(v)}" for k, v in vars_to_set.items()
-                    )
+                    items = [f"#{k}={float(v)}" for k, v in vars_to_set.items()]
+                    chunks, current = [], ""
+                    for item in items:
+                        if current and len(current) + 1 + len(item) > 250:
+                            chunks.append(current)
+                            current = item
+                        else:
+                            current = f"{current} {item}".strip() if current else item
+                    if current:
+                        chunks.append(current)
                     set_mode(linuxcnc.MODE_MDI)
-                    CMD.mdi(assignments)
-                    ret = CMD.wait_complete(5)
-                    mdi_ok = (ret == 0)
+                    mdi_ok = True
+                    for chunk in chunks:
+                        CMD.mdi(chunk)
+                        ret = CMD.wait_complete(5)
+                        if ret != 0:
+                            mdi_ok = False
                 except Exception as e:
                     print(f"[probe] MDI set failed: {e}", flush=True)
             print(f"[probe] set_probe_vars result: file_saved={file_ok} mdi_set={mdi_ok}", flush=True)
@@ -2491,7 +2524,7 @@ async def ws_endpoint(ws: WebSocket):
                     await _loop.run_in_executor(None, lambda: subprocess.run(
                         ['halcmd', 'sets', 'probe-in', '1'],
                         capture_output=True, text=True, timeout=2, check=True))
-                    await asyncio.sleep(0.15)
+                    await asyncio.sleep(0.02)
                     await _loop.run_in_executor(None, lambda: subprocess.run(
                         ['halcmd', 'sets', 'probe-in', '0'],
                         capture_output=True, text=True, timeout=2, check=True))
