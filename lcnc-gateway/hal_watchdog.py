@@ -22,11 +22,14 @@ try:
     comp.newpin("heartbeat", hal.HAL_BIT, hal.HAL_OUT)
     comp.newpin("connected", hal.HAL_BIT, hal.HAL_OUT)
     comp.newpin("tool-changed", hal.HAL_BIT, hal.HAL_OUT)
+    comp.newpin("compensation-enable", hal.HAL_BIT, hal.HAL_OUT)
+    comp.newpin("compensation-method", hal.HAL_U32, hal.HAL_OUT)
     comp.ready()
 except Exception as e:
     print(f"HAL component '{COMP_NAME}' failed: {e}", file=sys.stderr, flush=True)
     sys.exit(1)
 
+comp["compensation-method"] = 2  # default: cubic
 print("OK", flush=True)  # signal to loadusr -W
 
 # ---- Unix socket server ----
@@ -63,6 +66,7 @@ try:
                 comp["connected"] = False
                 comp["heartbeat"] = False
                 comp["tool-changed"] = False
+                comp["compensation-enable"] = False
                 client = new_client
                 buf = ""
             elif sock is client:
@@ -73,6 +77,7 @@ try:
                         comp["connected"] = False
                         comp["heartbeat"] = False
                         comp["tool-changed"] = False
+                        comp["compensation-enable"] = False
                         client.close()
                         client = None
                         buf = ""
@@ -90,11 +95,16 @@ try:
                             comp["connected"] = bool(msg["connected"])
                         if "tool_changed" in msg:
                             comp["tool-changed"] = bool(msg["tool_changed"])
+                        if "compensation_enable" in msg:
+                            comp["compensation-enable"] = bool(msg["compensation_enable"])
+                        if "compensation_method" in msg:
+                            comp["compensation-method"] = int(msg["compensation_method"])
                 except Exception:
                     # Socket error — force pins LOW for safety
                     comp["connected"] = False
                     comp["heartbeat"] = False
                     comp["tool-changed"] = False
+                    comp["compensation-enable"] = False
                     try:
                         client.close()
                     except Exception:

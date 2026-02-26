@@ -6,6 +6,7 @@ import os
 import subprocess
 from pathlib import Path
 import linuxcnc
+import hal  # must import in main thread — _hal C extension registers signal handlers on init
 
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, List
@@ -616,6 +617,7 @@ class StatusPayload:
     # external offset (surface compensation)
     eoffset_z: Optional[float]
     eoffset_enabled: Optional[bool]
+    comp_method: Optional[int]  # 0=nearest, 1=linear, 2=cubic
 
     # coolant
     flood: Optional[bool]
@@ -639,7 +641,6 @@ class StatusPayload:
 def hal_get(pin: str, default=None):
     """Read a HAL pin value. Tries hal module first, falls back to halcmd."""
     try:
-        import hal
         return hal.get_value(pin)
     except Exception:
         pass
@@ -1164,6 +1165,7 @@ def poll_status() -> StatusPayload:
         mist=bool(safe_get("mist", 0)),
         eoffset_z=hal_get("axis.z.eoffset", None),
         eoffset_enabled=hal_get("axis.z.eoffset-enable", None),
+        comp_method=hal_get("compensation.method", None),
         linear_units=ini_cfg.get("linear_units"),
         default_jog_velocity=ini_cfg.get("default_jog_velocity"),
         min_jog_velocity=ini_cfg.get("min_jog_velocity"),
@@ -1297,6 +1299,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             require_armed(armed)
             CMD.state(linuxcnc.STATE_ESTOP)
             CMD.wait_complete()
+            _hal_send({"connected": False})  # HAL-level defense-in-depth
             return {"ok": True}
 
         if cmd == "estop_reset":
@@ -2381,9 +2384,9 @@ async def ws_endpoint(ws: WebSocket):
                 _prev_tc_req = st.tool_change_requested
 
                 # HAL watchdog: send pin updates to subprocess
-                has_armed = any(c["armed"] for c in _clients.values())
+                has_clients = bool(_clients)
                 _hal_last_hb = not _hal_last_hb
-                hal_msg = {"heartbeat": _hal_last_hb, "connected": has_armed}
+                hal_msg = {"heartbeat": _hal_last_hb, "connected": has_clients}
                 await loop.run_in_executor(None, _hal_send, hal_msg)
 
                 # Viewer: gcode preview only when the file changes
@@ -2545,6 +2548,26 @@ async def ws_endpoint(ws: WebSocket):
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 
+            if msg.get("cmd") == "set_compensation":
+                if not armed:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
+                    continue
+                enable = bool(msg.get("enable", False))
+                _loop = asyncio.get_event_loop()
+                await _loop.run_in_executor(None, _hal_send, {"compensation_enable": enable})
+                await ws_send_json(ws, {"type": "reply", "ok": True})
+                continue
+
+            if msg.get("cmd") == "set_compensation_method":
+                if not armed:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
+                    continue
+                method = int(msg.get("method", 2))
+                _loop = asyncio.get_event_loop()
+                await _loop.run_in_executor(None, _hal_send, {"compensation_method": method})
+                await ws_send_json(ws, {"type": "reply", "ok": True})
+                continue
+
             reply = handle_command(msg, armed)
             await ws_send_json(ws, {"type": "reply", **reply})
 
@@ -2571,5 +2594,5 @@ async def ws_endpoint(ws: WebSocket):
                 pass
         status_task.cancel()
         # Update HAL pins to reflect this client is gone
-        has_armed = any(c["armed"] for c in _clients.values())
-        _hal_send({"connected": has_armed, "heartbeat": False})
+        has_clients = bool(_clients)
+        _hal_send({"connected": has_clients, "heartbeat": False})

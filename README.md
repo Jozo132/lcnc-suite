@@ -112,10 +112,11 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - **Real-time Status**: 30 Hz machine state updates via WebSocket
 - **Full Machine Control**: E-stop, enable, jog, MDI, auto run
 - **Three-Layer Safety System**:
-  - Connection-level arming to prevent accidental commands
+  - Connection-level arming to prevent accidental commands (`require_armed()` gates all motion)
   - Disconnect handler: stops all motion when an armed client disconnects
   - Heartbeat watchdog: client sends 1 s heartbeat; gateway disarms after 3 s timeout
-  - HAL watchdog: `webui-safety` HAL component with `heartbeat` and `connected` pins for hardware-level estop integration
+  - HAL watchdog: `webui-safety` HAL component — `connected` pin in e-stop AND gate, machine enters ESTOP when all clients disconnect or gateway crashes
+  - E-Stop button forces HAL pin LOW for defense-in-depth alongside software command
 - **Client Tracking**: Connected clients with IP and armed state, visible to all sessions
 - **Auto-Reconnect**: Detects LinuxCNC restart and reconnects without gateway restart
 - **3D Visualization Support**: Machine model, kinematics, G-code preview
@@ -460,24 +461,54 @@ All commands return a reply:
 
 ### Safety System
 
-The gateway implements three layers of safety to handle connection loss during machine operation:
+The gateway implements three layers of safety to handle connection loss during machine operation. Motion commands are gated by `require_armed()` (server-side check on every command). The HAL `connected` pin gates machine power — it tracks whether any web client is connected (not whether anyone is armed).
+
+#### HAL E-Stop Chain
+
+The HAL config inserts an AND gate into the e-stop loop:
+
+```
+user-enable-out ──┐
+                  AND2 ──► emc-enable-in
+connected ────────┘
+```
+
+Machine stays enabled only when BOTH: user hasn't pressed e-stop AND at least one web client is connected.
+
+#### Layer Behavior
+
+| Trigger | Gateway action | `connected` pin | LinuxCNC state |
+|---------|---------------|----------------|----------------|
+| Armed client, normal operation | heartbeat toggles at 30Hz | TRUE | ON |
+| Clients connected, **none armed** | heartbeat toggles at 30Hz | TRUE | **ON** |
+| No clients connected | sends `connected: false` | FALSE | **ESTOP** |
+| Last client disconnects (was armed) | `abort()` + `jog_stop()` all axes → pin drops | FALSE | **ESTOP** |
+| Heartbeat timeout, other clients exist | force-disarm + `abort()` + `jog_stop()` | TRUE | ON |
+| Heartbeat timeout, last client | force-disarm + `abort()` + `jog_stop()` → pin drops | FALSE | **ESTOP** |
+| Gateway crashes | watchdog detects socket close → resets all pins | FALSE | **ESTOP** |
+| User presses E-Stop | `CMD.state(ESTOP)` + forces `connected: false` | FALSE (transient) | **ESTOP** |
+
+Recovery: clear E-Stop → Machine On. Motion commands still require `require_armed()`.
 
 **Layer 1 — Disconnect Handler**: When an armed WebSocket client disconnects (browser closed, network drop), the gateway immediately sends `jog_stop` for all axes and `abort` to halt any running program.
 
 **Layer 2 — Heartbeat Watchdog**: The client sends `{"cmd": "heartbeat"}` every 1 second. If the gateway doesn't receive a heartbeat from an armed client within 3 seconds (e.g., browser freeze, WiFi stall), it stops all motion and disarms the connection. The client receives an error message: `"Heartbeat timeout — disarmed for safety"`.
 
-**Layer 3 — HAL Watchdog**: A standalone `hal_watchdog.py` component is loaded by LinuxCNC via the HAL config (not spawned by the gateway). It creates two HAL pins and listens on a Unix socket (`/tmp/webui-safety.sock`). The gateway connects to this socket as a client and sends pin updates.
+**Layer 3 — HAL Watchdog**: A standalone `hal_watchdog.py` component is loaded by LinuxCNC via the HAL config (not spawned by the gateway). It creates HAL pins and listens on a Unix socket (`/tmp/webui-safety.sock`). The gateway connects to this socket as a client and sends pin updates.
 
 | Pin | Type | Description |
 |---|---|---|
 | `webui-safety.heartbeat` | BIT OUT | Toggles with each gateway heartbeat cycle |
-| `webui-safety.connected` | BIT OUT | True when at least one armed client is connected |
+| `webui-safety.connected` | BIT OUT | TRUE when any web client is connected to the gateway |
+| `webui-safety.compensation-enable` | BIT OUT | Enables surface compensation Z offsets |
+| `webui-safety.compensation-method` | U32 OUT | Interpolation method (0=nearest, 1=linear, 2=cubic) |
+| `webui-safety.tool-changed` | BIT OUT | Tool change confirmation from web UI |
 
-Because the watchdog is owned by LinuxCNC, the HAL pins survive gateway restarts. If the gateway crashes or disconnects, the watchdog immediately forces both pins LOW, triggering e-stop through the safety chain.
+Because the watchdog is owned by LinuxCNC, the HAL pins survive gateway restarts. If the gateway crashes or disconnects, the watchdog immediately forces all pins LOW, triggering e-stop through the safety chain.
 
 #### Setting Up the HAL Watchdog
 
-Add the following to your **POSTGUI_HALFILE** (runs after your main HAL config):
+Add the following to a **HALFILE** in your LinuxCNC config (runs after the core HAL config that creates the e-stop loopback):
 
 ```hal
 # 1. Load the watchdog component (owned by LinuxCNC)
@@ -494,7 +525,7 @@ unlinkp iocontrol.0.emc-enable-in
 
 # 4. Wire the AND gate: both conditions must be TRUE to leave e-stop
 #    - Input 0: User has not pressed e-stop
-#    - Input 1: An armed web client is connected
+#    - Input 1: A web client is connected
 net estop-loop                    => and2.0.in0
 net webui-connected webui-safety.connected => and2.0.in1
 net estop-out and2.0.out          => iocontrol.0.emc-enable-in

@@ -1330,6 +1330,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :g5xLabel="g5xLabel"
               :eoffsetZ="st.eoffset_z ?? null"
               :eoffsetEnabled="st.eoffset_enabled === true"
+              :compMethod="st.comp_method ?? null"
               :surfacePoints="surfacePoints"
               @mdi="send({ cmd: 'mdi', text: $event })"
               @abort="send({ cmd: 'abort' })"
@@ -1337,6 +1338,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
               @setProbeVars="send({ cmd: 'set_probe_vars', vars: $event })"
               @setG5x="setG5x"
               @getProbeResults="requestProbeResults"
+              @setCompensation="send({ cmd: 'set_compensation', enable: $event })"
+              @setCompMethod="send({ cmd: 'set_compensation_method', method: $event })"
             />
           </template>
 

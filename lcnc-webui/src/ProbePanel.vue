@@ -13,6 +13,7 @@ const props = defineProps<{
   g5xLabel: string;
   eoffsetZ: number | null;
   eoffsetEnabled: boolean;
+  compMethod: number | null;  // 0=nearest, 1=linear, 2=cubic
   surfacePoints: number[][] | null;
 }>();
 
@@ -24,6 +25,8 @@ const emit = defineEmits<{
   (e: "setProbeVars", vars: Record<string, number>): void;
   (e: "setG5x", gcode: string): void;
   (e: "getProbeResults"): void;
+  (e: "setCompensation", enable: boolean): void;
+  (e: "setCompMethod", method: number): void;
 }>();
 
 const g5xOptions = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"];
@@ -290,12 +293,18 @@ function runSurfaceScan() {
 
 function enableComp() {
   if (!can.value.ready || props.probing) return;
-  emit("mdi", "M64 P0");
+  emit("setCompensation", true);
 }
 
 function disableComp() {
   if (!can.value.ready) return;
-  emit("mdi", "M65 P0");
+  emit("setCompensation", false);
+}
+
+const METHOD_LABELS: Record<number, string> = { 0: "Nearest", 1: "Linear", 2: "Cubic" };
+
+function setMethod(m: number) {
+  emit("setCompMethod", m);
 }
 
 function loadSurfaceMap() {
@@ -1184,6 +1193,12 @@ function fmtR(key: string): string {
         <span class="compDot" :class="{ on: eoffsetEnabled }"></span>
         <span>Compensation: <b>{{ eoffsetEnabled ? 'ON' : 'OFF' }}</b></span>
         <span v-if="eoffsetZ != null" class="compValue">Z: {{ eoffsetZ.toFixed(4) }}</span>
+        <span class="compMethod">
+          Method:
+          <button v-for="(label, id) in METHOD_LABELS" :key="id"
+            class="methodBtn" :class="{ active: compMethod === id }"
+            @click="setMethod(id)">{{ label }}</button>
+        </span>
       </div>
 
       <div class="surfaceViz" v-if="surfacePoints && surfacePoints.length > 0">
@@ -1750,6 +1765,26 @@ function fmtR(key: string): string {
 .compValue {
   margin-left: auto;
   opacity: 0.7;
+}
+.compMethod {
+  margin-left: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.methodBtn {
+  padding: 1px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  background: var(--bg);
+  color: var(--fg);
+  cursor: pointer;
+}
+.methodBtn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
 .surfaceViz {
   display: flex;

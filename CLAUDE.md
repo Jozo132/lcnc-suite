@@ -50,16 +50,41 @@ Left column (150px) with three sections:
 
 ## Safety System — Three Layers
 
-See `README.md` Safety System section for full details including HAL setup.
+### HAL E-Stop Chain
 
-| Layer | Mechanism | Timeout | Effect |
-|-------|-----------|---------|--------|
-| **1. Disconnect** | Armed client disconnects | Immediate | `jog_stop` all axes + `abort` |
-| **2. Heartbeat** | Client sends every 1s; server checks | 3.0s | Auto-disarm + abort + stop jogs |
-| **3. HAL Watchdog** | `hal_watchdog.py` pins: `heartbeat`, `connected` | External HAL | Pins go LOW → hardware e-stop chain |
+`lcnc_webui.hal` inserts an AND gate into the e-stop loop:
+
+```
+user-enable-out ──┐
+                  AND2 ──► emc-enable-in
+connected ────────┘
+```
+
+Machine stays enabled only when BOTH: user hasn't pressed e-stop AND at least one web client is **connected**.
+When the AND gate output drops, LinuxCNC enters **ESTOP** (task_state=1).
+
+### Layer Behavior
+
+| Trigger | Gateway action | `connected` pin | LinuxCNC state |
+|---------|---------------|----------------|----------------|
+| Armed client, normal operation | heartbeat toggles at 30Hz | TRUE | ON |
+| Clients connected, **none armed** | heartbeat toggles at 30Hz | TRUE | **ON** |
+| No clients connected | sends `connected: false` | FALSE | **ESTOP** |
+| Last client disconnects (was armed) | `abort()` + `jog_stop()` all axes → pin drops | FALSE | **ESTOP** |
+| Heartbeat timeout, other clients exist | force-disarm + `abort()` + `jog_stop()` | TRUE | ON |
+| Heartbeat timeout, last client | force-disarm + `abort()` + `jog_stop()` → pin drops | FALSE | **ESTOP** |
+| Gateway crashes | watchdog detects socket close → resets all pins | FALSE | **ESTOP** |
+| User presses E-Stop | `CMD.state(ESTOP)` + forces `connected: false` | FALSE (transient) | **ESTOP** |
+
+Recovery: clear E-Stop → Machine On. Motion commands still require `require_armed()`.
+
+### Pin Semantics
+
+- **`webui-safety.connected`**: TRUE when `bool(clients)` — any connected client keeps the machine alive; armed state gates motion commands via `require_armed()`, not the HAL pin
+- **`webui-safety.heartbeat`**: toggles every ~33ms (30Hz) while gateway has active clients; goes LOW on gateway disconnect
 
 Additional safety mechanisms:
-- **Client-local arming**: Each WebSocket client independently armed/disarmed (server-authoritative)
+- **Server-authoritative arming**: Each WebSocket client independently armed/disarmed; gateway is the source of truth
 - **Backend `require_armed()`**: Every motion command in gateway.py checks armed before executing
 - **Busy gate**: `fire()` 200ms anti-spam cooldown prevents double-execution
 - **Focus loss**: Auto-stop jogs on window blur / tab hidden
