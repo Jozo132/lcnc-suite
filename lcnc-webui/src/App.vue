@@ -157,7 +157,7 @@ const currentLine = computed<number | null>(() => {
 });
 
 /** ---------- permissions (arming + machine state) ---------- */
-const canEstop = computed(() => armed.value && !isEstop.value);
+const canEstop = computed(() => !isEstop.value);
 const canResetEstop = computed(() => armed.value && isEstop.value);
 
 const canMachineOn = computed(
@@ -696,8 +696,8 @@ function onKeyDown(e: KeyboardEvent) {
   // E-stop: ALWAYS works, even in inputs
   if (e.key === "Escape") {
     e.preventDefault();
-    if (canEstop.value) fire({ cmd: "estop" });
-    else if (canResetEstop.value) fire({ cmd: "estop_reset" });
+    if (canEstop.value) send({ cmd: "estop" });
+    else if (canResetEstop.value) send({ cmd: "estop_reset" });
     return;
   }
 
@@ -873,8 +873,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <button
           class="btn safetyBtn"
           :class="isEstop ? '' : 'danger'"
-          @click="fire({ cmd: isEstop ? 'estop_reset' : 'estop' })"
-          :disabled="!(isEstop ? canResetEstop : canEstop) || busy"
+          @click="send({ cmd: isEstop ? 'estop_reset' : 'estop' })"
+          :disabled="!(isEstop ? canResetEstop : canEstop)"
         >
           <span class="safetyIcon">&#x26A0;</span>
           <span class="safetyLabel">{{ isEstop ? "Reset E-Stop" : "E-Stop" }}</span>
@@ -1520,7 +1520,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   width: 150px;
   gap: 12px;
   position: relative;
-  z-index: 50;
+  z-index: 1001;  /* above dialog overlays (z-index: 1000) so safety buttons stay accessible */
 }
 
 .topRow > .card {

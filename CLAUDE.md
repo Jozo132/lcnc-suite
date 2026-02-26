@@ -71,8 +71,9 @@ When the AND gate output drops, LinuxCNC enters **ESTOP** (task_state=1).
 | Clients connected, **none armed** | heartbeat toggles at 30Hz | TRUE | **ON** |
 | No clients connected | sends `connected: false` | FALSE | **ESTOP** |
 | Last client disconnects (was armed) | `abort()` + `jog_stop()` all axes → pin drops | FALSE | **ESTOP** |
-| Heartbeat timeout, other clients exist | force-disarm + `abort()` + `jog_stop()` | TRUE | ON |
-| Heartbeat timeout, last client | force-disarm + `abort()` + `jog_stop()` → pin drops | FALSE | **ESTOP** |
+| Heartbeat timeout (armed), other clients exist | force-disarm + `abort()` + `jog_stop()` | TRUE | ON |
+| Heartbeat timeout (armed), last client | force-disarm + `abort()` + `jog_stop()` → pin drops | FALSE | **ESTOP** |
+| Heartbeat timeout (non-armed) | evict client; if last → pin drops | depends | depends |
 | Gateway crashes | watchdog detects socket close → resets all pins | FALSE | **ESTOP** |
 | User presses E-Stop | `CMD.state(ESTOP)` + forces `connected: false` | FALSE (transient) | **ESTOP** |
 

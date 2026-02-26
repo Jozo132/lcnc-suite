@@ -1296,7 +1296,6 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             return {"ok": True}
 
         if cmd == "estop":
-            require_armed(armed)
             CMD.state(linuxcnc.STATE_ESTOP)
             CMD.wait_complete()
             _hal_send({"connected": False})  # HAL-level defense-in-depth
@@ -2435,29 +2434,39 @@ async def ws_endpoint(ws: WebSocket):
                         "data": {"file": None, "feed": [], "feed_lines": [], "rapid": [], "content": None},
                     })
 
-                # Heartbeat timeout: disarm and stop motion if client stalled
-                if armed and client_id in _clients:
+                # Heartbeat timeout
+                if client_id in _clients:
                     if time.time() - _clients[client_id].get("last_hb", 0) > 3.0:
-                        armed = False
-                        _clients[client_id]["armed"] = False
-                        try:
-                            if bool(safe_get("enabled", False)):
-                                mode = safe_get("task_mode", None)
-                                interp = safe_get("interp_state", None)
-                                if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-                                    CMD.abort()
-                                else:
-                                    set_mode(linuxcnc.MODE_MANUAL)
-                                    jf = _jog_joint_flag()
-                                    for ax in range(3):
-                                        CMD.jog(linuxcnc.JOG_STOP, jf, ax)
-                                    CMD.abort()
-                        except Exception:
-                            pass
-                        try:
-                            await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
-                        except Exception:
-                            pass
+                        if armed:
+                            # Armed client stalled — disarm and stop motion
+                            armed = False
+                            _clients[client_id]["armed"] = False
+                            try:
+                                if bool(safe_get("enabled", False)):
+                                    mode = safe_get("task_mode", None)
+                                    interp = safe_get("interp_state", None)
+                                    if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
+                                        CMD.abort()
+                                    else:
+                                        set_mode(linuxcnc.MODE_MANUAL)
+                                        jf = _jog_joint_flag()
+                                        for ax in range(3):
+                                            CMD.jog(linuxcnc.JOG_STOP, jf, ax)
+                                        CMD.abort()
+                            except Exception:
+                                pass
+                            try:
+                                await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
+                            except Exception:
+                                pass
+                        else:
+                            # Non-armed client stalled — evict to keep _clients accurate
+                            # Closing WS triggers finally block → removes from _clients → updates HAL pins
+                            try:
+                                await ws.close(code=1000, reason="Heartbeat timeout")
+                            except Exception:
+                                pass
+                            return  # exit status_loop; finally block handles cleanup
 
                 await asyncio.sleep(1.0 / POLL_HZ)
             except Exception as e:
