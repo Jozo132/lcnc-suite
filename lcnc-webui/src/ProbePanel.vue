@@ -307,9 +307,9 @@ function loadSurfaceMap() {
   emit("getProbeResults");
 }
 
-// ─── 3D surface + 2D heatmap ─────────────────────────────────────
+// ─── 3D surface popout dialog ────────────────────────────────────
+const mapDialogOpen = ref(false);
 const surfaceContainer = ref<HTMLDivElement | null>(null);
-const heatmapCanvas = ref<HTMLCanvasElement | null>(null);
 
 /** Viridis-like colormap (simplified 5-stop) */
 function viridis(t: number): [number, number, number] {
@@ -361,13 +361,19 @@ function render3DSurface(pts: number[][]) {
       const scene = new THREE.Scene();
       scene.background = new THREE.Color(0x1a1a2e);
       const camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 10000);
+      camera.up.set(0, 0, 1); // Z-up before OrbitControls construction
       const renderer = new THREE.WebGLRenderer({ antialias: true });
       renderer.setSize(w, h);
       container.innerHTML = "";
       container.appendChild(renderer.domElement);
 
       const controls = new OrbitControls(camera, renderer.domElement);
-      controls.enableDamping = true;
+      controls.enableDamping = false;
+      controls.rotateSpeed = 0.6;
+      controls.zoomSpeed = 1.2;
+      controls.panSpeed = 0.8;
+      controls.enablePan = true;
+      controls.screenSpacePanning = true;
 
       // Compute bounds
       let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity, zMin = Infinity, zMax = -Infinity;
@@ -399,17 +405,37 @@ function render3DSurface(pts: number[][]) {
       const mesh = new THREE.Mesh(geom, mat);
       scene.add(mesh);
 
-      // Add measured points as red spheres
+      // Add measured points as red spheres + Z value labels
       const dotGeom = new THREE.SphereGeometry(Math.min(xRange, yRange) * 0.015, 8, 8);
       const dotMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
+      const zScale = Math.min(xRange, yRange) * 0.3;
       for (const p of pts) {
+        const sx = p[0] - xMin - xRange / 2;
+        const sy = p[1] - yMin - yRange / 2;
+        const sz = (p[2] - zMin) / zRange * zScale;
         const dot = new THREE.Mesh(dotGeom, dotMat);
-        dot.position.set(
-          p[0] - xMin - xRange / 2,
-          p[1] - yMin - yRange / 2,
-          (p[2] - zMin) / zRange * Math.min(xRange, yRange) * 0.3,
-        );
+        dot.position.set(sx, sy, sz);
         scene.add(dot);
+
+        // Z value text sprite
+        const canvas = document.createElement("canvas");
+        canvas.width = 256; canvas.height = 64;
+        const ctx = canvas.getContext("2d")!;
+        ctx.font = "bold 48px monospace";
+        ctx.fillStyle = "#ffffff";
+        ctx.strokeStyle = "#000000";
+        ctx.lineWidth = 3;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.strokeText(p[2].toFixed(3), 128, 32);
+        ctx.fillText(p[2].toFixed(3), 128, 32);
+        const tex = new THREE.CanvasTexture(canvas);
+        const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+        const sprite = new THREE.Sprite(spriteMat);
+        const labelScale = Math.max(xRange, yRange) * 0.12;
+        sprite.scale.set(labelScale, labelScale * 0.25, 1);
+        sprite.position.set(sx, sy, sz + zScale * 0.08 + Math.min(xRange, yRange) * 0.025);
+        scene.add(sprite);
       }
 
       // Lighting
@@ -418,10 +444,45 @@ function render3DSurface(pts: number[][]) {
       dirLight.position.set(1, 1, 2);
       scene.add(dirLight);
 
+      // X/Y axis arrows with labels
+      const arrowLen = Math.max(xRange, yRange) * 0.18;
+      const arrowOrigin = new THREE.Vector3(-xRange / 2 - arrowLen * 0.3, -yRange / 2 - arrowLen * 0.3, 0);
+      const xArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), arrowOrigin, arrowLen, 0xff4444, arrowLen * 0.15, arrowLen * 0.08);
+      const yArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), arrowOrigin, arrowLen, 0x44ff44, arrowLen * 0.15, arrowLen * 0.08);
+      const zArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), arrowOrigin, arrowLen, 0x4488ff, arrowLen * 0.15, arrowLen * 0.08);
+      scene.add(xArrow);
+      scene.add(yArrow);
+      scene.add(zArrow);
+
+      function makeAxisLabel(text: string, color: string): THREE.Sprite {
+        const c = document.createElement("canvas");
+        c.width = 64; c.height = 64;
+        const cx = c.getContext("2d")!;
+        cx.font = "bold 48px sans-serif";
+        cx.fillStyle = color;
+        cx.textAlign = "center";
+        cx.textBaseline = "middle";
+        cx.fillText(text, 32, 32);
+        const t = new THREE.CanvasTexture(c);
+        const m = new THREE.SpriteMaterial({ map: t, transparent: true, depthTest: false });
+        const s = new THREE.Sprite(m);
+        const ls = arrowLen * 0.35;
+        s.scale.set(ls, ls, 1);
+        return s;
+      }
+      const xLabel = makeAxisLabel("X", "#ff4444");
+      xLabel.position.copy(arrowOrigin).add(new THREE.Vector3(arrowLen + arrowLen * 0.15, 0, 0));
+      scene.add(xLabel);
+      const yLabel = makeAxisLabel("Y", "#44ff44");
+      yLabel.position.copy(arrowOrigin).add(new THREE.Vector3(0, arrowLen + arrowLen * 0.15, 0));
+      scene.add(yLabel);
+      const zLabel = makeAxisLabel("Z", "#4488ff");
+      zLabel.position.copy(arrowOrigin).add(new THREE.Vector3(0, 0, arrowLen + arrowLen * 0.15));
+      scene.add(zLabel);
+
       // Camera position
       const maxDim = Math.max(xRange, yRange);
       camera.position.set(maxDim * 0.8, -maxDim * 0.8, maxDim * 0.8);
-      camera.up.set(0, 0, 1);
       controls.target.set(0, 0, 0);
       controls.update();
 
@@ -456,88 +517,12 @@ function render3DSurface(pts: number[][]) {
   });
 }
 
-function renderHeatmap(pts: number[][]) {
-  const canvas = heatmapCanvas.value;
-  if (!canvas || pts.length < 3) return;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return;
-
-  // Compute bounds
-  let xMin = Infinity, xMax = -Infinity, yMin = Infinity, yMax = -Infinity, zMin = Infinity, zMax = -Infinity;
-  for (const p of pts) {
-    if (p[0] < xMin) xMin = p[0]; if (p[0] > xMax) xMax = p[0];
-    if (p[1] < yMin) yMin = p[1]; if (p[1] > yMax) yMax = p[1];
-    if (p[2] < zMin) zMin = p[2]; if (p[2] > zMax) zMax = p[2];
-  }
-  const zRange = zMax - zMin || 0.001;
-
-  const margin = 30;
-  const cw = canvas.width;
-  const ch = canvas.height;
-  const pw = cw - margin * 2;
-  const ph = ch - margin * 2;
-  const res = 60;
-
-  ctx.fillStyle = "#1a1a2e";
-  ctx.fillRect(0, 0, cw, ch);
-
-  // Draw interpolated heatmap
-  const cellW = pw / res, cellH = ph / res;
-  for (let iy = 0; iy < res; iy++) {
-    for (let ix = 0; ix < res; ix++) {
-      const gx = xMin + (ix / (res - 1)) * (xMax - xMin);
-      const gy = yMin + (iy / (res - 1)) * (yMax - yMin);
-      const gz = idwInterp(gx, gy, pts);
-      const t = (gz - zMin) / zRange;
-      const [r, g, b] = viridis(t);
-      ctx.fillStyle = `rgb(${r},${g},${b})`;
-      ctx.fillRect(margin + ix * cellW, margin + (res - 1 - iy) * cellH, Math.ceil(cellW), Math.ceil(cellH));
-    }
-  }
-
-  // Draw measured points
-  ctx.fillStyle = "#ff3333";
-  for (const p of pts) {
-    const px = margin + ((p[0] - xMin) / (xMax - xMin)) * pw;
-    const py = margin + (1 - (p[1] - yMin) / (yMax - yMin)) * ph;
-    ctx.beginPath();
-    ctx.arc(px, py, 3, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Axis labels
-  ctx.fillStyle = "#aaa";
-  ctx.font = "10px monospace";
-  ctx.textAlign = "center";
-  ctx.fillText(xMin.toFixed(1), margin, ch - 5);
-  ctx.fillText(xMax.toFixed(1), cw - margin, ch - 5);
-  ctx.save();
-  ctx.translate(10, margin + ph / 2);
-  ctx.rotate(-Math.PI / 2);
-  ctx.fillText(`Y: ${yMin.toFixed(1)}..${yMax.toFixed(1)}`, 0, 0);
-  ctx.restore();
-
-  // Color bar
-  const barX = cw - 15, barW = 8;
-  for (let i = 0; i < ph; i++) {
-    const t = 1 - i / ph;
-    const [r, g, b] = viridis(t);
-    ctx.fillStyle = `rgb(${r},${g},${b})`;
-    ctx.fillRect(barX, margin + i, barW, 1);
-  }
-  ctx.fillStyle = "#aaa";
-  ctx.textAlign = "left";
-  ctx.fillText(zMax.toFixed(3), barX - 2, margin - 3);
-  ctx.fillText(zMin.toFixed(3), barX - 2, ch - margin + 10);
-}
-
-// Watch for surfacePoints changes and re-render
-watch(() => props.surfacePoints, (pts) => {
-  if (pts && pts.length > 0) {
-    nextTick(() => {
-      render3DSurface(pts);
-      renderHeatmap(pts);
-    });
+// Render into dialog when it opens or points change
+watch([mapDialogOpen, () => props.surfacePoints], ([open, pts]) => {
+  if (open && pts && pts.length > 0) {
+    nextTick(() => render3DSurface(pts));
+  } else if (!open) {
+    if (_threeCleanup) { _threeCleanup(); _threeCleanup = null; }
   }
 });
 
@@ -1180,7 +1165,8 @@ function fmtR(key: string): string {
 
       <div class="surfaceActions">
         <button class="btn" :disabled="!can.probe || probing" @click="runSurfaceScan">Start Scan</button>
-        <button class="btn" :disabled="!can.idle" @click="loadSurfaceMap">Show Map</button>
+        <button class="btn" :disabled="!can.idle" @click="loadSurfaceMap">Load Map</button>
+        <button class="btn" :disabled="!surfacePoints?.length" @click="mapDialogOpen = true">3D Inspect</button>
         <button class="btn" :class="{ active: eoffsetEnabled }" :disabled="!can.ready || probing" @click="toggleComp">{{ eoffsetEnabled ? 'Disable Comp' : 'Enable Comp' }}</button>
       </div>
 
@@ -1195,17 +1181,6 @@ function fmtR(key: string): string {
             :disabled="!can.ready"
             @click="setMethod(id)">{{ label }}</button>
         </span>
-      </div>
-
-      <div class="surfaceViz" v-if="surfacePoints && surfacePoints.length > 0">
-        <div class="vizPanel">
-          <div class="sub">3D Surface</div>
-          <div ref="surfaceContainer" class="surface3d"></div>
-        </div>
-        <div class="vizPanel">
-          <div class="sub">Height Map</div>
-          <canvas ref="heatmapCanvas" class="heatmapCanvas" width="400" height="300"></canvas>
-        </div>
       </div>
     </template>
 
@@ -1274,6 +1249,17 @@ function fmtR(key: string): string {
       </div>
     </div>
 
+  </div>
+
+  <!-- Surface map popout dialog -->
+  <div v-if="mapDialogOpen" class="mapOverlay" @click.self="mapDialogOpen = false">
+    <div class="mapDialog">
+      <div class="mapHeader">
+        <span class="mapTitle">Surface Compensation Map</span>
+        <button class="btn" @click="mapDialogOpen = false">Close</button>
+      </div>
+      <div ref="surfaceContainer" class="surface3d"></div>
+    </div>
   </div>
 </template>
 
@@ -1782,28 +1768,42 @@ function fmtR(key: string): string {
   color: #fff;
   border-color: var(--accent);
 }
-.surfaceViz {
+.mapOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
   display: flex;
-  gap: 8px;
-  min-height: 200px;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
 }
-.vizPanel {
-  flex: 1;
+.mapDialog {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  width: 70vw;
+  height: 65vh;
   display: flex;
   flex-direction: column;
-  min-width: 0;
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.35);
+}
+.mapHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+}
+.mapTitle {
+  font-weight: 600;
+  font-size: 14px;
 }
 .surface3d {
   flex: 1;
-  min-height: 180px;
-  border-radius: 6px;
+  min-height: 0;
+  border-radius: 0 0 12px 12px;
   overflow: hidden;
-}
-.heatmapCanvas {
-  width: 100%;
-  height: 100%;
-  min-height: 180px;
-  border-radius: 6px;
 }
 
 </style>
