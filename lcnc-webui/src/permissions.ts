@@ -11,6 +11,7 @@ export type MachineState = {
   isPaused: boolean;
   busy: boolean;
   hasFile: boolean;
+  eoffsetEnabled: boolean;
 };
 
 /** Permission classes — each maps to a set of buttons */
@@ -29,6 +30,10 @@ export type Permissions = {
   resume: boolean;
   /** abort: can abort/stop */
   abort: boolean;
+  /** probe: ready + no eoffset (probing with comp active contaminates results) */
+  probe: boolean;
+  /** zero: idle + no eoffset (zeroing with comp active bakes offset into G5x) */
+  zero: boolean;
 };
 
 /** Evaluate all permission classes from machine state — single source of truth */
@@ -42,6 +47,8 @@ export function evaluatePermissions(s: MachineState): Permissions {
     pause:    base && s.isRunning && !s.isPaused,
     resume:   base && s.isPaused,
     abort:    s.armed,
+    probe:    base && s.isIdle && !s.busy && s.isHomed && !s.eoffsetEnabled,
+    zero:     base && s.isIdle && !s.busy && !s.eoffsetEnabled,
   };
 }
 

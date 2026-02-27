@@ -176,6 +176,7 @@ const permissions = computed(() => evaluatePermissions({
   isPaused: isPaused.value,
   busy: busy.value,
   hasFile: !!activeFile.value,
+  eoffsetEnabled: !!st.value.eoffset_enabled,
 }));
 provide(PERMISSIONS_KEY, permissions);
 
@@ -595,12 +596,15 @@ function zeroAxis(axis: number) {
   const axisName = axisNames[axis];
   if (!axisName) return;
 
-  // G10 L20 P0 sets current work offset, axis letter followed by 0 sets that axis to zero
-  fire({ cmd: "mdi", text: `G10 L20 P0 ${axisName}0` });
+  // For Z: subtract current eoffset so G5x doesn't absorb it
+  // (eoffset_z is 0 when comp is off, so this degenerates to Z0)
+  const offset = (axis === 2 && st.value.eoffset_z) ? st.value.eoffset_z : 0;
+  fire({ cmd: "mdi", text: `G10 L20 P0 ${axisName}${offset}` });
 }
 
 function zeroAll() {
-  fire({ cmd: "mdi", text: "G10 L20 P0 X0 Y0 Z0" });
+  const eoffsetZ = st.value.eoffset_z ?? 0;
+  fire({ cmd: "mdi", text: `G10 L20 P0 X0 Y0 Z${eoffsetZ}` });
 }
 
 function setG5x(gcode: string) {
@@ -1329,7 +1333,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :probeResults="probeResults"
               :g5xLabel="g5xLabel"
               :eoffsetZ="st.eoffset_z ?? null"
-              :eoffsetEnabled="st.eoffset_enabled === true"
+              :eoffsetEnabled="!!st.eoffset_enabled"
               :compMethod="st.comp_method ?? null"
               :surfacePoints="surfacePoints"
               @mdi="send({ cmd: 'mdi', text: $event })"

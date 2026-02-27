@@ -291,19 +291,15 @@ function runSurfaceScan() {
   emit("mdi", "O<surface_scan> CALL");
 }
 
-function enableComp() {
-  if (!can.value.ready || props.probing) return;
-  emit("setCompensation", true);
-}
-
-function disableComp() {
+function toggleComp() {
   if (!can.value.ready) return;
-  emit("setCompensation", false);
+  emit("setCompensation", !props.eoffsetEnabled);
 }
 
 const METHOD_LABELS: Record<number, string> = { 0: "Nearest", 1: "Linear", 2: "Cubic" };
 
 function setMethod(m: number) {
+  if (!can.value.ready) return;
   emit("setCompMethod", m);
 }
 
@@ -626,7 +622,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
-            :disabled="!can.ready || probing"
+            :disabled="!can.probe || probing"
             :title="op.description"
             @click="runGridProbe(op)"
           >
@@ -714,7 +710,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
-            :disabled="!can.ready || probing"
+            :disabled="!can.probe || probing"
             :title="op.description"
             @click="runGridProbe(op)"
           >
@@ -802,7 +798,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id, active: activeBossOp === op.id }"
-            :disabled="!can.ready || probing"
+            :disabled="!can.probe || probing"
             :title="op.description"
             @click="runBossProbe(op)"
           >
@@ -893,7 +889,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
-            :disabled="!can.ready || probing"
+            :disabled="!can.probe || probing"
             :title="op.description"
             @click="runAngleProbe(op)"
           >
@@ -992,7 +988,7 @@ function fmtR(key: string): string {
         <div class="sub">Round Hole</div>
         <div class="calRow">
           <div class="calBtnPair">
-            <button class="gridCell" :disabled="!can.ready || probing" title="Round hole — edge start" @click="runCalProbe('probe_cal_round_pocket')">
+            <button class="gridCell" :disabled="!can.probe || probing" title="Round hole — edge start" @click="runCalProbe('probe_cal_round_pocket')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M40 18a22 22 0 1 0 0 44a22 22 0 1 0 0-44Z" fill-rule="evenodd" class="workpiece" />
                 <circle cx="5" cy="40" r="3" class="probeTip" />
@@ -1003,7 +999,7 @@ function fmtR(key: string): string {
                 <circle cx="40" cy="40" r="2.5" class="crosshair" />
               </svg>
             </button>
-            <button class="gridCell" :disabled="!can.ready || probing" title="Round hole — center start" @click="runCalProbe('probe_cal_round_boss')">
+            <button class="gridCell" :disabled="!can.probe || probing" title="Round hole — center start" @click="runCalProbe('probe_cal_round_boss')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M40 18a22 22 0 1 0 0 44a22 22 0 1 0 0-44Z" fill-rule="evenodd" class="workpiece" />
                 <polygon points="40,18 35,27 45,27" class="arrowHead" />
@@ -1029,7 +1025,7 @@ function fmtR(key: string): string {
         <div class="sub">Rectangular Pocket</div>
         <div class="calRow">
           <div class="calBtnPair">
-            <button class="gridCell" :disabled="!can.ready || probing" title="Rect pocket — edge start" @click="runCalProbe('probe_cal_square_pocket')">
+            <button class="gridCell" :disabled="!can.probe || probing" title="Rect pocket — edge start" @click="runCalProbe('probe_cal_square_pocket')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M15 15H65V65H15Z" fill-rule="evenodd" class="workpiece" />
                 <circle cx="5" cy="40" r="3" class="probeTip" />
@@ -1040,7 +1036,7 @@ function fmtR(key: string): string {
                 <circle cx="40" cy="40" r="2.5" class="crosshair" />
               </svg>
             </button>
-            <button class="gridCell" :disabled="!can.ready || probing" title="Rect pocket — center start" @click="runCalProbe('probe_cal_square_boss')">
+            <button class="gridCell" :disabled="!can.probe || probing" title="Rect pocket — center start" @click="runCalProbe('probe_cal_square_boss')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M15 15H65V65H15Z" fill-rule="evenodd" class="workpiece" />
                 <polygon points="40,15 35,24 45,24" class="arrowHead" />
@@ -1088,7 +1084,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
-            :disabled="!can.ready || probing"
+            :disabled="!can.probe || probing"
             :title="op.description"
             @click="runRidgeProbe(op)"
           >
@@ -1183,10 +1179,9 @@ function fmtR(key: string): string {
       </div>
 
       <div class="surfaceActions">
-        <button class="btn" :disabled="!can.ready || probing" @click="runSurfaceScan">Start Scan</button>
-        <button class="btn" @click="loadSurfaceMap">Show Map</button>
-        <button class="btn" :class="{ active: eoffsetEnabled }" :disabled="!can.ready || probing" @click="enableComp">Enable Comp</button>
-        <button class="btn" :disabled="!can.ready" @click="disableComp">Disable Comp</button>
+        <button class="btn" :disabled="!can.probe || probing" @click="runSurfaceScan">Start Scan</button>
+        <button class="btn" :disabled="!can.idle" @click="loadSurfaceMap">Show Map</button>
+        <button class="btn" :class="{ active: eoffsetEnabled }" :disabled="!can.ready || probing" @click="toggleComp">{{ eoffsetEnabled ? 'Disable Comp' : 'Enable Comp' }}</button>
       </div>
 
       <div class="compStatus">
@@ -1197,6 +1192,7 @@ function fmtR(key: string): string {
           Method:
           <button v-for="(label, id) in METHOD_LABELS" :key="id"
             class="methodBtn" :class="{ active: compMethod === id }"
+            :disabled="!can.ready"
             @click="setMethod(id)">{{ label }}</button>
         </span>
       </div>

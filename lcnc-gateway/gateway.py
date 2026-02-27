@@ -1164,7 +1164,7 @@ def poll_status() -> StatusPayload:
         flood=bool(safe_get("flood", 0)),
         mist=bool(safe_get("mist", 0)),
         eoffset_z=hal_get("axis.z.eoffset", None),
-        eoffset_enabled=hal_get("axis.z.eoffset-enable", None),
+        eoffset_enabled=bool(hal_get("axis.z.eoffset-enable", False)),
         comp_method=hal_get("compensation.method", None),
         linear_units=ini_cfg.get("linear_units"),
         default_jog_velocity=ini_cfg.get("default_jog_velocity"),

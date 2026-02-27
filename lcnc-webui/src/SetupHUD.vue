@@ -17,7 +17,7 @@ const can = usePermissions();
 
 const homeDisabled = computed(() => !can.value.idle || props.homed);
 const unhomeDisabled = computed(() => !can.value.idle || !props.homed);
-const zeroDisabled = computed(() => !can.value.idle);
+const zeroDisabled = computed(() => !can.value.zero);
 </script>
 
 <template>

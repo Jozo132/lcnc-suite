@@ -48,14 +48,14 @@ function fmt(n: any) {
       <div class="grid">
         <div class="axis"><span>X</span><b>{{ fmt(workPos[0]) }}</b></div>
         <div></div>
-        <button class="zeroBtn" @click="emit('zeroAxis', 0)" :disabled="!can.idle">Zero X</button>
-        <button class="homeBtn spanBtn" style="grid-column: 4" @click="emit('zeroAll')" :disabled="!can.idle">Zero All</button>
+        <button class="zeroBtn" @click="emit('zeroAxis', 0)" :disabled="!can.zero">Zero X</button>
+        <button class="homeBtn spanBtn" style="grid-column: 4" @click="emit('zeroAll')" :disabled="!can.zero">Zero All</button>
         <div class="axis"><span>Y</span><b>{{ fmt(workPos[1]) }}</b></div>
         <div></div>
-        <button class="zeroBtn" @click="emit('zeroAxis', 1)" :disabled="!can.idle">Zero Y</button>
+        <button class="zeroBtn" @click="emit('zeroAxis', 1)" :disabled="!can.zero">Zero Y</button>
         <div class="axis"><span>Z</span><b>{{ fmt(workPos[2]) }}</b></div>
         <div></div>
-        <button class="zeroBtn" @click="emit('zeroAxis', 2)" :disabled="!can.idle">Zero Z</button>
+        <button class="zeroBtn" @click="emit('zeroAxis', 2)" :disabled="!can.zero">Zero Z</button>
       </div>
     </div>
 
