@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from "vue";
-import { listFiles, uploadFile, type FileEntry } from "./lcncApi";
+import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
 import { loadMachineDefaults } from "./defaults";
 
@@ -271,6 +271,39 @@ function confirmRunFromLine() {
   showRunDialog.value = false;
   selectedLine.value = null;
 }
+
+/** ---------- Edit mode ---------- */
+const editing = ref(false);
+const editBuffer = ref("");
+const saving = ref(false);
+const saveError = ref<string | null>(null);
+
+function enterEdit() {
+  if (!props.gcodeContent || !props.activeFile) return;
+  editBuffer.value = props.gcodeContent;
+  saveError.value = null;
+  editing.value = true;
+}
+
+function discardEdit() {
+  editing.value = false;
+  saveError.value = null;
+}
+
+async function saveEdit() {
+  if (!props.activeFile) return;
+  saving.value = true;
+  saveError.value = null;
+  try {
+    await saveFile(props.activeFile, editBuffer.value);
+    editing.value = false;
+    emit("loadFile", props.activeFile);
+  } catch (e: any) {
+    saveError.value = `Save failed: ${e.message}`;
+  } finally {
+    saving.value = false;
+  }
+}
 </script>
 
 <template>
@@ -282,7 +315,10 @@ function confirmRunFromLine() {
       </div>
       <div class="headerActions">
         <span class="stats" v-if="gcodeContent">{{ lineCount }} lines</span>
-        <button class="actionBtn" @click="reloadFile" :disabled="!activeFile || loading || !can.idle">
+        <button class="actionBtn" @click="enterEdit" :disabled="!activeFile || !can.idle || editing">
+          Edit
+        </button>
+        <button class="actionBtn" @click="reloadFile" :disabled="!activeFile || loading || !can.idle || editing">
           Reload
         </button>
         <button class="actionBtn" @click="unloadFile" :disabled="!activeFile || loading || !can.idle">
@@ -300,10 +336,10 @@ function confirmRunFromLine() {
 
     <!-- Program control -->
     <div class="controlRow">
-      <button class="ctrlBtn primary" @click="onStartClick" :disabled="!can.ready || !activeFile">
+      <button class="ctrlBtn primary" @click="onStartClick" :disabled="!can.ready || !activeFile || editing">
         <span class="ctrlIcon">&#x25B6;</span> {{ selectedLine && selectedLine > 1 ? `Start L${selectedLine}` : 'Start' }}
       </button>
-      <button class="ctrlBtn" @click="emit('cycleStep')" :disabled="!((can.ready && activeFile) || can.resume)">
+      <button class="ctrlBtn" @click="emit('cycleStep')" :disabled="!((can.ready && activeFile) || can.resume) || editing">
         <span class="ctrlIcon">&#x23ED;</span> Step
       </button>
       <button class="ctrlBtn"
@@ -372,8 +408,21 @@ function confirmRunFromLine() {
         <div class="dropText">{{ can.idle ? 'Drop program file to upload' : 'Not permitted' }}</div>
       </div>
 
+      <!-- Edit mode -->
+      <div v-if="editing" class="editArea">
+        <div v-if="saveError" class="errorBanner">
+          <span>{{ saveError }}</span>
+          <button class="btn-icon" @click="saveError = null">&times;</button>
+        </div>
+        <textarea class="editTextarea" v-model="editBuffer" spellcheck="false"></textarea>
+        <div class="editActions">
+          <button class="actionBtn primary" @click="saveEdit" :disabled="saving">{{ saving ? 'Saving...' : 'Save' }}</button>
+          <button class="actionBtn" @click="discardEdit" :disabled="saving">Discard</button>
+        </div>
+      </div>
+
       <!-- Code viewer (virtual scroll) -->
-      <div class="codeViewer" v-if="gcodeContent" ref="codeViewerRef" @scroll="onCodeScroll">
+      <div class="codeViewer" v-else-if="gcodeContent" ref="codeViewerRef" @scroll="onCodeScroll">
         <div :style="{ height: totalHeight + 'px', position: 'relative' }">
           <div :style="{ position: 'absolute', top: offsetY + 'px', left: 0, right: 0 }">
             <div class="codeLine"
@@ -843,6 +892,34 @@ function confirmRunFromLine() {
 .emptyHint {
   font-size: 13px;
   opacity: 0.7;
+}
+
+/* Edit mode */
+.editArea {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.editTextarea {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in oklab, var(--panel) 70%, transparent);
+  padding: 8px 12px;
+  resize: none;
+  white-space: pre;
+  tab-size: 4;
+  overflow: auto;
+}
+
+.editActions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 /* Run from line */

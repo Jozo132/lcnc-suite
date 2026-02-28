@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, List
 from fastapi.staticfiles import StaticFiles
 import re
 import tempfile
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
 
 
@@ -2234,6 +2234,43 @@ async def upload_gcode(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
     return {"ok": True, "path": dest_path, "filename": safe_name, "size": len(content)}
+
+
+@app.put("/save")
+async def save_gcode(path: str = Body(...), content: str = Body(...)):
+    """Save edited G-code content back to an existing file."""
+    nc_dir = get_nc_files_dir()
+    real_path = os.path.realpath(path)
+
+    if not validate_path_within(real_path, nc_dir):
+        raise HTTPException(status_code=400, detail="Path outside NC files directory")
+
+    if not validate_extension(real_path):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file extension. Allowed: {', '.join(sorted(ALLOWED_EXTENSIONS))}"
+        )
+
+    if not os.path.isfile(real_path):
+        raise HTTPException(status_code=404, detail="File not found")
+
+    encoded = content.encode("utf-8")
+    if len(encoded) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+
+    try:
+        fd, tmp_path = tempfile.mkstemp(dir=os.path.dirname(real_path), suffix=".tmp")
+        with os.fdopen(fd, "wb") as f:
+            f.write(encoded)
+        os.rename(tmp_path, real_path)
+    except Exception as e:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+
+    return {"ok": True, "path": real_path, "size": len(encoded)}
 
 
 @app.get("/files")

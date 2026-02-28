@@ -40,6 +40,25 @@ export async function listFiles(subdir: string = ""): Promise<FilesResponse> {
   return resp.json();
 }
 
+export interface SaveResponse {
+  ok: boolean;
+  path: string;
+  size: number;
+}
+
+export async function saveFile(path: string, content: string): Promise<SaveResponse> {
+  const resp = await fetch(`${getBaseUrl()}/save`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path, content }),
+  });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
 export async function uploadFile(file: File): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);
