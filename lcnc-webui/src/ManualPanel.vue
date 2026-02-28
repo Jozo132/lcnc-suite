@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted, onUnmounted } from "vue";
 import DroPanel from "./DroPanel.vue";
 import JogPanel from "./JogPanel.vue";
 import { usePermissions } from "./permissions";
+import { loadMdiHistory, saveMdiHistory } from "./defaults";
 
 const can = usePermissions();
 
@@ -49,11 +50,28 @@ const emit = defineEmits<{
   (e: "sendMdi"): void;
 }>();
 
-// ---- MDI history (up-arrow recall) ----
+// ---- MDI history (up-arrow recall + localStorage persistence) ----
 const history = ref<string[]>([]);
 const historyIndex = ref(-1); // -1 = current input, 0 = most recent, etc.
 const savedInput = ref("");   // stash current input when browsing history
-const maxHistory = 20;
+const maxHistory = 50;
+const mdiPopoverOpen = ref(false);
+const mdiSectionRef = ref<HTMLElement | null>(null);
+
+onMounted(() => {
+  history.value = loadMdiHistory();
+  document.addEventListener("click", onDocClick);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("click", onDocClick);
+});
+
+function onDocClick(e: MouseEvent) {
+  if (mdiPopoverOpen.value && mdiSectionRef.value && !mdiSectionRef.value.contains(e.target as Node)) {
+    mdiPopoverOpen.value = false;
+  }
+}
 
 function handleSend() {
   const cmd = props.mdiText.trim();
@@ -64,10 +82,23 @@ function handleSend() {
         history.value = history.value.slice(0, maxHistory);
       }
     }
+    saveMdiHistory(history.value);
   }
   historyIndex.value = -1;
   savedInput.value = "";
   emit("sendMdi");
+}
+
+function selectHistory(cmd: string) {
+  emit("update:mdiText", cmd);
+  mdiPopoverOpen.value = false;
+}
+
+function clearHistory() {
+  history.value = [];
+  saveMdiHistory([]);
+  historyIndex.value = -1;
+  savedInput.value = "";
 }
 
 function onMdiKeydown(e: KeyboardEvent) {
@@ -140,8 +171,8 @@ function onMdiKeydown(e: KeyboardEvent) {
 
     <div class="sep"></div>
 
-    <!-- MDI input bar -->
-    <div>
+    <!-- MDI input bar + history popover -->
+    <div class="mdiSection" ref="mdiSectionRef">
       <div class="sub">MDI</div>
       <div class="mdiRow">
         <input
@@ -149,6 +180,7 @@ function onMdiKeydown(e: KeyboardEvent) {
           class="mdiInput"
           :value="mdiText"
           @input="emit('update:mdiText', ($event.target as HTMLInputElement).value)"
+          @focus="mdiPopoverOpen = true"
           @keyup.enter="handleSend"
           @keydown="onMdiKeydown"
           :disabled="!can.ready"
@@ -157,6 +189,17 @@ function onMdiKeydown(e: KeyboardEvent) {
         <button class="btn" @click="handleSend" :disabled="!can.ready">
           Send
         </button>
+      </div>
+      <div v-if="mdiPopoverOpen" class="mdiPopover" @click.stop>
+        <div class="mdiPopoverHeader">
+          <span class="sub">History</span>
+          <button class="btn" @click="clearHistory" :disabled="!can.ready || history.length === 0">Clear</button>
+        </div>
+        <div class="mdiHistoryList scroll-thin">
+          <div v-for="(cmd, i) in history" :key="i" class="mdiHistoryItem"
+               @click="selectHistory(cmd)">{{ cmd }}</div>
+          <div v-if="history.length === 0" class="mdiHistoryEmpty">No history</div>
+        </div>
       </div>
     </div>
   </div>
@@ -177,6 +220,10 @@ function onMdiKeydown(e: KeyboardEvent) {
   opacity: 0.4;
 }
 
+.mdiSection {
+  position: relative;
+}
+
 .mdiRow {
   display: flex;
   gap: 10px;
@@ -186,8 +233,53 @@ function onMdiKeydown(e: KeyboardEvent) {
 .mdiInput {
   flex: 1;
   min-width: 0;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
+}
+
+.mdiPopover {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  margin-bottom: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
   border-radius: 8px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+}
+
+.mdiPopoverHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mdiHistoryList {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.mdiHistoryItem {
+  padding: 6px 10px;
+  cursor: pointer;
+  font-family: 'SF Mono', 'Monaco', 'Consolas', monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mdiHistoryItem:hover {
+  background: color-mix(in oklab, var(--panel) 90%, var(--fg) 5%);
+}
+
+.mdiHistoryEmpty {
+  padding: 12px;
+  text-align: center;
+  opacity: 0.5;
 }
 </style>

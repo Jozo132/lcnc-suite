@@ -203,3 +203,24 @@ export function loadPanelsDefaults(): PanelsDefaults {
 export function savePanelsDefaults(data: PanelsDefaults): void {
   saveSection("panels", data);
 }
+
+// ─── MDI section ────────────────────────────────────────────────
+
+export interface MdiDefaults {
+  history: string[];
+}
+
+registerSection<MdiDefaults>("mdi", { history: [] }, (saved, fb) => {
+  if (!saved) return { ...fb };
+  return {
+    history: Array.isArray(saved.history) ? saved.history.slice(0, 50) : fb.history,
+  };
+});
+
+export function loadMdiHistory(): string[] {
+  return loadSection<MdiDefaults>("mdi").history;
+}
+
+export function saveMdiHistory(history: string[]): void {
+  saveSection("mdi", { history });
+}
