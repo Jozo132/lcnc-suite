@@ -23,6 +23,7 @@ const emit = defineEmits<{
   (e: "cyclePause"): void;
   (e: "cycleResume"): void;
   (e: "abort"): void;
+  (e: "cycleStep"): void;
   (e: "toggleOptionalStop"): void;
   (e: "toggleBlockDelete"): void;
   (e: "runFromLine", line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number): void;
@@ -301,6 +302,9 @@ function confirmRunFromLine() {
     <div class="controlRow">
       <button class="ctrlBtn primary" @click="onStartClick" :disabled="!can.ready || !activeFile">
         <span class="ctrlIcon">&#x25B6;</span> {{ selectedLine && selectedLine > 1 ? `Start L${selectedLine}` : 'Start' }}
+      </button>
+      <button class="ctrlBtn" @click="emit('cycleStep')" :disabled="!((can.ready && activeFile) || can.resume)">
+        <span class="ctrlIcon">&#x23ED;</span> Step
       </button>
       <button class="ctrlBtn"
         @click="isPaused ? emit('cycleResume') : emit('cyclePause')"

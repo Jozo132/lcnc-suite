@@ -175,6 +175,7 @@ const emit = defineEmits<{
   (e: "update:jogIncrement", val: number): void;
   (e: "update:touchoff", values: [number, number, number]): void;
   (e: "cycleStart"): void;
+  (e: "cycleStep"): void;
   (e: "cyclePause"): void;
   (e: "cycleResume"): void;
   (e: "abort"): void;
@@ -1448,6 +1449,7 @@ defineExpose({
           :optionalStop="props.optionalStop ?? false"
           :blockDelete="props.blockDelete ?? false"
           @cycleStart="emit('cycleStart')"
+          @cycleStep="emit('cycleStep')"
           @cyclePause="emit('cyclePause')"
           @cycleResume="emit('cycleResume')"
           @abort="emit('abort')"

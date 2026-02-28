@@ -189,8 +189,8 @@ const motionMode = computed(() => st.value.motion_mode ?? TRAJ_MODE_FREE);
 const isTeleop = computed(() => motionMode.value === TRAJ_MODE_TELEOP);
 
 const interpState = computed(() => st.value.interp_state ?? INTERP_IDLE);
-const isPaused = computed(() => interpState.value === INTERP_PAUSED);
-const isRunning = computed(() => interpState.value === INTERP_READING || interpState.value === INTERP_WAITING);
+const isPaused = computed(() => st.value.paused ?? interpState.value === INTERP_PAUSED);
+const isRunning = computed(() => !isPaused.value && (interpState.value === INTERP_READING || interpState.value === INTERP_WAITING));
 const isIdle = computed(() => interpState.value === INTERP_IDLE);
 
 /** ---------- program elapsed timer ---------- */
@@ -754,6 +754,10 @@ function runFromLine(line: number, spindleDir: "off" | "forward" | "reverse", sp
     spindle_dir: spindleDir !== "off" ? spindleDir : undefined,
     spindle_speed: spindleDir !== "off" ? spindleSpeed : undefined,
   });
+}
+
+function cycleStep() {
+  fire({ cmd: "auto_step" });
 }
 
 function cyclePause() {
@@ -1374,6 +1378,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
                 @update:jogIncrement="jogIncrement = $event"
                 @cycleStart="cycleStart"
                 @runFromLine="runFromLine"
+                @cycleStep="cycleStep"
                 @cyclePause="cyclePause"
                 @cycleResume="cycleResume"
                 @abort="fire({ cmd: 'abort' })"
@@ -1423,6 +1428,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               @unloadFile="unloadFile"
               @cycleStart="cycleStart"
               @runFromLine="runFromLine"
+              @cycleStep="cycleStep"
               @cyclePause="cyclePause"
               @cycleResume="cycleResume"
               @abort="fire({ cmd: 'abort' })"

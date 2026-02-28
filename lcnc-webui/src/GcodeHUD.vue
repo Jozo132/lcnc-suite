@@ -15,6 +15,7 @@ const can = usePermissions();
 
 const emit = defineEmits<{
   (e: "cycleStart"): void;
+  (e: "cycleStep"): void;
   (e: "cyclePause"): void;
   (e: "cycleResume"): void;
   (e: "abort"): void;
@@ -97,6 +98,7 @@ function tokenizeCode(code: string, tokens: Token[]) {
     <div class="ctrlRow">
       <div class="ctrlGroup">
         <button class="ctrlBtn primary" :disabled="!can.ready || !gcodeContent" @click="emit('cycleStart')">&#9654;</button>
+        <button class="ctrlBtn" :disabled="!((can.ready && gcodeContent) || can.resume)" @click="emit('cycleStep')">&#x23ED;</button>
         <button
           class="ctrlBtn"
           :disabled="!can.pause && !can.resume"

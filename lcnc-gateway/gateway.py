@@ -556,6 +556,7 @@ class StatusPayload:
     # task/motion
     task_mode: Optional[int]
     interp_state: Optional[int]
+    paused: Optional[bool]
     state: Optional[int]
     motion_mode: Optional[int]  # TRAJ_MODE_FREE=1, TRAJ_MODE_COORD=2, TRAJ_MODE_TELEOP=3
     inpos: Optional[bool]       # machine is at commanded position
@@ -1129,6 +1130,7 @@ def poll_status() -> StatusPayload:
         homed_joints=homed_joints,
         task_mode=safe_get("task_mode", None),
         interp_state=safe_get("interp_state", None),
+        paused=bool(safe_get("paused", False)),
         state=safe_get("state", None),
         motion_mode=safe_get("motion_mode", None),
         inpos=bool(safe_get("inpos", 0)),
@@ -1468,6 +1470,25 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             tool_num = int(msg["tool_number"])
             set_mode(linuxcnc.MODE_MDI)
             CMD.mdi(f"T{tool_num} M6 G43")
+            return {"ok": True}
+
+        if cmd == "auto_step":
+            require_armed(armed)
+            STAT.poll()
+            paused = bool(safe_get("paused", False))
+            interp = safe_get("interp_state", None)
+            mode = safe_get("task_mode", None)
+
+            if paused:
+                # Already paused → advance one block (no mode change)
+                CMD.auto(linuxcnc.AUTO_STEP)
+            elif mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
+                # Running (not paused) → pause first, next click will step
+                CMD.auto(linuxcnc.AUTO_PAUSE)
+            else:
+                # Idle → start program and step
+                set_mode(linuxcnc.MODE_AUTO)
+                CMD.auto(linuxcnc.AUTO_STEP)
             return {"ok": True}
 
         if cmd == "auto_run":
