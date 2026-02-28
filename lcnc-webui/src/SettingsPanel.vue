@@ -7,6 +7,7 @@ import {
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir,
 } from "./defaults";
+import { fetchHal, type HalPin, type HalSignal, type HalParam } from "./lcncApi";
 
 const TS_STORAGE_KEY = "lcnc-toolsetter-params";
 
@@ -142,6 +143,7 @@ const subTabs = [
   { id: "machine", label: "Machine" },
   { id: "toolsetter", label: "Toolsetter" },
   { id: "jog", label: "Jogging" },
+  { id: "hal", label: "HAL" },
   { id: "debug", label: "Debug" },
 ];
 const activeTab = ref("viewer");
@@ -190,6 +192,110 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
   { key: "workpiece", label: "Workpiece" },
   { key: "hud", label: "HUD" },
 ];
+
+// ─── HAL viewer ─────────────────────────────
+type HalSection = "pins" | "signals" | "params";
+
+const halSection = ref<HalSection>("pins");
+const halPins = ref<HalPin[]>([]);
+const halSignals = ref<HalSignal[]>([]);
+const halParams = ref<HalParam[]>([]);
+const halLoading = ref(false);
+const halError = ref<string | null>(null);
+const halSearch = ref("");
+const halExpanded = ref(new Set<string>());
+
+async function refreshHal() {
+  halLoading.value = true;
+  halError.value = null;
+  try {
+    const data = await fetchHal();
+    halPins.value = data.pins;
+    halSignals.value = data.signals;
+    halParams.value = data.params;
+  } catch (e: any) {
+    halError.value = e.message || "Failed to fetch HAL data";
+  } finally {
+    halLoading.value = false;
+  }
+}
+
+function toggleHalGroup(group: string) {
+  const s = halExpanded.value;
+  if (s.has(group)) s.delete(group);
+  else s.add(group);
+  halExpanded.value = new Set(s);
+}
+
+function expandAllHal() {
+  const items = halSection.value === "params" ? halParams.value : halPins.value;
+  const groups = new Set<string>();
+  for (const p of items) groups.add(p.name.split(".")[0]);
+  halExpanded.value = groups;
+}
+
+function collapseAllHal() {
+  halExpanded.value = new Set();
+}
+
+function pinGroup(name: string): string {
+  const dot = name.indexOf(".");
+  return dot > 0 ? name.substring(0, dot) : name;
+}
+
+const filteredPins = computed(() => {
+  const q = halSearch.value.trim().toLowerCase();
+  if (!q) return halPins.value;
+  return halPins.value.filter(p =>
+    p.name.toLowerCase().includes(q) ||
+    (p.signal && p.signal.toLowerCase().includes(q)) ||
+    p.value.toLowerCase().includes(q)
+  );
+});
+
+const pinGroups = computed(() => {
+  const groups = new Map<string, HalPin[]>();
+  for (const p of filteredPins.value) {
+    const g = pinGroup(p.name);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g)!.push(p);
+  }
+  return groups;
+});
+
+const filteredSignals = computed(() => {
+  const q = halSearch.value.trim().toLowerCase();
+  if (!q) return halSignals.value;
+  return halSignals.value.filter(s =>
+    s.name.toLowerCase().includes(q) ||
+    s.pins.some(p => p.pin.toLowerCase().includes(q))
+  );
+});
+
+const filteredParams = computed(() => {
+  const q = halSearch.value.trim().toLowerCase();
+  if (!q) return halParams.value;
+  return halParams.value.filter(p =>
+    p.name.toLowerCase().includes(q) ||
+    p.value.toLowerCase().includes(q)
+  );
+});
+
+const paramGroups = computed(() => {
+  const groups = new Map<string, HalParam[]>();
+  for (const p of filteredParams.value) {
+    const g = pinGroup(p.name);
+    if (!groups.has(g)) groups.set(g, []);
+    groups.get(g)!.push(p);
+  }
+  return groups;
+});
+
+const halStats = computed(() => ({
+  pins: halPins.value.length,
+  signals: halSignals.value.length,
+  params: halParams.value.length,
+}));
 </script>
 
 <template>
@@ -477,6 +583,138 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
       <template #jog>
         <div class="placeholder">
           <div class="placeholderText">Jogging settings coming soon</div>
+        </div>
+      </template>
+
+      <template #hal>
+        <div class="scrollContent scroll-thin">
+          <!-- Header: section toggles + search + refresh -->
+          <div class="halHeader">
+            <div class="btnGroup">
+              <button class="optBtn" :class="{ active: halSection === 'pins' }"
+                      @click="halSection = 'pins'">
+                Pins <span class="halCount" v-if="halStats.pins">({{ halStats.pins }})</span>
+              </button>
+              <button class="optBtn" :class="{ active: halSection === 'signals' }"
+                      @click="halSection = 'signals'">
+                Signals <span class="halCount" v-if="halStats.signals">({{ halStats.signals }})</span>
+              </button>
+              <button class="optBtn" :class="{ active: halSection === 'params' }"
+                      @click="halSection = 'params'">
+                Params <span class="halCount" v-if="halStats.params">({{ halStats.params }})</span>
+              </button>
+            </div>
+            <div class="halActions">
+              <input type="text" class="halSearchInput" v-model="halSearch" placeholder="Search..." />
+              <button class="optBtn" @click="refreshHal" :disabled="halLoading">
+                {{ halLoading ? '...' : 'Refresh' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- Error -->
+          <div v-if="halError" class="halError">{{ halError }}</div>
+
+          <!-- Empty state -->
+          <div v-if="!halLoading && halPins.length === 0 && !halError" class="halEmpty">
+            Click Refresh to load HAL data.
+          </div>
+
+          <!-- PINS -->
+          <div v-if="halSection === 'pins' && halPins.length > 0">
+            <div v-if="!halSearch.trim()" class="halTreeControls">
+              <button class="optBtn" @click="expandAllHal">+ all</button>
+              <button class="optBtn" @click="collapseAllHal">- all</button>
+              <span class="halFilterInfo" v-if="filteredPins.length !== halPins.length">
+                {{ filteredPins.length }} / {{ halPins.length }}
+              </span>
+            </div>
+
+            <!-- Tree view -->
+            <template v-if="!halSearch.trim()">
+              <div v-for="[group, pins] of pinGroups" :key="group" class="halGroup">
+                <div class="halGroupHeader" @click="toggleHalGroup(group)">
+                  <span class="halChevron">{{ halExpanded.has(group) ? '\u25BC' : '\u25B6' }}</span>
+                  <span class="halGroupName">{{ group }}</span>
+                  <span class="halGroupCount">({{ pins.length }})</span>
+                </div>
+                <div v-if="halExpanded.has(group)" class="halGroupBody">
+                  <div class="halRow" v-for="pin in pins" :key="pin.name">
+                    <span class="halName" :title="pin.name">{{ pin.name }}</span>
+                    <span class="halType">{{ pin.type }}</span>
+                    <span class="halDir">{{ pin.dir }}</span>
+                    <span class="halValue" :class="{ halTrue: pin.value === 'TRUE', halFalse: pin.value === 'FALSE' }">{{ pin.value }}</span>
+                    <span class="halSignal" v-if="pin.signal">{{ pin.arrow }} {{ pin.signal }}</span>
+                    <span class="halSignal halUnlinked" v-else>unlinked</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Flat filtered list -->
+            <template v-else>
+              <div class="halFilterInfo">{{ filteredPins.length }} matches</div>
+              <div class="halRow" v-for="pin in filteredPins" :key="pin.name">
+                <span class="halName" :title="pin.name">{{ pin.name }}</span>
+                <span class="halType">{{ pin.type }}</span>
+                <span class="halDir">{{ pin.dir }}</span>
+                <span class="halValue" :class="{ halTrue: pin.value === 'TRUE', halFalse: pin.value === 'FALSE' }">{{ pin.value }}</span>
+                <span class="halSignal" v-if="pin.signal">{{ pin.arrow }} {{ pin.signal }}</span>
+                <span class="halSignal halUnlinked" v-else>unlinked</span>
+              </div>
+            </template>
+          </div>
+
+          <!-- SIGNALS -->
+          <div v-if="halSection === 'signals' && halSignals.length > 0">
+            <div class="halFilterInfo" v-if="halSearch.trim()">{{ filteredSignals.length }} matches</div>
+            <div class="halSigRow" v-for="sig in filteredSignals" :key="sig.name">
+              <div class="halSigHeader">
+                <span class="halSigName">{{ sig.name }}</span>
+                <span class="halType">{{ sig.type }}</span>
+                <span class="halValue" :class="{ halTrue: sig.value === 'TRUE', halFalse: sig.value === 'FALSE' }">{{ sig.value }}</span>
+              </div>
+              <div class="halSigPins" v-if="sig.pins.length">
+                <span v-for="(p, i) in sig.pins" :key="i" class="halSigPin">{{ p.arrow }} {{ p.pin }}</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- PARAMS -->
+          <div v-if="halSection === 'params' && halParams.length > 0">
+            <div v-if="!halSearch.trim()" class="halTreeControls">
+              <button class="optBtn" @click="expandAllHal">+ all</button>
+              <button class="optBtn" @click="collapseAllHal">- all</button>
+            </div>
+
+            <template v-if="!halSearch.trim()">
+              <div v-for="[group, params] of paramGroups" :key="group" class="halGroup">
+                <div class="halGroupHeader" @click="toggleHalGroup(group)">
+                  <span class="halChevron">{{ halExpanded.has(group) ? '\u25BC' : '\u25B6' }}</span>
+                  <span class="halGroupName">{{ group }}</span>
+                  <span class="halGroupCount">({{ params.length }})</span>
+                </div>
+                <div v-if="halExpanded.has(group)" class="halGroupBody">
+                  <div class="halRow" v-for="param in params" :key="param.name">
+                    <span class="halName" :title="param.name">{{ param.name }}</span>
+                    <span class="halType">{{ param.type }}</span>
+                    <span class="halDir">{{ param.dir }}</span>
+                    <span class="halValue">{{ param.value }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <template v-else>
+              <div class="halFilterInfo">{{ filteredParams.length }} matches</div>
+              <div class="halRow" v-for="param in filteredParams" :key="param.name">
+                <span class="halName" :title="param.name">{{ param.name }}</span>
+                <span class="halType">{{ param.type }}</span>
+                <span class="halDir">{{ param.dir }}</span>
+                <span class="halValue">{{ param.value }}</span>
+              </div>
+            </template>
+          </div>
         </div>
       </template>
 
@@ -805,5 +1043,181 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
 
 .tsToggle.active {
   opacity: 1;
+}
+
+/* ─── HAL viewer ───── */
+.halHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 12px;
+  flex-wrap: wrap;
+}
+
+.halActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.halSearchInput {
+  width: 160px;
+}
+
+.halError {
+  padding: 6px 10px;
+  margin-bottom: 8px;
+  border-radius: 4px;
+  background: color-mix(in oklab, var(--danger) 15%, var(--bg));
+  opacity: 0.9;
+}
+
+.halEmpty {
+  text-align: center;
+  opacity: 0.4;
+  padding: 40px 0;
+}
+
+.halTreeControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.halCount {
+  opacity: 0.5;
+}
+
+.halFilterInfo {
+  opacity: 0.5;
+  margin-bottom: 6px;
+}
+
+.halGroup {
+  margin-bottom: 2px;
+}
+
+.halGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.halGroupHeader:hover {
+  opacity: 0.8;
+}
+
+.halChevron {
+  width: 12px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.halGroupName {
+  font-weight: 600;
+}
+
+.halGroupCount {
+  opacity: 0.4;
+}
+
+.halGroupBody {
+  padding-left: 18px;
+}
+
+.halRow {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 0;
+}
+
+.halRow:hover {
+  background: color-mix(in oklab, var(--fg) 4%, transparent);
+}
+
+.halName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.halType {
+  width: 36px;
+  flex-shrink: 0;
+  text-align: center;
+  opacity: 0.5;
+}
+
+.halDir {
+  width: 24px;
+  flex-shrink: 0;
+  text-align: center;
+  opacity: 0.5;
+}
+
+.halValue {
+  width: 80px;
+  flex-shrink: 0;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.halTrue {
+  color: var(--ok);
+}
+
+.halFalse {
+  opacity: 0.4;
+}
+
+.halSignal {
+  flex-shrink: 0;
+  opacity: 0.6;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.halUnlinked {
+  opacity: 0.25;
+}
+
+.halSigRow {
+  padding: 4px 0;
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
+}
+
+.halSigHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.halSigName {
+  font-weight: 600;
+  flex: 1;
+  min-width: 0;
+}
+
+.halSigPins {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding-left: 12px;
+  padding-top: 2px;
+  opacity: 0.6;
+}
+
+.halSigPin {
+  white-space: nowrap;
 }
 </style>

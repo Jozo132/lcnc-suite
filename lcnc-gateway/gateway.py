@@ -2313,6 +2313,109 @@ def list_files(subdir: str = ""):
     return {"ok": True, "nc_dir": nc_dir, "subdir": subdir, "entries": entries}
 
 
+# ---------- HAL viewer ----------
+
+def _parse_hal_pins() -> list:
+    """Parse `halcmd -s show pin` into list of dicts."""
+    try:
+        result = subprocess.run(
+            ["halcmd", "-s", "show", "pin"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+    except Exception:
+        return []
+    pins = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        entry = {
+            "comp": parts[0],
+            "type": parts[1],
+            "dir": parts[2],
+            "value": parts[3],
+            "name": parts[4],
+        }
+        if len(parts) >= 7 and parts[5] in ("<==", "==>"):
+            entry["signal"] = parts[6]
+            entry["arrow"] = parts[5]
+        pins.append(entry)
+    return pins
+
+
+def _parse_hal_signals() -> list:
+    """Parse `halcmd -s show sig` into list of dicts."""
+    try:
+        result = subprocess.run(
+            ["halcmd", "-s", "show", "sig"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+    except Exception:
+        return []
+    signals = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        sig = {
+            "type": parts[0],
+            "value": parts[1],
+            "name": parts[2],
+            "pins": [],
+        }
+        i = 3
+        while i < len(parts) - 1:
+            if parts[i] in ("<==", "==>"):
+                sig["pins"].append({"arrow": parts[i], "pin": parts[i + 1]})
+                i += 2
+            else:
+                i += 1
+        signals.append(sig)
+    return signals
+
+
+def _parse_hal_params() -> list:
+    """Parse `halcmd -s show param` into list of dicts."""
+    try:
+        result = subprocess.run(
+            ["halcmd", "-s", "show", "param"],
+            capture_output=True, text=True, timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+    except Exception:
+        return []
+    params = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        params.append({
+            "comp": parts[0],
+            "type": parts[1],
+            "dir": parts[2],
+            "value": parts[3],
+            "name": parts[4],
+        })
+    return params
+
+
+@app.get("/hal")
+async def get_hal():
+    """Return HAL pins, signals, and params as parsed JSON."""
+    loop = asyncio.get_event_loop()
+    pins, signals, params = await asyncio.gather(
+        loop.run_in_executor(None, _parse_hal_pins),
+        loop.run_in_executor(None, _parse_hal_signals),
+        loop.run_in_executor(None, _parse_hal_params),
+    )
+    return {"pins": pins, "signals": signals, "params": params}
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()
