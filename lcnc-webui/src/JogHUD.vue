@@ -4,10 +4,16 @@ import { send } from "./lcncWs";
 import { usePermissions } from "./permissions";
 import JogButton from "./JogButton.vue";
 
+const ROTARY = new Set(["A", "B", "C", "U", "V", "W"]);
+
 const props = defineProps<{
+  axes?: string[];
   jogVel: number;
+  angularJogVel: number;
   linearUnit: string;
   maxJogVel: number;
+  maxAngularJogVel: number;
+  minAngularJogVel: number;
   jogIncrement: number;
   minJogVel: number;
   iniIncrements: number[] | null;
@@ -15,8 +21,22 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "update:jogVel", vel: number): void;
+  (e: "update:angularJogVel", vel: number): void;
   (e: "update:jogIncrement", val: number): void;
 }>();
+
+const ABC = new Set(["A", "B", "C"]);
+const UVW = new Set(["U", "V", "W"]);
+
+const rotaryAxes = computed(() => {
+  if (!props.axes) return [];
+  return props.axes
+    .map((letter, i) => ({ letter, index: i }))
+    .filter(a => ROTARY.has(a.letter));
+});
+
+const abcAxes = computed(() => rotaryAxes.value.filter(a => ABC.has(a.letter)));
+const uvwAxes = computed(() => rotaryAxes.value.filter(a => UVW.has(a.letter)));
 
 const can = usePermissions();
 
@@ -160,6 +180,11 @@ function onVelInput(ev: Event) {
   const val = parseFloat((ev.target as HTMLInputElement).value);
   if (Number.isFinite(val)) emit("update:jogVel", val);
 }
+
+function onAngularVelInput(ev: Event) {
+  const val = parseFloat((ev.target as HTMLInputElement).value);
+  if (Number.isFinite(val)) emit("update:angularJogVel", val);
+}
 </script>
 
 <template>
@@ -176,7 +201,7 @@ function onVelInput(ev: Event) {
       >{{ opt.label }}</button>
     </div>
 
-    <!-- Speed slider -->
+    <!-- Speed slider(s) -->
     <div class="velRow">
       <input
         type="range"
@@ -188,7 +213,20 @@ function onVelInput(ev: Event) {
         :disabled="disabled"
         @input="onVelInput"
       />
-      <span class="velLabel">{{ (jogVel * 60).toFixed(0) }}/min</span>
+      <span class="velLabel">{{ (jogVel * 60).toFixed(0) }} {{ linearUnit }}/min</span>
+    </div>
+    <div v-if="rotaryAxes.length > 0" class="velRow">
+      <input
+        type="range"
+        class="velSlider"
+        :min="minAngularJogVel"
+        :max="maxAngularJogVel"
+        :step="0.1"
+        :value="angularJogVel"
+        :disabled="disabled"
+        @input="onAngularVelInput"
+      />
+      <span class="velLabel">{{ (angularJogVel * 60).toFixed(0) }} °/min</span>
     </div>
 
     <!-- Wheel + Z column -->
@@ -223,6 +261,20 @@ function onVelInput(ev: Event) {
       <div class="zCol">
         <JogButton :axis="2" :dir="1" label="Z+" :vel="jogVel" :disabled="disabled" direction="up" :jogIncrement="jogIncrement" />
         <JogButton :axis="2" :dir="-1" label="Z-" :vel="jogVel" :disabled="disabled" direction="down" :jogIncrement="jogIncrement" />
+      </div>
+
+      <!-- Rotary columns: ABC | UVW -->
+      <div v-if="abcAxes.length > 0" class="rotaryCol">
+        <div v-for="ra in abcAxes" :key="ra.letter" class="rotaryPair">
+          <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="angularJogVel" :disabled="disabled" direction="left" :jogIncrement="jogIncrement" />
+          <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="angularJogVel" :disabled="disabled" direction="right" :jogIncrement="jogIncrement" />
+        </div>
+      </div>
+      <div v-if="uvwAxes.length > 0" class="rotaryCol">
+        <div v-for="ra in uvwAxes" :key="ra.letter" class="rotaryPair">
+          <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="angularJogVel" :disabled="disabled" direction="left" :jogIncrement="jogIncrement" />
+          <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="angularJogVel" :disabled="disabled" direction="right" :jogIncrement="jogIncrement" />
+        </div>
       </div>
     </div>
   </div>
@@ -356,5 +408,23 @@ function onVelInput(ev: Event) {
 .zCol :deep(button) {
   width: 42px;
   height: 68px;
+}
+
+/* Rotary axis columns (beside Z) */
+.rotaryCol {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  justify-content: center;
+}
+
+.rotaryPair {
+  display: flex;
+  gap: 2px;
+}
+
+.rotaryPair :deep(button) {
+  width: 36px;
+  height: 36px;
 }
 </style>

@@ -24,12 +24,18 @@ const props = defineProps<{
   iniIncrements: number[] | null;
 }>();
 
+const ABC = new Set(["A", "B", "C"]);
+const UVW = new Set(["U", "V", "W"]);
+
 const rotaryAxes = computed(() => {
   if (!props.axes) return [];
   return props.axes
     .map((letter, i) => ({ letter, index: i }))
     .filter(a => ROTARY.has(a.letter));
 });
+
+const abcAxes = computed(() => rotaryAxes.value.filter(a => ABC.has(a.letter)));
+const uvwAxes = computed(() => rotaryAxes.value.filter(a => UVW.has(a.letter)));
 
 // Keyboard key pairs for rotary axes: [ ] for first, ; ' for second
 const ROTARY_KEY_PAIRS: [string, string][] = [["[", "]"], [";", "'"]];
@@ -314,13 +320,19 @@ function stopJog(s: Sector, e?: PointerEvent) {
         <JogButton :axis="2" :dir="1" label="Z+" :vel="jogVel" :disabled="!can.jog" direction="up" :active="activeJogKeys?.has('PageUp')" :jogIncrement="jogIncrement" />
         <JogButton :axis="2" :dir="-1" label="Z-" :vel="jogVel" :disabled="!can.jog" direction="down" :active="activeJogKeys?.has('PageDown')" :jogIncrement="jogIncrement" />
       </div>
-    </div>
 
-    <!-- Rotary axis buttons -->
-    <div v-if="rotaryAxes.length > 0" class="rotaryRow">
-      <div v-for="ra in rotaryAxes" :key="ra.letter" class="rotaryPair">
-        <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="angularJogVel" :disabled="!can.jog" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.neg)" />
-        <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="angularJogVel" :disabled="!can.jog" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.pos)" />
+      <!-- Rotary columns: ABC | UVW -->
+      <div v-if="abcAxes.length > 0" class="rotaryCol">
+        <div v-for="ra in abcAxes" :key="ra.letter" class="rotaryPair">
+          <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="angularJogVel" :disabled="!can.jog" direction="left" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.neg)" />
+          <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="angularJogVel" :disabled="!can.jog" direction="right" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.pos)" />
+        </div>
+      </div>
+      <div v-if="uvwAxes.length > 0" class="rotaryCol">
+        <div v-for="ra in uvwAxes" :key="ra.letter" class="rotaryPair">
+          <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="angularJogVel" :disabled="!can.jog" direction="left" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.neg)" />
+          <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="angularJogVel" :disabled="!can.jog" direction="right" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.pos)" />
+        </div>
       </div>
     </div>
 
@@ -448,22 +460,22 @@ function stopJog(s: Sector, e?: PointerEvent) {
   height: 80px;
 }
 
-/* ---- Rotary axis buttons ---- */
-.rotaryRow {
+/* ---- Rotary axis columns (beside Z) ---- */
+.rotaryCol {
   display: flex;
-  gap: 16px;
+  flex-direction: column;
+  gap: 6px;
   justify-content: center;
-  margin-top: 12px;
 }
 
 .rotaryPair {
   display: flex;
-  gap: 6px;
+  gap: 4px;
 }
 
 .rotaryPair :deep(button) {
-  width: 60px;
-  height: 44px;
+  width: 50px;
+  height: 50px;
 }
 
 /* ---- Mode row ---- */

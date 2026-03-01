@@ -785,7 +785,7 @@ def _parse_increments(raw: str, linear_unit: str = "mm") -> List[float]:
         if val <= 0:
             continue
         factor = unit_factors.get(unit, 1.0)  # no unit = machine units
-        result.append(val * factor)
+        result.append(round(val * factor, 6))
 
     result.sort()
     return result

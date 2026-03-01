@@ -162,8 +162,11 @@ const props = defineProps<{
   linearUnit?: string;
   active?: boolean;
   jogVel?: number;
+  angularJogVel?: number;
   isHomed?: boolean;
   maxJogVel?: number;
+  maxAngularJogVel?: number;
+  minAngularJogVel?: number;
   jogIncrement?: number;
   minJogVel?: number;
   iniIncrements?: number[] | null;
@@ -184,6 +187,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "update:jogVel", vel: number): void;
+  (e: "update:angularJogVel", vel: number): void;
   (e: "update:jogIncrement", val: number): void;
   (e: "update:touchoff", values: number[]): void;
   (e: "cycleStart"): void;
@@ -1312,10 +1316,14 @@ watch(
 
 
 // Format coordinate for HUD display
-function formatCoord(val: number | null | undefined): string {
+const HUD_ROTARY = new Set(["A", "B", "C", "U", "V", "W"]);
+function formatCoord(val: number | null | undefined, axisLetter?: string): string {
   if (val == null) return '---';
+  if (axisLetter && HUD_ROTARY.has(axisLetter)) return val.toFixed(2) + "°";
   return val.toFixed(3);
 }
+
+const hudAxes = computed(() => props.axes ?? ["X", "Y", "Z"]);
 
 // ─── Surface map layer ──────────────────────────────────────────
 
@@ -1445,18 +1453,18 @@ defineExpose({
       <div class="hudSection">
         <div class="hudLabel">Machine Position</div>
         <div class="hudCoords">
-          <div class="hudCoord"><span class="hudAxis">X</span> {{ formatCoord(vst?.machine_pos?.[0]) }}</div>
-          <div class="hudCoord"><span class="hudAxis">Y</span> {{ formatCoord(vst?.machine_pos?.[1]) }}</div>
-          <div class="hudCoord"><span class="hudAxis">Z</span> {{ formatCoord(vst?.machine_pos?.[2]) }}</div>
+          <div v-for="(letter, i) in hudAxes" :key="'m'+letter" class="hudCoord">
+            <span class="hudAxis">{{ letter }}</span> {{ formatCoord(vst?.machine_pos?.[i], letter) }}
+          </div>
         </div>
       </div>
 
       <div class="hudSection">
         <div class="hudLabel">Work Position ({{ props.g5xLabel || '-' }})</div>
         <div class="hudCoords">
-          <div class="hudCoord"><span class="hudAxis">X</span> {{ formatCoord(vst?.work_pos?.[0]) }}</div>
-          <div class="hudCoord"><span class="hudAxis">Y</span> {{ formatCoord(vst?.work_pos?.[1]) }}</div>
-          <div class="hudCoord"><span class="hudAxis">Z</span> {{ formatCoord(vst?.work_pos?.[2]) }}</div>
+          <div v-for="(letter, i) in hudAxes" :key="'w'+letter" class="hudCoord">
+            <span class="hudAxis">{{ letter }}</span> {{ formatCoord(vst?.work_pos?.[i], letter) }}
+          </div>
         </div>
       </div>
 
@@ -1500,13 +1508,18 @@ defineExpose({
 
       <div v-show="activeHudPanel === 'jog'">
         <JogHUD
+          :axes="props.axes"
           :jogVel="props.jogVel ?? 10"
+          :angularJogVel="props.angularJogVel ?? 10"
           :linearUnit="props.linearUnit ?? 'mm'"
           :maxJogVel="props.maxJogVel ?? 100"
+          :maxAngularJogVel="props.maxAngularJogVel ?? 60"
+          :minAngularJogVel="props.minAngularJogVel ?? 0.1"
           :jogIncrement="props.jogIncrement ?? 0"
           :minJogVel="props.minJogVel ?? 0.1"
           :iniIncrements="props.iniIncrements ?? null"
           @update:jogVel="emit('update:jogVel', $event)"
+          @update:angularJogVel="emit('update:angularJogVel', $event)"
           @update:jogIncrement="emit('update:jogIncrement', $event)"
         />
       </div>
@@ -1557,6 +1570,9 @@ defineExpose({
   display: flex;
   flex-direction: column;
   gap: 6px;
+  min-width: 240px;
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
 }
 
 .hudPills {
