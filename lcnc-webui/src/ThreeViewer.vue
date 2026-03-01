@@ -94,18 +94,27 @@ const viewerDefaults = loadViewerDefaults();
 type ViewerInit = {
   units?: "mm" | "inch" | string;
   stl_base_url: string;
+  groups?: Array<{ id: string; parent: string }>;
   parts: Array<{
     id: string;
     file: string;
-    parent: string | null; // "x" | "y" | "z" | null
-    t?: Vec3;              // static translation
-    r?: Vec3;              // optional static rotation
+    group?: string | null;
+    translate?: Vec3;
+    rotate?: Vec3;
+    // Legacy field names (backward compat)
+    parent?: string | null;
+    t?: Vec3;
+    r?: Vec3;
   }>;
-  kinematics: {
-    x: { axis: number; sign: number };
-    y: { axis: number; sign: number };
-    z: { axis: number; sign: number };
-  };
+  kinematics: Array<{
+    group: string;
+    joint: number;
+    direction: "x" | "y" | "z";
+    sign: number;
+  }> | Record<string, { axis: number; sign: number }>;  // accept legacy object form
+  workGroup?: string;
+  toolGroup?: string;
+  machine_bounds?: { origin: Vec3; size: Vec3 };
 };
 
 type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
@@ -213,6 +222,21 @@ let raf = 0;
 // Transform groups (logical)
 const groups: Record<string, THREE.Group> = {};
 let workOrigin: THREE.Group | null = null;
+let _workGrp: THREE.Group | null = null;   // resolved from init.workGroup
+let _toolGrp: THREE.Group | null = null;   // resolved from init.toolGroup
+
+// Normalize kinematics: accept legacy object form or new array form
+type KinEntry = { group: string; joint: number; direction: "x" | "y" | "z"; sign: number };
+function normalizeKinematics(kin: ViewerInit["kinematics"]): KinEntry[] {
+  if (Array.isArray(kin)) return kin;
+  // Legacy object form: { x: { axis: 0, sign: -1 }, ... }
+  return Object.entries(kin).map(([key, v]) => ({
+    group: key,
+    joint: v.axis,
+    direction: key as "x" | "y" | "z",
+    sign: v.sign,
+  }));
+}
 
 // Visual objects
 let toolMarker: THREE.Object3D | null = null;
@@ -574,7 +598,7 @@ function makeLine(points: number[][], colorHex: number | string, dashed = false,
 }
 
 
-function ensureCoreGroups() {
+function ensureCoreGroups(init: ViewerInit) {
   if (!scene) return;
 
   // reset pointers
@@ -584,27 +608,34 @@ function ensureCoreGroups() {
   workpieceMesh = null;
   machineMeshes = [];
 
+  // Clear old group references
+  for (const key of Object.keys(groups)) delete groups[key];
+
   groups.root = new THREE.Group();
-  groups.x = new THREE.Group();
-  groups.y = new THREE.Group();
-  groups.z = new THREE.Group();
-  groups.tool = new THREE.Group();
- 
   scene.add(groups.root);
 
-  // ✅ Your topology:
-  // root → x
-  // root → y
-  // y → z
-  // z → tool
-  groups.root.add(groups.x);
-  groups.root.add(groups.y);
-  groups.y.add(groups.z);
-  groups.z.add(groups.tool);
+  // Build groups from config (or legacy hardcoded fallback)
+  const grpDefs = init.groups ?? [
+    { id: "x", parent: "root" },
+    { id: "y", parent: "root" },
+    { id: "z", parent: "y" },
+    { id: "tool", parent: "z" },
+  ];
+  for (const g of grpDefs) {
+    groups[g.id] = new THREE.Group();
+  }
+  for (const g of grpDefs) {
+    const parent = g.parent === "root" ? groups.root : groups[g.parent];
+    (parent ?? groups.root).add(groups[g.id]);
+  }
 
-  // Work origin (DRO zero frame) — must sit on X like your vismach toolpath/work_cs
+  // Resolve work/tool group references
+  _workGrp = groups[init.workGroup ?? grpDefs[0]?.id] ?? groups.root;
+  _toolGrp = groups[init.toolGroup ?? "tool"] ?? groups.root;
+
+  // Work origin (DRO zero frame) — attached to the work/table group
   workOrigin = new THREE.Group();
-  groups.x.add(workOrigin);
+  _workGrp.add(workOrigin);
 
   // Work zero XYZ arrows with labels
   workAxes = new THREE.Group();
@@ -659,7 +690,7 @@ function ensureCoreGroups() {
   backplotLine = new THREE.Line(backplotGeom, mat);
   backplotLine.renderOrder = 10;
   backplotLine.frustumCulled = false;   // ✅ prevents disappearing when origin is off-screen
-  groups.x.add(backplotLine);
+  _workGrp!.add(backplotLine);
 
 resetBackplot();
 
@@ -684,7 +715,7 @@ resetBackplot();
 
   // Default until viewer_state arrives
   toolMarker = makeToolMesh(6 * _unitScale, 60 * _unitScale);
-  groups.tool.add(toolMarker);
+  _toolGrp!.add(toolMarker);
 
 
 
@@ -707,7 +738,7 @@ resetBackplot();
     );
     machineBoundsMesh.add(edges);
 
-    groups.x.add(machineBoundsMesh);
+    _workGrp!.add(machineBoundsMesh);
   }
 
   // --- Workpiece box (in work coordinates, relative to DRO zero, and sits on X via workOrigin) ---
@@ -766,14 +797,14 @@ async function buildFromInit(init: ViewerInit) {
     dl.position.set(800, -800, 1200);
     scene.add(dl);
 
-    ensureCoreGroups();
+    ensureCoreGroups(init);
     // Apply machine bounds from viewer_init (INI-derived)
     const mb = (init as any).machine_bounds;
     if (machineBoundsMesh && mb?.size && mb?.origin) {
       applyBox(machineBoundsMesh, mb.size as Vec3, mb.origin as Vec3);
 
       // Dimension labels along bottom edges
-      if (boundsLabels) { groups.x.remove(boundsLabels); boundsLabels = null; }
+      if (boundsLabels) { _workGrp!.remove(boundsLabels); boundsLabels = null; }
       boundsLabels = new THREE.Group();
       const [sx, sy, sz] = mb.size as Vec3;
       const [ox, oy, oz] = mb.origin as Vec3;
@@ -803,7 +834,7 @@ async function buildFromInit(init: ViewerInit) {
         sprite.position.copy(pos);
         boundsLabels.add(sprite);
       }
-      groups.x.add(boundsLabels);
+      _workGrp!.add(boundsLabels);
     } else {
       console.warn("No machine_bounds in viewer_init; bounds box will remain default");
     }
@@ -812,28 +843,34 @@ async function buildFromInit(init: ViewerInit) {
     await loadMachineAssets(init);
     if (myToken !== buildToken) return;
 
+    // Build group → material map from kinematics direction
+    const kinEntries = normalizeKinematics(init.kinematics);
+    const dirMat: Record<string, THREE.MeshStandardMaterial> = { x: MAT.axisX, y: MAT.axisY, z: MAT.axisZ };
+    const groupMat: Record<string, THREE.MeshStandardMaterial> = {};
+    for (const k of kinEntries) groupMat[k.group] = dirMat[k.direction] ?? MAT.frame;
+
     const parts = init.parts ?? [];
     for (const p of parts) {
       const geom = getCachedGeometry(p.id);
       if (!geom) { console.warn(`No cached geometry for ${p.id}`); continue; }
 
-      let mat = MAT.frame;
-      if (p.parent === "x") mat = MAT.axisX;
-      else if (p.parent === "y") mat = MAT.axisY;
-      else if (p.parent === "z") mat = MAT.axisZ;
+      const grp = p.group ?? p.parent ?? null;  // support both new and legacy field names
+      const mat = (grp ? groupMat[grp] : null) ?? MAT.frame;
 
       const mesh = new THREE.Mesh(geom, mat);  // shares GPU geometry, no copy
-      if (p.t) mesh.position.set(p.t[0] * _unitScale, p.t[1] * _unitScale, p.t[2] * _unitScale);
-      if (p.r) mesh.rotation.set(p.r[0], p.r[1], p.r[2]);
+      const t = p.translate ?? p.t;
+      if (t) mesh.position.set(t[0] * _unitScale, t[1] * _unitScale, t[2] * _unitScale);
+      const r = p.rotate ?? p.r;
+      if (r) mesh.rotation.set(r[0], r[1], r[2]);
       mesh.scale.setScalar(_unitScale);  // convert mm STL geometry → machine-unit world
 
-      const parent = (p.parent ? groups[p.parent] : groups.root) ?? groups.root;
+      const parent = (grp ? groups[grp] : groups.root) ?? groups.root;
       parent.add(mesh);
       machineMeshes.push(mesh);
     }
 
     // Auto-frame to machine work envelope — use raw INI data (not setFromObject) so
-    // the frame is immune to axis movement that may have shifted groups.x/y/z above.
+    // the frame is immune to axis movement that may have shifted axis groups above.
     // Falls back to STL mesh world bounds if no bounds data present.
     {
       let autoBox = new THREE.Box3();
@@ -877,27 +914,27 @@ function applyState(init: ViewerInit, st: ViewerState) {
   const jp = st.joint_pos;
   if (!jp) return;
 
-  if (!groups.x || !groups.y || !groups.z || !groups.tool) return;
+  if (!_workGrp || !_toolGrp) return;
 
-  const kin = init.kinematics;
+  const kinEntries = normalizeKinematics(init.kinematics);
   const ax = (idx: number) => (idx >= 0 && idx < jp.length ? jp[idx] : 0);
 
-  // Apply to your group topology (machine model motion)
-  groups.x.position.x = ax(kin.x.axis) * (kin.x.sign ?? 1);
-  groups.y.position.y = ax(kin.y.axis) * (kin.y.sign ?? 1);
-  groups.z.position.z = ax(kin.z.axis) * (kin.z.sign ?? 1);
+  // Apply kinematics: each entry drives a group's position component
+  for (const k of kinEntries) {
+    const g = groups[k.group];
+    if (g) g.position[k.direction] = ax(k.joint) * (k.sign ?? 1);
+  }
 
   // Tool spatial compensation:
   // Put the tool TIP at TCP by moving the tool group by -tool_offset relative to spindle nose.
   const tofs = st.tool_offset;
   if (tofs && tofs.length >= 3) {
-    groups.tool.position.set(-(tofs[0] ?? 0), -(tofs[1] ?? 0), -(tofs[2] ?? 0));
+    _toolGrp.position.set(-(tofs[0] ?? 0), -(tofs[1] ?? 0), -(tofs[2] ?? 0));
   } else {
-    groups.tool.position.set(0, 0, 0);
+    _toolGrp.position.set(0, 0, 0);
   }
 
   // Work origin offset: place DRO/work zero in machine space.
-  // workOrigin is parented under X, matching your vismach structure.
   const g5x = st.g5x_offset ?? [];
   const g92 = st.g92_offset ?? [];
 
@@ -948,13 +985,13 @@ function applyState(init: ViewerInit, st: ViewerState) {
   lastBackplotFile = curFile;
   lastBackplotMotionLine = curLine;
 
-  // Append the actual rendered tool tip position, expressed in groups.x local space.
+  // Append the actual rendered tool tip position, expressed in work group local space.
   // This guarantees the backplot starts exactly at the tooltip (independent of joint_pos vs machine_pos nuances).
-  if (toolMarker && groups.x) {
+  if (toolMarker && _workGrp) {
     const w = new THREE.Vector3();
     toolMarker.getWorldPosition(w);
 
-    const xl = groups.x.worldToLocal(w.clone());
+    const xl = _workGrp.worldToLocal(w.clone());
     pushBackplotPoint([xl.x, xl.y, xl.z]);
   }
 
@@ -1086,9 +1123,9 @@ function animate() {
     pendingState = null;
 
     // Re-frame after first status update so camera accounts for actual axis positions
-    if (_needsReframe && _iniBox && groups?.x) {
+    if (_needsReframe && _iniBox && _workGrp) {
       _needsReframe = false;
-      const box = _iniBox.clone().translate(groups.x.position);
+      const box = _iniBox.clone().translate(_workGrp.position);
       frameToBounds(box);
     }
   }

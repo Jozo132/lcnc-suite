@@ -1958,10 +1958,55 @@ def get_machine_units() -> str:
         return "mm"
 
 
+def _load_machine_config() -> dict:
+    """Load machine model config from machine.json, or return hardcoded defaults."""
+    cfg_path = MACHINE_DIR / "machine.json"
+    if cfg_path.exists():
+        try:
+            with open(cfg_path) as f:
+                cfg = json.load(f)
+            print(f"[VINIT] Loaded machine config: {cfg.get('name', '?')}", flush=True)
+            return cfg
+        except Exception as e:
+            print(f"[VINIT] Failed to load machine.json: {e}, using defaults", flush=True)
+    # Fallback: hardcoded defaults (original PM-25MV setup)
+    return {
+        "name": "Default",
+        "groups": [
+            {"id": "x", "parent": "root"},
+            {"id": "y", "parent": "root"},
+            {"id": "z", "parent": "y"},
+            {"id": "tool", "parent": "z"},
+        ],
+        "parts": [
+            {"id": "frame",  "file": "frame.stl",  "group": None, "translate": [-760, -122, -294]},
+            {"id": "x_axis", "file": "x_axis.stl", "group": "x",  "translate": [319, 398, -244]},
+            {"id": "y_axis", "file": "y_axis.stl", "group": "y",  "translate": [-140, 0, 21]},
+            {"id": "z_axis", "file": "z_axis.stl", "group": "z",  "translate": [0, 0, 0]},
+        ],
+        "kinematics": [
+            {"group": "x", "joint": 0, "direction": "x", "sign": -1},
+            {"group": "y", "joint": 1, "direction": "y", "sign":  1},
+            {"group": "z", "joint": 2, "direction": "z", "sign":  1},
+        ],
+        "workGroup": "x",
+        "toolGroup": "tool",
+    }
+
+
+MACHINE_CFG = _load_machine_config()
+
+
+def _stl_versioned(filename: str) -> str:
+    """Append ?v=<mtime> for immutable browser caching with automatic invalidation."""
+    p = MACHINE_DIR / filename
+    mtime = int(p.stat().st_mtime) if p.exists() else 0
+    return f"{filename}?v={mtime}"
+
+
 def build_viewer_init(stl_base_url: str) -> Dict[str, Any]:
-    """Build viewer init payload. Works with or without STAT — parts/kinematics are static."""
+    """Build viewer init payload from machine.json config + INI-derived bounds."""
     print(f"[VINIT] build_viewer_init called, STAT={'OK' if STAT else 'None'}, lcnc_connected={lcnc_connected}", flush=True)
-    # No STAT.poll() here — caller (poll_status) already polled, or STAT may be None
 
     limits = read_machine_limits_from_ini(STAT) if STAT else None
     if limits:
@@ -1971,27 +2016,29 @@ def build_viewer_init(stl_base_url: str) -> Dict[str, Any]:
 
     units = get_machine_units()
 
+    # Build parts with cache-busted filenames
+    parts = []
+    for p in MACHINE_CFG.get("parts", []):
+        parts.append({
+            "id": p["id"],
+            "file": _stl_versioned(p["file"]),
+            "group": p.get("group"),
+            "translate": p.get("translate"),
+            "rotate": p.get("rotate"),
+        })
+
     return {
         "units": units,
         "stl_base_url": stl_base_url,
         "machine_bounds": {
-        "origin": bounds_origin,
-        "size": bounds_size,
+            "origin": bounds_origin,
+            "size": bounds_size,
         },
-        "parts": [
-            # these translations are from your vismach model (machine.py)
-            # ?v=<mtime> enables immutable browser caching with automatic invalidation on file change
-            {"id": "frame",  "file": f"frame.stl?v={int(( MACHINE_DIR / 'frame.stl').stat().st_mtime) if (MACHINE_DIR / 'frame.stl').exists() else 0}",  "parent": None, "t": [-760, -122, -294]},
-            {"id": "x_axis", "file": f"x_axis.stl?v={int((MACHINE_DIR / 'x_axis.stl').stat().st_mtime) if (MACHINE_DIR / 'x_axis.stl').exists() else 0}", "parent": "x",  "t": [319, 398, -244]},
-            {"id": "y_axis", "file": f"y_axis.stl?v={int((MACHINE_DIR / 'y_axis.stl').stat().st_mtime) if (MACHINE_DIR / 'y_axis.stl').exists() else 0}", "parent": "y",  "t": [-140, 0, 21]},
-            {"id": "z_axis", "file": f"z_axis.stl?v={int((MACHINE_DIR / 'z_axis.stl').stat().st_mtime) if (MACHINE_DIR / 'z_axis.stl').exists() else 0}", "parent": "z",  "t": [0, 0, 0]},
-        ],
-        # match your joint sign usage (X inverted in your model)
-        "kinematics": {
-            "x": {"axis": 0, "sign": -1},
-            "y": {"axis": 1, "sign":  1},
-            "z": {"axis": 2, "sign":  1},
-        },
+        "groups": MACHINE_CFG.get("groups", []),
+        "parts": parts,
+        "kinematics": MACHINE_CFG.get("kinematics", []),
+        "workGroup": MACHINE_CFG.get("workGroup"),
+        "toolGroup": MACHINE_CFG.get("toolGroup"),
     }
 
 

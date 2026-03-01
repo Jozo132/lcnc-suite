@@ -62,9 +62,9 @@ function updateTouchoff(axis: number, val: number) {
 
     <!-- Go-to navigation -->
     <div class="row">
-      <button class="btn" :disabled="!can.ready" @click="emit('goToG30')">G30</button>
-      <button class="btn" :disabled="!can.ready" @click="emit('goToHome')">Home</button>
-      <button class="btn" :disabled="!can.ready" @click="emit('goToZero')">Zero</button>
+      <button class="btn" :disabled="!can.ready" @click="emit('goToG30')">Go to G30</button>
+      <button class="btn" :disabled="!can.ready" @click="emit('goToHome')">Go to Home</button>
+      <button class="btn" :disabled="!can.ready" @click="emit('goToZero')">Go to Zero</button>
     </div>
   </div>
 </template>

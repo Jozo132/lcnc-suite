@@ -1,0 +1,22 @@
+{
+  "name": "PM-25MV Mill",
+  "groups": [
+    { "id": "x", "parent": "root" },
+    { "id": "y", "parent": "root" },
+    { "id": "z", "parent": "y" },
+    { "id": "tool", "parent": "z" }
+  ],
+  "parts": [
+    { "id": "frame",  "file": "frame.stl",  "group": null, "translate": [-760, -122, -294] },
+    { "id": "x_axis", "file": "x_axis.stl", "group": "x",  "translate": [319, 398, -244] },
+    { "id": "y_axis", "file": "y_axis.stl", "group": "y",  "translate": [-140, 0, 21] },
+    { "id": "z_axis", "file": "z_axis.stl", "group": "z",  "translate": [0, 0, 0] }
+  ],
+  "kinematics": [
+    { "group": "x", "joint": 0, "direction": "x", "sign": -1 },
+    { "group": "y", "joint": 1, "direction": "y", "sign":  1 },
+    { "group": "z", "joint": 2, "direction": "z", "sign":  1 }
+  ],
+  "workGroup": "x",
+  "toolGroup": "tool"
+}
