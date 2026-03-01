@@ -14,6 +14,7 @@ export default defineConfig({
       '/upload': 'http://127.0.0.1:8000',
       '/save': 'http://127.0.0.1:8000',
       '/hal': 'http://127.0.0.1:8000',
+      '/g30': 'http://127.0.0.1:8000',
       '/assets': 'http://127.0.0.1:8000',
     },
   },

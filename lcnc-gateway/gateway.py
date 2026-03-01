@@ -2416,6 +2416,36 @@ async def get_hal():
     return {"pins": pins, "signals": signals, "params": params}
 
 
+def _read_g30_vars():
+    """Read G30 tool change position (#5181-#5183) from the var file."""
+    ini_path = getattr(STAT, "ini_filename", None)
+    if not ini_path:
+        return {"ok": False, "error": "No INI file"}
+    ini = linuxcnc.ini(ini_path)
+    var_file = ini.find("RS274NGC", "PARAMETER_FILE")
+    if not var_file:
+        return {"ok": False, "error": "No PARAMETER_FILE in INI"}
+    if not os.path.isabs(var_file):
+        var_file = os.path.join(os.path.dirname(ini_path), var_file)
+    wanted = {"5181", "5182", "5183"}
+    result = {}
+    try:
+        for line in open(var_file):
+            parts = line.split()
+            if len(parts) >= 2 and parts[0] in wanted:
+                result[parts[0]] = float(parts[1])
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "x": result.get("5181", 0.0), "y": result.get("5182", 0.0), "z": result.get("5183", 0.0)}
+
+
+@app.get("/g30")
+async def get_g30():
+    """Return G30 tool change position (#5181-#5183)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _read_g30_vars)
+
+
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     await ws.accept()

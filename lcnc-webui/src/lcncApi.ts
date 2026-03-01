@@ -106,6 +106,25 @@ export async function fetchHal(): Promise<HalResponse> {
   return resp.json();
 }
 
+/** ---------- G30 tool change position ---------- */
+
+export interface G30Response {
+  ok: boolean;
+  x: number;
+  y: number;
+  z: number;
+  error?: string;
+}
+
+export async function fetchG30(): Promise<G30Response> {
+  const resp = await fetch(`${getBaseUrl()}/g30`);
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.detail || `HTTP ${resp.status}`);
+  }
+  return resp.json();
+}
+
 export async function uploadFile(file: File): Promise<UploadResponse> {
   const formData = new FormData();
   formData.append("file", file);

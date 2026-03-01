@@ -7,7 +7,7 @@ import {
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir,
 } from "./defaults";
-import { fetchHal, type HalPin, type HalSignal, type HalParam } from "./lcncApi";
+import { fetchHal, fetchG30, type HalPin, type HalSignal, type HalParam } from "./lcncApi";
 
 const TS_STORAGE_KEY = "lcnc-toolsetter-params";
 
@@ -18,6 +18,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: "setProbeVars", vars: Record<string, number>): void;
+  (e: "mdi", text: string): void;
 }>();
 
 // ─── Viewer defaults ───────────────────────
@@ -132,9 +133,40 @@ function saveTsParams() {
   emit("setProbeVars", buildVarMap());
 }
 
+// ─── G30 tool change position ────────────────
+const g30X = ref<number | null>(null);
+const g30Y = ref<number | null>(null);
+const g30Z = ref<number | null>(null);
+const g30Loading = ref(false);
+
+async function loadG30() {
+  g30Loading.value = true;
+  try {
+    const data = await fetchG30();
+    if (data.ok) {
+      g30X.value = data.x;
+      g30Y.value = data.y;
+      g30Z.value = data.z;
+    }
+  } catch { /* ignore */ }
+  g30Loading.value = false;
+}
+
+function setG30() {
+  emit("mdi", "G30.1");
+  // After G30.1 saves current position, read back from machine position
+  const st = props.status as any;
+  if (st?.position) {
+    g30X.value = st.position[0];
+    g30Y.value = st.position[1];
+    g30Z.value = st.position[2];
+  }
+}
+
 onMounted(() => {
   loadTsParams();
   emit("setProbeVars", buildVarMap());
+  loadG30();
 });
 
 // ─── Sub-tabs ──────────────────────────────
@@ -489,6 +521,22 @@ const halStats = computed(() => ({
               <input type="number" v-model.number="tsParams.touchY" step="0.001" @change="saveTsParams" />
               <label>Touch Z <span class="varNum">#3102</span></label>
               <input type="number" v-model.number="tsParams.touchZ" step="0.001" @change="saveTsParams" />
+            </div>
+          </div>
+
+          <div class="section">
+            <div class="sectionTitle">Tool Change Position (G30) <span class="varNum">#5181–#5183</span></div>
+            <div class="tsGrid">
+              <label>X</label>
+              <span class="readonlyVal">{{ g30X != null ? g30X.toFixed(3) : '—' }}</span>
+              <label>Y</label>
+              <span class="readonlyVal">{{ g30Y != null ? g30Y.toFixed(3) : '—' }}</span>
+              <label>Z</label>
+              <span class="readonlyVal">{{ g30Z != null ? g30Z.toFixed(3) : '—' }}</span>
+            </div>
+            <div class="tsBtnRow" style="margin-top: 8px;">
+              <button class="optBtn" @click="setG30">Set Current Position</button>
+              <button class="optBtn" @click="loadG30" :disabled="g30Loading">Refresh</button>
             </div>
           </div>
 

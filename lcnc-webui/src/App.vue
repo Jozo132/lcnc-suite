@@ -1463,7 +1463,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </template>
 
           <template #settings>
-            <SettingsPanel :lastReply="lastReply" :status="status" @setProbeVars="send({ cmd: 'set_probe_vars', vars: $event })" />
+            <SettingsPanel :lastReply="lastReply" :status="status" @setProbeVars="send({ cmd: 'set_probe_vars', vars: $event })" @mdi="send({ cmd: 'mdi', text: $event })" />
           </template>
         </TabPanel>
       </div>
