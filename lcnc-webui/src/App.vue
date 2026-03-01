@@ -296,9 +296,10 @@ function fmtOff(v: number | undefined): string {
 }
 
 // WCS offset table (fetched on demand when popover opens)
-type WcsRow = { name: string; x: number; y: number; z: number; r: number };
+type WcsRow = { name: string; [axis: string]: string | number };
 const wcsTable = ref<WcsRow[]>([]);
 const selectedWcs = ref<string | null>(null);
+const offsetColumns = computed(() => [...axes.value.map(l => l.toLowerCase()), "r"]);
 
 function fetchWcsTable() {
   send({ cmd: "get_wcs_table" });
@@ -316,11 +317,12 @@ function openOffsetsPopover() {
 function clearWcs(target: string) {
   send({ cmd: "clear_wcs", target });
   // Local zero for instant feedback; gateway reply will confirm with full table
+  const zeroed = Object.fromEntries(offsetColumns.value.map(k => [k, 0]));
   if (target === "all") {
-    wcsTable.value = wcsTable.value.map(row => ({ ...row, x: 0, y: 0, z: 0, r: 0 }));
+    wcsTable.value = wcsTable.value.map(row => ({ ...row, ...zeroed }));
   } else {
     wcsTable.value = wcsTable.value.map(row =>
-      row.name === target ? { ...row, x: 0, y: 0, z: 0, r: 0 } : row
+      row.name === target ? { ...row, ...zeroed } : row
     );
   }
 }
@@ -499,6 +501,20 @@ const minJogVel = computed(() => {
   const v = st.value.min_jog_velocity;
   return (v != null && Number.isFinite(v) && v > 0) ? v : 0.1;
 });
+// Angular (rotary) jog velocity from INI [DISPLAY]
+const maxAngularJogVel = computed(() => {
+  const v = st.value.max_angular_jog_velocity;
+  return (v != null && Number.isFinite(v) && v > 0) ? v : 60; // 60 deg/s default
+});
+const defaultAngularJogVel = computed(() => {
+  const v = st.value.default_angular_jog_velocity;
+  return (v != null && Number.isFinite(v) && v > 0) ? v : 10;
+});
+const minAngularJogVel = computed(() => {
+  const v = st.value.min_angular_jog_velocity;
+  return (v != null && Number.isFinite(v) && v > 0) ? v : 0.1;
+});
+
 const iniIncrements = computed<number[] | null>(() => {
   const v = st.value.increments;
   return Array.isArray(v) && v.length > 0 ? v : null;
@@ -672,6 +688,7 @@ function arm(v: boolean) {
 
 /** ---------- local UI jog ---------- */
 const jogVel = ref(10);
+const angularJogVel = ref(10); // deg/s for rotary axes
 const jogIncrement = ref(0); // 0 = continuous, >0 = increment distance in machine units
 const AXIS_LETTERS = "XYZABCUVW";
 
@@ -699,6 +716,8 @@ watch(axes, (a) => {
 // Initialize defaults from INI (once, when first non-fallback value arrives)
 let _jogVelInit = false;
 watch(defaultJogVel, (v) => { if (!_jogVelInit && v !== 10) { jogVel.value = v; _jogVelInit = true; } });
+let _angJogVelInit = false;
+watch(defaultAngularJogVel, (v) => { if (!_angJogVelInit && v !== 10) { angularJogVel.value = v; _angJogVelInit = true; } });
 let _rpmInit = false;
 watch(defaultSpindleSpeed, (v) => { if (!_rpmInit && v !== 1000) { rpmInput.value = v; _rpmInit = true; } });
 
@@ -834,6 +853,21 @@ const JOG_KEY_MAP: Record<string, { axis: number; dir: 1 | -1 }> = {
   PageUp:     { axis: 2, dir:  1 },
   PageDown:   { axis: 2, dir: -1 },
 };
+
+// Dynamic rotary jog keys: [ ] for first rotary axis, ; ' for second
+const ROTARY_LETTERS = new Set(["A", "B", "C", "U", "V", "W"]);
+const ROTARY_KEY_PAIRS: [string, string][] = [["[", "]"], [";", "'"]];
+const rotaryJogKeys = computed(() => {
+  const rotary = axes.value.filter(l => ROTARY_LETTERS.has(l));
+  const map: Record<string, { axis: number; dir: 1 | -1 }> = {};
+  for (let r = 0; r < Math.min(rotary.length, ROTARY_KEY_PAIRS.length); r++) {
+    const idx = axes.value.indexOf(rotary[r]);
+    const [neg, pos] = ROTARY_KEY_PAIRS[r];
+    map[neg] = { axis: idx, dir: -1 };
+    map[pos] = { axis: idx, dir:  1 };
+  }
+  return map;
+});
 const jogKeys = reactive(new Set<string>());
 
 function isInputFocused(): boolean {
@@ -854,13 +888,15 @@ function onKeyDown(e: KeyboardEvent) {
   if (isInputFocused()) return;
 
   // Jog keys (hold-to-jog or increment)
-  const jog = JOG_KEY_MAP[e.key];
+  const isRotaryKey = !!rotaryJogKeys.value[e.key];
+  const jog = JOG_KEY_MAP[e.key] ?? rotaryJogKeys.value[e.key];
   if (jog) {
     e.preventDefault();
     if (e.repeat || jogKeys.has(e.key)) return;
     if (!permissions.value.jog) return;
     jogKeys.add(e.key);
-    const v = jogVel.value * jog.dir;
+    const vel = isRotaryKey ? angularJogVel.value : jogVel.value;
+    const v = vel * jog.dir;
     if (jogIncrement.value > 0) {
       send({ cmd: "jog_incr", axis: jog.axis, vel: v, distance: jogIncrement.value * jog.dir });
     } else {
@@ -887,7 +923,7 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 function onKeyUp(e: KeyboardEvent) {
-  const jog = JOG_KEY_MAP[e.key];
+  const jog = JOG_KEY_MAP[e.key] ?? rotaryJogKeys.value[e.key];
   if (jog && jogKeys.has(e.key)) {
     jogKeys.delete(e.key);
     if (jogIncrement.value <= 0) {
@@ -1084,16 +1120,16 @@ watch(isHomed, (nowHomed, wasHomed) => {
           <div class="popover chipPopover offsetsPopover" :class="{ open: openChip === 'offsets' }" @click.stop>
             <table class="offsetTable">
               <thead>
-                <tr><th></th><th>X</th><th>Y</th><th>Z</th><th>R</th></tr>
+                <tr><th></th><th v-for="col in offsetColumns" :key="col">{{ col.toUpperCase() }}</th></tr>
               </thead>
               <tbody>
                 <tr v-for="row in wcsTable" :key="row.name"
                     :class="{ activeRow: row.name === g5xLabel, selectedRow: row.name === selectedWcs }"
                     @click="selectedWcs = row.name">
                   <td class="offLabel">{{ row.name }}</td>
-                  <td v-for="axis in (['x','y','z','r'] as const)" :key="axis"
+                  <td v-for="axis in offsetColumns" :key="axis"
                       :class="{ warn: axis === 'r' && row[axis] !== 0, editableCell: permissions.idle }"
-                      @dblclick.stop="startEditCell(row.name, axis, row[axis])">
+                      @dblclick.stop="startEditCell(row.name, axis, Number(row[axis]) || 0)">
                     <input v-if="editingCell?.wcs === row.name && editingCell?.axis === axis"
                            ref="offsetInputRef"
                            v-model="editValue"
@@ -1102,29 +1138,20 @@ watch(isHomed, (nowHomed, wasHomed) => {
                            @keydown.escape.prevent="cancelEdit()"
                            @blur="commitCell(row.name, axis)"
                            @click.stop />
-                    <span v-else>{{ fmtOff(row[axis]) }}</span>
+                    <span v-else>{{ fmtOff(Number(row[axis])) }}</span>
                   </td>
                 </tr>
                 <tr v-if="st.g92_offset?.some((v: number) => v !== 0)" class="g92Row">
                   <td class="offLabel">G92</td>
-                  <td>{{ fmtOff(st.g92_offset?.[0]) }}</td>
-                  <td>{{ fmtOff(st.g92_offset?.[1]) }}</td>
-                  <td>{{ fmtOff(st.g92_offset?.[2]) }}</td>
-                  <td></td>
+                  <td v-for="(col, i) in offsetColumns" :key="col">{{ col === 'r' ? '' : fmtOff(st.g92_offset?.[i]) }}</td>
                 </tr>
                 <tr v-if="st.tool_offset?.some((v: number) => v !== 0)" class="toolRow">
                   <td class="offLabel">Tool</td>
-                  <td>{{ fmtOff(st.tool_offset?.[0]) }}</td>
-                  <td>{{ fmtOff(st.tool_offset?.[1]) }}</td>
-                  <td>{{ fmtOff(st.tool_offset?.[2]) }}</td>
-                  <td></td>
+                  <td v-for="(col, i) in offsetColumns" :key="col">{{ col === 'r' ? '' : fmtOff(st.tool_offset?.[i]) }}</td>
                 </tr>
                 <tr v-if="st.eoffset_z != null && st.eoffset_z !== 0" class="eoffsetRow">
                   <td class="offLabel">Comp</td>
-                  <td></td>
-                  <td></td>
-                  <td>{{ fmtOff(st.eoffset_z) }}</td>
-                  <td></td>
+                  <td v-for="col in offsetColumns" :key="col">{{ col === 'z' ? fmtOff(st.eoffset_z) : '' }}</td>
                 </tr>
               </tbody>
             </table>
@@ -1427,8 +1454,11 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :workPos="workPos" :machinePos="machinePos" :dtg="dtg"
               :g5xLabel="g5xLabel" :linearUnit="linearUnit" :homed="isHomed"
               :homedJoints="homedJoints"
-              :jogVel="jogVel" :isTeleop="isTeleop" :isHomed="isHomed"
-              :maxJogVel="maxJogVel" :activeJogKeys="jogKeys"
+              :jogVel="jogVel" :angularJogVel="angularJogVel"
+              :isTeleop="isTeleop" :isHomed="isHomed"
+              :maxJogVel="maxJogVel" :maxAngularJogVel="maxAngularJogVel"
+              :minAngularJogVel="minAngularJogVel"
+              :activeJogKeys="jogKeys"
               :jogIncrement="jogIncrement"
               :minJogVel="minJogVel" :iniIncrements="iniIncrements"
               :mdiText="mdiText"
@@ -1437,6 +1467,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               @setAxis="setAxis" @setAll="setAll" @setG5x="setG5x"
               @homeAll="homeAll" @unhomeAll="unhomeAll" @homeAxis="homeAxis" @unhomeAxis="unhomeAxis"
               @update:jogVel="jogVel = $event"
+              @update:angularJogVel="angularJogVel = $event"
               @update:jogIncrement="jogIncrement = $event"
               @toggleTeleop="toggleTeleop"
               @update:mdiText="mdiText = $event"

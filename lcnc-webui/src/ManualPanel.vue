@@ -19,9 +19,12 @@ const props = defineProps<{
   homedJoints: boolean[];
   // Jog props
   jogVel: number;
+  angularJogVel: number;
   isTeleop: boolean;
   isHomed: boolean;
   maxJogVel: number;
+  maxAngularJogVel: number;
+  minAngularJogVel: number;
   activeJogKeys?: Set<string>;
   jogIncrement: number;
   minJogVel: number;
@@ -44,6 +47,7 @@ const emit = defineEmits<{
   (e: "setG5x", gcode: string): void;
   // Jog emits
   (e: "update:jogVel", vel: number): void;
+  (e: "update:angularJogVel", vel: number): void;
   (e: "update:jogIncrement", val: number): void;
   (e: "toggleTeleop"): void;
   // MDI emits
@@ -164,15 +168,19 @@ function onMdiKeydown(e: KeyboardEvent) {
     <JogPanel
       :axes="axes"
       :jogVel="jogVel"
+      :angularJogVel="angularJogVel"
       :isTeleop="isTeleop"
       :isHomed="isHomed"
       :linearUnit="linearUnit"
       :maxJogVel="maxJogVel"
+      :maxAngularJogVel="maxAngularJogVel"
+      :minAngularJogVel="minAngularJogVel"
       :activeJogKeys="activeJogKeys"
       :jogIncrement="jogIncrement"
       :minJogVel="minJogVel"
       :iniIncrements="iniIncrements"
       @update:jogVel="emit('update:jogVel', $event)"
+      @update:angularJogVel="emit('update:angularJogVel', $event)"
       @update:jogIncrement="emit('update:jogIncrement', $event)"
       @toggleTeleop="emit('toggleTeleop')"
     />

@@ -33,7 +33,8 @@ _lcnc_pid: Optional[int] = None  # tracks linuxcncsvr PID
 _WCS_BASES = [5220, 5240, 5260, 5280, 5300, 5320, 5340, 5360, 5380]
 _WCS_NAMES = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"]
 _G5X_MAP = {"G54": 1, "G55": 2, "G56": 3, "G57": 4, "G58": 5, "G59": 6, "G59.1": 7, "G59.2": 8, "G59.3": 9}
-_wcs_cache = [{"name": n, "x": 0.0, "y": 0.0, "z": 0.0, "r": 0.0} for n in _WCS_NAMES]
+_WCS_AXIS_KEYS = ["x", "y", "z", "a", "b", "c", "u", "v", "w"]
+_wcs_cache = [{"name": n, "x": 0.0, "y": 0.0, "z": 0.0, "a": 0.0, "b": 0.0, "c": 0.0, "u": 0.0, "v": 0.0, "w": 0.0, "r": 0.0} for n in _WCS_NAMES]
 _wcs_cache_seeded = False
 
 # ---- Connected WebSocket clients ----
@@ -247,6 +248,14 @@ def get_ini_config() -> dict:
         config["max_jog_velocity"] = (disp_max / vel_divisor) if disp_max else traj_max
         config["default_jog_velocity"] = (disp_default / vel_divisor) if disp_default else None
         config["min_jog_velocity"] = (disp_min / vel_divisor) if disp_min else None
+
+        # Angular (rotary) jog velocity — always deg/s, no unit conversion
+        ang_max = _ini_float(ini, "DISPLAY", "MAX_ANGULAR_VELOCITY")
+        ang_default = _ini_float(ini, "DISPLAY", "DEFAULT_ANGULAR_VELOCITY")
+        ang_min = _ini_float(ini, "DISPLAY", "MIN_ANGULAR_VELOCITY")
+        config["max_angular_jog_velocity"] = ang_max
+        config["default_angular_jog_velocity"] = ang_default
+        config["min_angular_jog_velocity"] = ang_min
 
         # Machine native unit (for DRO labels, jog increments, etc.)
         config["linear_units"] = "in" if linear_unit in ("inch", "in", "imperial") else "mm"
@@ -629,6 +638,9 @@ class StatusPayload:
     linear_units: Optional[str] = None  # "mm" or "in" — machine native units from [TRAJ]LINEAR_UNITS
     default_jog_velocity: Optional[float] = None
     min_jog_velocity: Optional[float] = None
+    max_angular_jog_velocity: Optional[float] = None
+    default_angular_jog_velocity: Optional[float] = None
+    min_angular_jog_velocity: Optional[float] = None
     increments: Optional[List[float]] = None
     default_spindle_speed: Optional[float] = None
     min_spindle_override: Optional[float] = None
@@ -898,9 +910,8 @@ def _seed_wcs_cache():
             var_file = os.path.join(os.path.dirname(ini_path), var_file)
         wanted = {}
         for i, base in enumerate(_WCS_BASES):
-            wanted[str(base + 1)] = (i, "x")
-            wanted[str(base + 2)] = (i, "y")
-            wanted[str(base + 3)] = (i, "z")
+            for j, key in enumerate(_WCS_AXIS_KEYS):
+                wanted[str(base + 1 + j)] = (i, key)
             wanted[str(base + 10)] = (i, "r")
         for line in open(var_file):
             parts = line.split()
@@ -946,9 +957,8 @@ def poll_status() -> StatusPayload:
     if g5x_index is not None and g5x is not None:
         ci = g5x_index - 1  # STAT.g5x_index is 1-based
         if 0 <= ci < 9:
-            _wcs_cache[ci]["x"] = g5x[0] if len(g5x) > 0 else 0.0
-            _wcs_cache[ci]["y"] = g5x[1] if len(g5x) > 1 else 0.0
-            _wcs_cache[ci]["z"] = g5x[2] if len(g5x) > 2 else 0.0
+            for j, key in enumerate(_WCS_AXIS_KEYS):
+                _wcs_cache[ci][key] = g5x[j] if len(g5x) > j else 0.0
             _wcs_cache[ci]["r"] = rotation_xy if rotation_xy is not None else 0.0
 
     # ---- positions ----
@@ -1185,6 +1195,9 @@ def poll_status() -> StatusPayload:
         linear_units=ini_cfg.get("linear_units"),
         default_jog_velocity=ini_cfg.get("default_jog_velocity"),
         min_jog_velocity=ini_cfg.get("min_jog_velocity"),
+        max_angular_jog_velocity=ini_cfg.get("max_angular_jog_velocity"),
+        default_angular_jog_velocity=ini_cfg.get("default_angular_jog_velocity"),
+        min_angular_jog_velocity=ini_cfg.get("min_angular_jog_velocity"),
         increments=ini_cfg.get("increments"),
         default_spindle_speed=ini_cfg.get("default_spindle_speed"),
         min_spindle_override=ini_cfg.get("min_spindle_override"),
@@ -1875,14 +1888,15 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             else:
                 return {"ok": False, "error": f"Invalid target: {target}"}
             set_mode(linuxcnc.MODE_MDI)
+            zero_parts = " ".join(f"{k.upper()}0" for k in _WCS_AXIS_KEYS) + " R0"
             for p in indices:
-                CMD.mdi(f"G10 L2 P{p} X0 Y0 Z0 R0")
+                CMD.mdi(f"G10 L2 P{p} {zero_parts}")
                 CMD.wait_complete(5)
             # Update cache immediately
             for p in indices:
                 ci = p - 1
                 if 0 <= ci < 9:
-                    _wcs_cache[ci] = {"name": _WCS_NAMES[ci], "x": 0.0, "y": 0.0, "z": 0.0, "r": 0.0}
+                    _wcs_cache[ci] = {"name": _WCS_NAMES[ci], **{k: 0.0 for k in _WCS_AXIS_KEYS}, "r": 0.0}
             return {"ok": True, "table": [row.copy() for row in _wcs_cache]}
 
         if cmd == "set_wcs":
@@ -1895,7 +1909,8 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 return {"ok": False, "error": f"Invalid WCS: {target}"}
             p = _G5X_MAP[target]
             parts = []
-            for axis in ("x", "y", "z", "r"):
+            all_keys = list(_WCS_AXIS_KEYS) + ["r"]
+            for axis in all_keys:
                 val = msg.get(axis)
                 if val is not None:
                     parts.append(f"{axis.upper()}{float(val)}")
@@ -1905,7 +1920,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             CMD.mdi(f"G10 L2 P{p} {' '.join(parts)}")
             CMD.wait_complete(5)
             ci = p - 1
-            for axis in ("x", "y", "z", "r"):
+            for axis in all_keys:
                 val = msg.get(axis)
                 if val is not None:
                     _wcs_cache[ci][axis] = float(val)
