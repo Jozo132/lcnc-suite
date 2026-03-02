@@ -372,6 +372,27 @@ input[type="checkbox"]:disabled {
 .token-comment, .tok-comment { color: #6a9955; opacity: 0.8; }
 .token-text, .tok-text { color: var(--fg); }
 
+/* ---- Tab buttons ---- */
+.tab-btn {
+  padding: 5px 8px;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  border-radius: var(--radius-lg);
+  text-align: center;
+  white-space: nowrap;
+  opacity: 0.6;
+}
+
+.tab-btn:hover {
+  opacity: 0.85;
+}
+
+.tab-btn.active {
+  opacity: 1;
+  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
+}
+
 .pill {
   text-transform: uppercase;
   letter-spacing: 0.02em;

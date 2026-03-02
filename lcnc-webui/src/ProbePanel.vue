@@ -559,13 +559,13 @@ function fmtR(key: string): string {
 
     <!-- Sub-view tabs -->
     <div class="viewTabs">
-      <button class="viewTab" :class="{ active: probeView === 'outside' }" @click="probeView = 'outside'">Outside</button>
-      <button class="viewTab" :class="{ active: probeView === 'inside' }" @click="probeView = 'inside'">Inside</button>
-      <button class="viewTab" :class="{ active: probeView === 'boss' }" @click="probeView = 'boss'">Boss/Pocket</button>
-      <button class="viewTab" :class="{ active: probeView === 'ridge' }" @click="probeView = 'ridge'">Ridge/Valley</button>
-      <button class="viewTab" :class="{ active: probeView === 'angle' }" @click="probeView = 'angle'">Angle</button>
-      <button class="viewTab" :class="{ active: probeView === 'cal' }" @click="probeView = 'cal'">Calibrate</button>
-      <button class="viewTab" :class="{ active: probeView === 'surface' }" @click="probeView = 'surface'">Surface</button>
+      <button class="tab-btn" :class="{ active: probeView === 'outside' }" @click="probeView = 'outside'">Outside</button>
+      <button class="tab-btn" :class="{ active: probeView === 'inside' }" @click="probeView = 'inside'">Inside</button>
+      <button class="tab-btn" :class="{ active: probeView === 'boss' }" @click="probeView = 'boss'">Boss/Pocket</button>
+      <button class="tab-btn" :class="{ active: probeView === 'ridge' }" @click="probeView = 'ridge'">Ridge/Valley</button>
+      <button class="tab-btn" :class="{ active: probeView === 'angle' }" @click="probeView = 'angle'">Angle</button>
+      <button class="tab-btn" :class="{ active: probeView === 'cal' }" @click="probeView = 'cal'">Calibrate</button>
+      <button class="tab-btn" :class="{ active: probeView === 'surface' }" @click="probeView = 'surface'">Surface</button>
     </div>
 
     <!-- Control bar -->
@@ -1354,22 +1354,6 @@ function fmtR(key: string): string {
   display: flex;
   gap: 4px;
   margin-bottom: 4px;
-}
-
-.viewTab {
-  flex: 1;
-  padding: 6px 10px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  border-radius: var(--radius-lg);
-  text-align: center;
-  opacity: 0.6;
-}
-
-.viewTab.active {
-  opacity: 1;
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
-  border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }
 
 /* Fixed-height section so grid + params don't shift when switching tabs */

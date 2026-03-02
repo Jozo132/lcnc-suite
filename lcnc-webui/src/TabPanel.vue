@@ -64,26 +64,6 @@ const emit = defineEmits<{
   min-width: 0;
 }
 
-.tab-btn {
-  padding: 5px 8px;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  border-radius: var(--radius-lg);
-  text-align: center;
-  white-space: nowrap;
-  opacity: 0.6;
-}
-
-.tab-btn:hover {
-  opacity: 0.85;
-}
-
-.tab-btn.active {
-  opacity: 1;
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
-  border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
-}
-
 /* ---- Content ---- */
 .tab-content {
   flex: 1;

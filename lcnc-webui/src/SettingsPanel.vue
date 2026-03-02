@@ -174,7 +174,6 @@ const subTabs = [
   { id: "viewer", label: "3D Viewer" },
   { id: "machine", label: "Machine" },
   { id: "toolsetter", label: "Toolsetter" },
-  { id: "jog", label: "Jogging" },
   { id: "hal", label: "HAL" },
   { id: "debug", label: "Debug" },
 ];
@@ -628,12 +627,6 @@ const halStats = computed(() => ({
         </div>
       </template>
 
-      <template #jog>
-        <div class="placeholder">
-          <div class="placeholderText">Jogging settings coming soon</div>
-        </div>
-      </template>
-
       <template #hal>
         <div class="scrollContent scroll-thin">
           <!-- Header: section toggles + search + refresh -->
@@ -802,11 +795,6 @@ const halStats = computed(() => ({
   height: 100%;
 }
 
-.subTabs :deep(.tab-btn) {
-  padding: 6px 10px;
-  font-size: var(--fs-base);
-  border-radius: var(--radius-xl) var(--radius-xl) var(--radius-sm) var(--radius-sm);
-}
 
 .section {
   margin-bottom: 24px;
@@ -1014,16 +1002,6 @@ const halStats = computed(() => ({
 
 .rflRpm input {
   width: 90px;
-}
-
-.placeholder {
-  padding: 40px 0;
-  text-align: center;
-}
-
-.placeholderText {
-  font-size: var(--fs-md);
-  opacity: 0.4;
 }
 
 .debugPre {
