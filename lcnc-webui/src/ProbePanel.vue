@@ -1482,7 +1482,7 @@ function fmtR(key: string): string {
 }
 
 .gridCell:disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
 }
 
 .gridCell.probing {
@@ -1500,7 +1500,6 @@ function fmtR(key: string): string {
 
 .gridZLabel {
   fill: var(--fg);
-  opacity: 0.5;
   font-size: var(--fs-lg);
   font-weight: 700;
   text-anchor: middle;
@@ -1582,7 +1581,7 @@ function fmtR(key: string): string {
 }
 
 .abortBtn:disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
   color: var(--fg);
   background: var(--button-bg);
   border-color: var(--border);
@@ -1600,7 +1599,7 @@ function fmtR(key: string): string {
 }
 
 .simTripBtn:disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
   color: var(--fg);
   background: var(--button-bg);
   border-color: var(--border);

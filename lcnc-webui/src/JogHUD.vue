@@ -253,7 +253,7 @@ function onAngularVelInput(ev: Event) {
           :x="s.labelX"
           :y="s.labelY"
           class="sectorLabel"
-          :class="{ small: s.axis2 != null }"
+          :class="{ small: s.axis2 != null, disabled }"
         >{{ s.label }}</text>
       </svg>
 
@@ -361,7 +361,7 @@ function onAngularVelInput(ev: Event) {
 }
 
 .jogwheel.disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
 }
 
 .hub {
@@ -394,6 +394,10 @@ function onAngularVelInput(ev: Event) {
 
 .sectorLabel.small {
   font-size: var(--fs-2xs);
+}
+
+.sectorLabel.disabled {
+  opacity: var(--opacity-disabled);
 }
 
 /* Z column */

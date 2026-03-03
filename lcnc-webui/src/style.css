@@ -43,6 +43,9 @@
   --fs-xl: 16px;
   --fs-2xl: 20px;
 
+  /* Opacity */
+  --opacity-disabled: 0.4;
+
   /* Radius scale */
   --radius-sm: 3px;
   --radius-md: 4px;
@@ -124,7 +127,7 @@ button:active:not(:disabled) {
 }
 
 button:disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
@@ -150,7 +153,7 @@ input[type="range"] {
 }
 
 input[type="range"]:disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
@@ -202,7 +205,7 @@ input[type="text"]:focus {
 
 input[type="number"]:disabled,
 input[type="text"]:disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
@@ -212,7 +215,7 @@ input[type="checkbox"] {
 
 input[type="checkbox"]:disabled {
   cursor: not-allowed;
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
 }
 
 .btn-icon {

@@ -310,7 +310,7 @@ function stopJog(s: Sector, e?: PointerEvent) {
           :x="s.labelX"
           :y="s.labelY"
           class="sectorLabel"
-          :class="{ small: s.axis2 != null }"
+          :class="{ small: s.axis2 != null, disabled: !can.jog }"
         >{{ s.label }}</text>
       </svg>
 
@@ -410,7 +410,7 @@ function stopJog(s: Sector, e?: PointerEvent) {
 }
 
 .sector.disabled {
-  opacity: 0.4;
+  opacity: var(--opacity-disabled);
   cursor: not-allowed;
 }
 
@@ -444,6 +444,10 @@ function stopJog(s: Sector, e?: PointerEvent) {
 
 .sectorLabel.small {
   font-size: var(--fs-2xs);
+}
+
+.sectorLabel.disabled {
+  opacity: var(--opacity-disabled);
 }
 
 /* ---- Z column ---- */
