@@ -261,7 +261,7 @@ function toggleHalGroup(group: string) {
 function expandAllHal() {
   const items = halSection.value === "params" ? halParams.value : halPins.value;
   const groups = new Set<string>();
-  for (const p of items) groups.add(p.name.split(".")[0]);
+  for (const p of items) groups.add(p.name.split(".")[0]!);
   halExpanded.value = groups;
 }
 
@@ -628,8 +628,8 @@ const halStats = computed(() => ({
       </template>
 
       <template #hal>
-        <div class="scrollContent scroll-thin">
-          <!-- Header: section toggles + search + refresh -->
+        <div class="halPane">
+          <!-- Header: section toggles + search + refresh (pinned) -->
           <div class="halHeader">
             <div class="btnGroup">
               <button class="optBtn" :class="{ active: halSection === 'pins' }"
@@ -653,6 +653,16 @@ const halStats = computed(() => ({
             </div>
           </div>
 
+          <!-- Tree controls (pinned) -->
+          <div v-if="!halSearch.trim() && ((halSection === 'pins' && halPins.length > 0) || (halSection === 'params' && halParams.length > 0))" class="halTreeControls">
+            <button class="optBtn" @click="expandAllHal">+ all</button>
+            <button class="optBtn" @click="collapseAllHal">- all</button>
+            <span class="halFilterInfo" v-if="halSection === 'pins' && filteredPins.length !== halPins.length">
+              {{ filteredPins.length }} / {{ halPins.length }}
+            </span>
+          </div>
+
+          <div class="scrollContent scroll-thin">
           <!-- Error -->
           <div v-if="halError" class="halError">{{ halError }}</div>
 
@@ -663,13 +673,6 @@ const halStats = computed(() => ({
 
           <!-- PINS -->
           <div v-if="halSection === 'pins' && halPins.length > 0">
-            <div v-if="!halSearch.trim()" class="halTreeControls">
-              <button class="optBtn" @click="expandAllHal">+ all</button>
-              <button class="optBtn" @click="collapseAllHal">- all</button>
-              <span class="halFilterInfo" v-if="filteredPins.length !== halPins.length">
-                {{ filteredPins.length }} / {{ halPins.length }}
-              </span>
-            </div>
 
             <!-- Tree view -->
             <template v-if="!halSearch.trim()">
@@ -723,11 +726,6 @@ const halStats = computed(() => ({
 
           <!-- PARAMS -->
           <div v-if="halSection === 'params' && halParams.length > 0">
-            <div v-if="!halSearch.trim()" class="halTreeControls">
-              <button class="optBtn" @click="expandAllHal">+ all</button>
-              <button class="optBtn" @click="collapseAllHal">- all</button>
-            </div>
-
             <template v-if="!halSearch.trim()">
               <div v-for="[group, params] of paramGroups" :key="group" class="halGroup">
                 <button class="halGroupHeader" @click="toggleHalGroup(group)">
@@ -755,6 +753,7 @@ const halStats = computed(() => ({
                 <span class="halValue">{{ param.value }}</span>
               </div>
             </template>
+          </div>
           </div>
         </div>
       </template>
@@ -1066,6 +1065,13 @@ const halStats = computed(() => ({
 }
 
 /* ─── HAL viewer ───── */
+.halPane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
 .halHeader {
   display: flex;
   align-items: center;
@@ -1073,6 +1079,7 @@ const halStats = computed(() => ({
   gap: 8px;
   margin-bottom: 12px;
   flex-wrap: wrap;
+  flex-shrink: 0;
 }
 
 .halActions {
@@ -1104,6 +1111,7 @@ const halStats = computed(() => ({
   align-items: center;
   gap: 6px;
   margin-bottom: 8px;
+  flex-shrink: 0;
 }
 
 .halCount {

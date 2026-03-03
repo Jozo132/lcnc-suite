@@ -87,6 +87,10 @@ export type WsCommand =
   | { cmd: "simulate_probe_trip" }
   | { cmd: "set_probe_vars"; vars: Record<string, number> }
   | { cmd: "get_probe_vars"; vars: number[] }
+  | { cmd: "get_probe_results" }
+  // Surface compensation
+  | { cmd: "set_compensation"; enable: boolean }
+  | { cmd: "set_compensation_method"; method: number }
   // Tool change
   | { cmd: "confirm_tool_change" }
   // Offsets

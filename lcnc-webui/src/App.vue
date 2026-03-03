@@ -72,7 +72,7 @@ function addPanel() {
 }
 
 function removePanel(panelId: number) {
-  if (panels.value.length <= 1 || panels.value[0].id === panelId) return;
+  if (panels.value.length <= 1 || panels.value[0]!.id === panelId) return;
   panels.value = panels.value.filter(p => p.id !== panelId);
   viewerRefs.delete(panelId);
 }
@@ -123,13 +123,7 @@ const lcncLabel = computed(() => {
 const isEstop = computed(() => !!st.value.estop);
 const isEnabled = computed(() => !!st.value.enabled);
 
-const homedLabel = computed(() => {
-  const h = st.value.homed;
-  if (Array.isArray(h)) return h.map((x: any) => (x ? "1" : "0")).join("");
-  if (typeof h === "boolean") return h ? "true" : "false";
-  if (h == null) return "-";
-  return String(h);
-});
+
 
 /** DRO: work/machine */
 const workPos = computed<number[]>(() => {
@@ -370,27 +364,6 @@ const interpStateLabel = computed(() => {
   if (isRunning.value) return "RUNNING";
   if (isIdle.value) return "IDLE";
   return "-";
-});
-
-// Feed override percentage
-const feedOverride = computed(() => {
-  const fo = st.value.feed_override;
-  if (fo == null || !Number.isFinite(fo)) return "-";
-  return `${Math.round(fo * 100)}%`;
-});
-
-// Spindle override percentage
-const spindleOverride = computed(() => {
-  const so = st.value.spindle_override;
-  if (so == null || !Number.isFinite(so)) return "-";
-  return `${Math.round(so * 100)}%`;
-});
-
-// Rapid override percentage
-const rapidOverride = computed(() => {
-  const ro = st.value.rapid_override;
-  if (ro == null || !Number.isFinite(ro)) return "-";
-  return `${Math.round(ro * 100)}%`;
 });
 
 // Override values (raw 0.0-2.0 scale) - with NaN handling
@@ -861,8 +834,11 @@ const rotaryJogKeys = computed(() => {
   const rotary = axes.value.filter(l => ROTARY_LETTERS.has(l));
   const map: Record<string, { axis: number; dir: 1 | -1 }> = {};
   for (let r = 0; r < Math.min(rotary.length, ROTARY_KEY_PAIRS.length); r++) {
-    const idx = axes.value.indexOf(rotary[r]);
-    const [neg, pos] = ROTARY_KEY_PAIRS[r];
+    const letter = rotary[r];
+    const pair = ROTARY_KEY_PAIRS[r];
+    if (!letter || !pair) continue;
+    const idx = axes.value.indexOf(letter);
+    const [neg, pos] = pair;
     map[neg] = { axis: idx, dir: -1 };
     map[pos] = { axis: idx, dir:  1 };
   }
@@ -972,7 +948,7 @@ watch(status, (st) => {
 });
 
 /** ---------- Surface map probe results ---------- */
-const surfacePoints = ref<number[][] | null>(null);
+const surfacePoints = ref<[number, number, number][] | null>(null);
 
 function requestProbeResults() {
   send({ cmd: "get_probe_results" });

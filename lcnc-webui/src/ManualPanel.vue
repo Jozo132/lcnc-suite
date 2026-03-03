@@ -120,7 +120,7 @@ function onMdiKeydown(e: KeyboardEvent) {
     }
     if (historyIndex.value < history.value.length - 1) {
       historyIndex.value++;
-      emit("update:mdiText", history.value[historyIndex.value]);
+      emit("update:mdiText", history.value[historyIndex.value] ?? "");
     }
     return;
   }
@@ -132,7 +132,7 @@ function onMdiKeydown(e: KeyboardEvent) {
     if (historyIndex.value === -1) {
       emit("update:mdiText", savedInput.value);
     } else {
-      emit("update:mdiText", history.value[historyIndex.value]);
+      emit("update:mdiText", history.value[historyIndex.value] ?? "");
     }
     return;
   }

@@ -84,7 +84,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 import { viewerInit, viewerGcode, status } from "./lcncWs";
-import { loadViewerDefaults, ALL_LAYERS, type Vec3, type ColorDefaults, type OpacityDefaults, type Layer } from "./defaults";
+import { loadViewerDefaults, ALL_LAYERS, type Vec3, type Layer } from "./defaults";
 import JogHUD from "./JogHUD.vue";
 import GcodeHUD from "./GcodeHUD.vue";
 import SetupHUD from "./SetupHUD.vue";
@@ -178,7 +178,7 @@ const props = defineProps<{
   spindleSpeed?: number | null;
   spindleActual?: number | null;
   spindleDirection?: number | null;
-  surfacePoints?: number[][] | null;
+  surfacePoints?: [number, number, number][] | null;
   axes?: string[];
   touchoff?: number[];
   optionalStop?: boolean;
@@ -262,7 +262,6 @@ let workAxes: THREE.Group | null = null;
 let surfaceGroup: THREE.Group | null = null;
 
 // Map g-code line number → { start, end } point-index range in feed arrays
-let feedPtsCache: number[][] = [];
 let feedLineMap: Map<number, { start: number; end: number }> = new Map();
 
 // Pending layer visibility: stores calls made before scene objects exist
@@ -287,8 +286,6 @@ let backplotCount = 0;
 const BACKPLOT_MAX = 20000;   // points (10 Hz -> ~33 min)
 const BACKPLOT_EPS = 0.01;    // mm; min distance before adding a point
 let lastBackplotPt: THREE.Vector3 | null = null;
-let lastBackplotFile: string | null = null;
-let lastBackplotMotionLine: number | null = null;
 
 let machineBoundsMesh: THREE.Mesh | null = null;
 let boundsLabels: THREE.Group | null = null;
@@ -302,7 +299,7 @@ function resetBackplot() {
   if (backplotGeom && backplotPos) {
     // Keep allocation, just “empty” it
     backplotGeom.setDrawRange(0, 0);
-    backplotGeom.attributes.position.needsUpdate = true;
+    backplotGeom.attributes.position!.needsUpdate = true;
   }
 }
 
@@ -410,7 +407,7 @@ function switchProjection() {
   controls.update();
 }
 
-function setLayerVisible(layer: Layer | string, on: boolean) {
+function setLayerVisible(layer: Layer, on: boolean) {
   if (pendingLayers) {
     pendingLayers.set(layer, on);
   }
@@ -515,7 +512,7 @@ function pushBackplotPoint(p: [number, number, number]) {
   lastBackplotPt = v;
 
   backplotGeom.setDrawRange(0, backplotCount);
-  backplotGeom.attributes.position.needsUpdate = true;
+  backplotGeom.attributes.position!.needsUpdate = true;
 }
 
 
@@ -641,16 +638,16 @@ function ensureCoreGroups(init: ViewerInit) {
     // Static pivot offset (e.g. rotary axis center not at parent origin)
     if (g.translate) {
       const [x, y, z] = g.translate;
-      groups[g.id].position.set(x * _unitScale, y * _unitScale, z * _unitScale);
+      groups[g.id]!.position.set(x * _unitScale, y * _unitScale, z * _unitScale);
     }
   }
   for (const g of grpDefs) {
     const parent = g.parent === "root" ? groups.root : groups[g.parent];
-    (parent ?? groups.root).add(groups[g.id]);
+    (parent ?? groups.root).add(groups[g.id]!);
   }
 
   // Resolve work/tool group references
-  _workGrp = groups[init.workGroup ?? grpDefs[0]?.id] ?? groups.root;
+  _workGrp = groups[init.workGroup ?? grpDefs[0]?.id ?? "root"] ?? groups.root;
   _toolGrp = groups[init.toolGroup ?? "tool"] ?? groups.root;
 
   // Work origin (DRO zero frame) — attached to the work/table group
@@ -884,7 +881,7 @@ async function buildFromInit(init: ViewerInit) {
       if (r) mesh.rotation.set(r[0], r[1], r[2]);
       mesh.scale.setScalar(_unitScale);  // convert mm STL geometry → machine-unit world
 
-      const parent = (grp ? groups[grp] : groups.root) ?? groups.root;
+      const parent = (grp ? groups[grp] : groups.root) ?? groups.root!;
       parent.add(mesh);
       machineMeshes.push(mesh);
     }
@@ -937,7 +934,7 @@ function applyState(init: ViewerInit, st: ViewerState) {
   if (!_workGrp || !_toolGrp) return;
 
   const kinEntries = normalizeKinematics(init.kinematics);
-  const ax = (idx: number) => (idx >= 0 && idx < jp.length ? jp[idx] : 0);
+  const ax = (idx: number) => (idx >= 0 && idx < jp.length ? jp[idx]! : 0);
 
   // Apply kinematics: each entry drives a group's position or rotation
   for (const k of kinEntries) {
@@ -1014,11 +1011,7 @@ function applyState(init: ViewerInit, st: ViewerState) {
 
   
   // ---- Backplot update (use WORK tool-tip position directly) ----
-  const curFile = st.active_file ?? null;
   const curLine = typeof st.motion_line === "number" ? st.motion_line : null;
-
-  lastBackplotFile = curFile;
-  lastBackplotMotionLine = curLine;
 
   // Append the actual rendered tool tip position, expressed in work group local space.
   // This guarantees the backplot starts exactly at the tooltip (independent of joint_pos vs machine_pos nuances).
@@ -1067,7 +1060,6 @@ function applyGcode(g: ViewerGcode) {
     disposeObject(highlightLine);
     highlightLine = null;
   }
-  feedPtsCache = [];
   feedLineMap = new Map();
 
   const feedPts = g.feed ?? [];
@@ -1076,7 +1068,7 @@ function applyGcode(g: ViewerGcode) {
 
   // Build line-number → point-index range map
   for (let i = 0; i < feedLines.length; i++) {
-    const ln = feedLines[i];
+    const ln = feedLines[i]!;
     const entry = feedLineMap.get(ln);
     if (entry) {
       entry.end = i;
@@ -1099,7 +1091,6 @@ function applyGcode(g: ViewerGcode) {
   }
 
   // Prepare highlight line (reuses feed geometry, drawn on top with bright color)
-  feedPtsCache = feedPts;
   if (feedPts.length >= 2) {
     const hlGeom = new THREE.BufferGeometry();
     const flat = new Float32Array(feedPts.flat());
@@ -1345,12 +1336,12 @@ const hudUvw = computed<HudAxisEntry[]>(() =>
 
 function viridis(t: number): [number, number, number] {
   t = Math.max(0, Math.min(1, t));
-  const c = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
+  const c: [number, number, number][] = [[68,1,84],[59,82,139],[33,145,140],[94,201,98],[253,231,37]];
   const idx = t * (c.length - 1);
   const i = Math.floor(idx);
   const f = idx - i;
-  const a = c[Math.min(i, c.length - 1)];
-  const b = c[Math.min(i + 1, c.length - 1)];
+  const a = c[Math.min(i, c.length - 1)]!;
+  const b = c[Math.min(i + 1, c.length - 1)]!;
   return [
     Math.round(a[0] + (b[0] - a[0]) * f),
     Math.round(a[1] + (b[1] - a[1]) * f),
@@ -1358,7 +1349,7 @@ function viridis(t: number): [number, number, number] {
   ];
 }
 
-function idwInterp(px: number, py: number, points: number[][], power = 2): number {
+function idwInterp(px: number, py: number, points: [number, number, number][], power = 2): number {
   let wSum = 0, vSum = 0;
   for (const p of points) {
     const dx = px - p[0], dy = py - p[1];
@@ -1371,7 +1362,7 @@ function idwInterp(px: number, py: number, points: number[][], power = 2): numbe
   return wSum > 0 ? vSum / wSum : 0;
 }
 
-function buildSurfaceLayer(pts: number[][]) {
+function buildSurfaceLayer(pts: [number, number, number][]) {
   if (!scene || !workOrigin) return;
 
   // Remove previous
@@ -1398,7 +1389,7 @@ function buildSurfaceLayer(pts: number[][]) {
   const res = 30;
   const geom = new THREE.PlaneGeometry(xRange, yRange, res - 1, res - 1);
   const colors: number[] = [];
-  const posArr = geom.attributes.position;
+  const posArr = geom.attributes.position!;
   for (let i = 0; i < posArr.count; i++) {
     // PlaneGeometry vertices are in local space centered at origin
     const gx = posArr.getX(i) + xRange / 2 + xMin;

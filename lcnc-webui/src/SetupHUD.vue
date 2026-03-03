@@ -3,7 +3,7 @@ import { computed } from "vue";
 import { usePermissions } from "./permissions";
 
 const ROTARY = new Set(["A", "B", "C"]);
-const AXIS_LETTERS = "XYZABCUVW";
+
 
 const props = defineProps<{
   homed: boolean;

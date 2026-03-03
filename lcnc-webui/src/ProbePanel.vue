@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
+import type { Sprite } from "three";
 import { usePermissions } from "./permissions";
 
 const STORAGE_KEY = "lcnc-probe-params";
@@ -14,7 +15,7 @@ const props = defineProps<{
   eoffsetZ: number | null;
   eoffsetEnabled: boolean;
   compMethod: number | null;  // 0=nearest, 1=linear, 2=cubic
-  surfacePoints: number[][] | null;
+  surfacePoints: [number, number, number][] | null;
 }>();
 
 const emit = defineEmits<{
@@ -315,14 +316,14 @@ const surfaceContainer = ref<HTMLDivElement | null>(null);
 /** Viridis-like colormap (simplified 5-stop) */
 function viridis(t: number): [number, number, number] {
   t = Math.max(0, Math.min(1, t));
-  const c = [
+  const c: [number, number, number][] = [
     [68, 1, 84], [59, 82, 139], [33, 145, 140], [94, 201, 98], [253, 231, 37],
   ];
   const idx = t * (c.length - 1);
   const i = Math.floor(idx);
   const f = idx - i;
-  const a = c[Math.min(i, c.length - 1)];
-  const b = c[Math.min(i + 1, c.length - 1)];
+  const a = c[Math.min(i, c.length - 1)]!;
+  const b = c[Math.min(i + 1, c.length - 1)]!;
   return [
     Math.round(a[0] + (b[0] - a[0]) * f),
     Math.round(a[1] + (b[1] - a[1]) * f),
@@ -331,7 +332,7 @@ function viridis(t: number): [number, number, number] {
 }
 
 /** Inverse-distance weighted interpolation for a single point */
-function idwInterp(px: number, py: number, points: number[][], power = 2): number {
+function idwInterp(px: number, py: number, points: [number, number, number][], power = 2): number {
   let wSum = 0, vSum = 0;
   for (const p of points) {
     const dx = px - p[0], dy = py - p[1];
@@ -346,7 +347,7 @@ function idwInterp(px: number, py: number, points: number[][], power = 2): numbe
 
 let _threeCleanup: (() => void) | null = null;
 
-function render3DSurface(pts: number[][]) {
+function render3DSurface(pts: [number, number, number][]) {
   if (!surfaceContainer.value || pts.length < 3) return;
 
   // Dynamic import Three.js (already bundled)
@@ -389,7 +390,7 @@ function render3DSurface(pts: number[][]) {
       const res = 30;
       const geom = new THREE.PlaneGeometry(xRange, yRange, res - 1, res - 1);
       const colors: number[] = [];
-      const posArr = geom.attributes.position;
+      const posArr = geom.attributes.position!;
       for (let i = 0; i < posArr.count; i++) {
         const gx = posArr.getX(i) + xRange / 2 + xMin;
         const gy = posArr.getY(i) + yRange / 2 + yMin;
@@ -455,7 +456,7 @@ function render3DSurface(pts: number[][]) {
       scene.add(yArrow);
       scene.add(zArrow);
 
-      function makeAxisLabel(text: string, color: string): THREE.Sprite {
+      function makeAxisLabel(text: string, color: string): Sprite {
         const c = document.createElement("canvas");
         c.width = 64; c.height = 64;
         const cx = c.getContext("2d")!;
