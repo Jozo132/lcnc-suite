@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, inject, onMounted, type Ref } from "vue";
+import { ref, reactive, computed, inject, onMounted, type Ref, type ComputedRef } from "vue";
 import TabPanel from "./TabPanel.vue";
 import {
   loadViewerDefaults, saveViewerDefaults,
@@ -14,6 +14,8 @@ const TS_STORAGE_KEY = "lcnc-toolsetter-params";
 
 const themeMode = inject<Ref<ThemeMode>>("themeMode", ref("auto") as Ref<ThemeMode>);
 const setTheme = inject<(mode: ThemeMode) => void>("setTheme", () => {});
+const machineParts = inject<ComputedRef<Array<{ id: string; group: string | null; direction: string | null }>>>("machineParts", computed(() => []));
+const setMachinePartColor = inject<(id: string, color: string | null) => void>("setMachinePartColor", () => {});
 
 const props = defineProps<{
   lastReply?: unknown;
@@ -26,6 +28,17 @@ const emit = defineEmits<{
 }>();
 
 // ─── Viewer defaults ───────────────────────
+const saved = loadViewerDefaults();
+const wpSize = reactive<Vec3>([...saved.workpieceSize] as Vec3);
+const wpOffset = reactive<Vec3>([...saved.workpieceOffset] as Vec3);
+const layers = reactive<Record<Layer, boolean>>({ ...saved.layers });
+const colors = reactive<ColorDefaults>({ ...saved.colors });
+const opacities = reactive<OpacityDefaults>({ ...saved.opacities });
+const machineColors = reactive<Record<string, string>>({ ...saved.machineColors });
+const trackingMode = ref<TrackMode>(saved.trackingMode);
+const pathOnTop = ref(saved.pathOnTop);
+const projection = ref<Projection>(saved.projection);
+
 function save() {
   saveViewerDefaults({
     workpieceSize: [...wpSize] as Vec3,
@@ -33,21 +46,12 @@ function save() {
     layers: { ...layers },
     colors: { ...colors },
     opacities: { ...opacities },
+    machineColors: { ...machineColors },
     trackingMode: trackingMode.value,
     pathOnTop: pathOnTop.value,
     projection: projection.value,
   });
 }
-
-const saved = loadViewerDefaults();
-const wpSize = reactive<Vec3>([...saved.workpieceSize] as Vec3);
-const wpOffset = reactive<Vec3>([...saved.workpieceOffset] as Vec3);
-const layers = reactive<Record<Layer, boolean>>({ ...saved.layers });
-const colors = reactive<ColorDefaults>({ ...saved.colors });
-const opacities = reactive<OpacityDefaults>({ ...saved.opacities });
-const trackingMode = ref<TrackMode>(saved.trackingMode);
-const pathOnTop = ref(saved.pathOnTop);
-const projection = ref<Projection>(saved.projection);
 
 // ─── Machine defaults ──────────────────────
 const machSaved = loadMachineDefaults();
@@ -228,6 +232,30 @@ const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
   { key: "workpiece", label: "Workpiece" },
   { key: "hud", label: "HUD" },
 ];
+
+// ─── Machine part colors ────────────────────
+const DIR_DEFAULT_COLORS: Record<string, string> = { x: "#9b4a4a", y: "#4a8f5a", z: "#4a6f9b" };
+const FRAME_COLOR = "#bfbfbf";
+
+function defaultMachineColor(part: { direction: string | null }): string {
+  return (part.direction ? DIR_DEFAULT_COLORS[part.direction] : null) ?? FRAME_COLOR;
+}
+
+function formatPartLabel(id: string): string {
+  return id.replace(/[_-]/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+}
+
+function onMachineColorChange(id: string, hex: string) {
+  machineColors[id] = hex;
+  save();
+  setMachinePartColor(id, hex);
+}
+
+function resetMachineColor(id: string) {
+  delete machineColors[id];
+  save();
+  setMachinePartColor(id, null);
+}
 
 // ─── HAL viewer ─────────────────────────────
 type HalSection = "pins" | "signals" | "params";
@@ -411,6 +439,22 @@ const halStats = computed(() => ({
             </div>
           </div>
         </div>
+        <div class="section" v-if="machineParts.length > 0">
+          <div class="sub">Machine Colors</div>
+          <div class="colorGrid">
+            <div class="colorRow" v-for="part in machineParts" :key="part.id">
+              <input
+                type="color"
+                class="colorInput"
+                :value="machineColors[part.id] ?? defaultMachineColor(part)"
+                @input="onMachineColorChange(part.id, ($event.target as HTMLInputElement).value)"
+              />
+              <span class="colorLabel">{{ formatPartLabel(part.id) }}</span>
+              <button v-if="machineColors[part.id]" class="btn-icon" @click="resetMachineColor(part.id)">&times;</button>
+            </div>
+          </div>
+        </div>
+
         <div class="section">
           <div class="sub">Viewer Behavior</div>
           <div class="fieldGroup">

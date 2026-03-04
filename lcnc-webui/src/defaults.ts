@@ -32,6 +32,7 @@ export interface ViewerDefaults {
   layers: Record<Layer, boolean>;
   colors: ColorDefaults;
   opacities: OpacityDefaults;
+  machineColors: Record<string, string>;
   trackingMode: TrackMode;
   pathOnTop: boolean;
   projection: Projection;
@@ -109,6 +110,7 @@ const VIEWER_FALLBACK: ViewerDefaults = {
   layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, workzero: true, hud: true, surface: true, tool: true },
   colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", workpiece: "#ffffff", tool: "#ffdd00" },
   opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
+  machineColors: {},
   trackingMode: "none",
   pathOnTop: true,
   projection: "perspective",
@@ -122,6 +124,7 @@ registerSection<ViewerDefaults>("viewer", VIEWER_FALLBACK, (saved, fb) => {
     layers: { ...fb.layers, ...saved.layers } as Record<Layer, boolean>,
     colors: { ...fb.colors, ...saved.colors },
     opacities: { ...fb.opacities, ...saved.opacities },
+    machineColors: { ...fb.machineColors, ...saved.machineColors },
     trackingMode: (saved.trackingMode ?? fb.trackingMode) as TrackMode,
     pathOnTop: saved.pathOnTop ?? fb.pathOnTop,
     projection: (saved.projection ?? fb.projection) as Projection,

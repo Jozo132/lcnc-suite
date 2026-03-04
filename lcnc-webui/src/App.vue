@@ -718,6 +718,32 @@ const axes = computed<string[]>(() => {
   return [...AXIS_LETTERS].filter((_, i) => mask & (1 << i));
 });
 
+// Machine STL parts list (for dynamic color pickers in Settings)
+const machineParts = computed<Array<{ id: string; group: string | null; direction: string | null }>>(() => {
+  const vi = viewerInit.value;
+  if (!vi?.parts) return [];
+  // Build group → direction map from kinematics
+  const groupDir: Record<string, string> = {};
+  const kin = vi.kinematics;
+  if (Array.isArray(kin)) {
+    for (const k of kin) if (k.direction) groupDir[k.group] = k.direction;
+  } else if (kin && typeof kin === "object") {
+    for (const key of Object.keys(kin)) groupDir[key] = key;
+  }
+  return (vi.parts as any[]).map((p: any) => {
+    const grp = (p.group ?? p.parent ?? null) as string | null;
+    return { id: p.id as string, group: grp, direction: grp ? (groupDir[grp] ?? null) : null };
+  });
+});
+
+// Broadcast setMachinePartColor to all ThreeViewer instances
+function setMachinePartColor(partId: string, color: string | null) {
+  for (const v of viewerRefs.values()) v?.setMachinePartColor?.(partId, color);
+}
+
+provide("machineParts", machineParts);
+provide("setMachinePartColor", setMachinePartColor);
+
 const touchoff = ref<number[]>([0, 0, 0]);
 
 // Resize touchoff when axes change (e.g. 3→5 axes on reconnect)

@@ -293,6 +293,8 @@ let machineBoundsMesh: THREE.Mesh | null = null;
 let boundsLabels: THREE.Group | null = null;
 let workpieceMesh: THREE.Mesh | null = null;
 let machineMeshes: THREE.Mesh[] = [];
+let _groupDirMap: Record<string, string | null> = {};  // group → direction (x/y/z/null)
+let _partGroupMap: Record<string, string | null> = {};  // partId → group
 
 function resetBackplot() {
   backplotCount = 0;
@@ -866,7 +868,12 @@ async function buildFromInit(init: ViewerInit) {
     const kinEntries = normalizeKinematics(init.kinematics);
     const dirMat: Record<string, THREE.MeshStandardMaterial> = { x: MAT.axisX, y: MAT.axisY, z: MAT.axisZ };
     const groupMat: Record<string, THREE.MeshStandardMaterial> = {};
-    for (const k of kinEntries) groupMat[k.group] = (k.direction ? dirMat[k.direction] : null) ?? MAT.frame;
+    _groupDirMap = {};
+    _partGroupMap = {};
+    for (const k of kinEntries) {
+      groupMat[k.group] = (k.direction ? dirMat[k.direction] : null) ?? MAT.frame;
+      _groupDirMap[k.group] = k.direction ?? null;
+    }
 
     const parts = init.parts ?? [];
     for (const p of parts) {
@@ -874,9 +881,18 @@ async function buildFromInit(init: ViewerInit) {
       if (!geom) { console.warn(`No cached geometry for ${p.id}`); continue; }
 
       const grp = p.group ?? p.parent ?? null;  // support both new and legacy field names
-      const mat = (grp ? groupMat[grp] : null) ?? MAT.frame;
+      _partGroupMap[p.id] = grp;
+      let mat: THREE.MeshStandardMaterial = (grp ? groupMat[grp] : null) ?? MAT.frame;
 
-      const mesh = new THREE.Mesh(geom, mat);  // shares GPU geometry, no copy
+      // Per-part color override from settings
+      const customColor = viewerDefaults.machineColors[p.id];
+      if (customColor) {
+        mat = mat.clone();
+        mat.color.set(customColor);
+      }
+
+      const mesh = new THREE.Mesh(geom, mat);
+      mesh.userData.partId = p.id;  // tag for live color updates
       const t = p.translate ?? p.t;
       if (t) mesh.position.set(t[0] * _unitScale, t[1] * _unitScale, t[2] * _unitScale);
       const r = p.rotate ?? p.r;
@@ -1436,6 +1452,35 @@ watch(() => props.surfacePoints, (pts) => {
   buildSurfaceLayer(pts ?? []);
 });
 
+/** Live-update a machine part's color without rebuilding the scene.
+ *  Pass `null` as color to revert to the built-in default. */
+function setMachinePartColor(partId: string, color: string | null) {
+  const dirColorMap: Record<string, number> = { x: 0x9b4a4a, y: 0x4a8f5a, z: 0x4a6f9b };
+  for (const mesh of machineMeshes) {
+    if (mesh.userData.partId !== partId) continue;
+    const mat = (mesh.material as THREE.MeshStandardMaterial);
+    if (color) {
+      // Clone shared material if needed so we don't mutate the shared MAT.*
+      if (!mat.userData._clonedFor || mat.userData._clonedFor !== partId) {
+        const cloned = mat.clone();
+        cloned.userData._clonedFor = partId;
+        mesh.material = cloned;
+        cloned.color.set(color);
+      } else {
+        mat.color.set(color);
+      }
+    } else {
+      // Reset to default: look up group direction for this part
+      const grp = _partGroupMap[partId];
+      const dir = grp ? _groupDirMap[grp] : null;
+      const defaultHex = (dir ? dirColorMap[dir] : null) ?? 0xbfbfbf;
+      if (mat.userData._clonedFor) {
+        mat.color.setHex(defaultHex);
+      }
+    }
+  }
+}
+
 defineExpose({
   resetBackplot,
   setView,
@@ -1444,6 +1489,7 @@ defineExpose({
   setTrackingMode,
   switchProjection,
   isOrtho,
+  setMachinePartColor,
 });
 
 
