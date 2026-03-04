@@ -444,17 +444,23 @@ const halStats = computed(() => ({
         </div>
         <div class="section" v-if="machineParts.length > 0">
           <div class="sub">Machine Colors</div>
-          <div class="colorGrid">
-            <div class="colorRow" v-for="part in machineParts" :key="part.id">
-              <input
-                type="color"
-                class="colorInput"
-                :value="machineColors[part.id] ?? defaultMachineColor(part)"
-                @input="onMachineColorChange(part.id, ($event.target as HTMLInputElement).value)"
-              />
-              <span class="colorLabel">{{ formatPartLabel(part.id) }}</span>
-              <button v-if="machineColors[part.id]" class="btn-icon" @click="resetMachineColor(part.id)">&times;</button>
+          <div class="fieldGroup">
+            <div class="colorGrid">
+              <div class="colorRow" v-for="part in machineParts" :key="part.id">
+                <input
+                  type="color"
+                  class="colorInput"
+                  :value="machineColors[part.id] ?? defaultMachineColor(part)"
+                  @input="onMachineColorChange(part.id, ($event.target as HTMLInputElement).value)"
+                />
+                <span class="colorLabel">{{ formatPartLabel(part.id) }}</span>
+                <button v-if="machineColors[part.id]" class="btn-icon" @click="resetMachineColor(part.id)">&times;</button>
+              </div>
             </div>
+            <label class="checkRow">
+              <input type="checkbox" v-model="machineEdgesOn" @change="setMachineEdges(machineEdgesOn); save()" />
+              Edge outline
+            </label>
           </div>
         </div>
 
@@ -476,10 +482,6 @@ const halStats = computed(() => ({
             <label class="checkRow">
               <input type="checkbox" v-model="pathOnTop" @change="save()" />
               Toolpath always on top
-            </label>
-            <label class="checkRow">
-              <input type="checkbox" v-model="machineEdgesOn" @change="setMachineEdges(machineEdgesOn); save()" />
-              Machine edge outline
             </label>
             <div class="inputRow">
               <label class="inputLabel">Projection</label>
@@ -1005,7 +1007,7 @@ const halStats = computed(() => ({
 }
 
 .optBtn.active {
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  background: var(--hl-selected);
   font-weight: 600;
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }

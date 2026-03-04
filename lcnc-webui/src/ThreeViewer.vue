@@ -1752,7 +1752,7 @@ defineExpose({
 
 .hudBtn.active {
   opacity: 1;
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  background: var(--hl-selected);
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }
 

@@ -248,7 +248,7 @@ function updateOffset(axis: number, value: number) {
 }
 
 .viewBtn.active {
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  background: var(--hl-selected);
   font-weight: 600;
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }
@@ -277,7 +277,7 @@ function updateOffset(axis: number, value: number) {
 }
 
 .pillPopover label:hover {
-  background: color-mix(in oklab, var(--fg) 12%, var(--button-bg));
+  background: var(--hl-hover);
 }
 
 /* ---- Workpiece inputs ---- */

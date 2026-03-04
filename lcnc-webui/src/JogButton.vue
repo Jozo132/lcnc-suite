@@ -132,15 +132,26 @@ function stopJog(e?: PointerEvent) {
   position: relative;
   padding: 0;
   transition: opacity 0.15s ease;
+  border-radius: 0;
 }
 
-.jbtn:active:not(:disabled),
-.jbtn.active:not(:disabled) {
-  opacity: 0.7;
+/* Override global button styles — highlight inside the triangle only */
+.jbtn:hover:not(:disabled),
+.jbtn:active:not(:disabled) {
+  background: transparent;
+  border: none;
+}
+
+.jbtn:hover:not(:disabled) .tri polygon {
+  fill: var(--hl-hover);
+}
+
+.jbtn:active:not(:disabled) .tri polygon {
+  fill: var(--hl-pressed);
 }
 
 .jbtn.active:not(:disabled) .tri polygon {
-  fill: color-mix(in oklab, var(--fg) 20%, var(--button-bg));
+  fill: var(--hl-active);
 }
 
 .tri {

@@ -939,7 +939,7 @@ async function saveEdit() {
 }
 
 .optBtn.active {
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  background: var(--hl-selected);
   font-weight: 600;
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }

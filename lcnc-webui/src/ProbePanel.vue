@@ -1464,7 +1464,7 @@ function fmtR(key: string): string {
 }
 
 .calAxisBtn.active {
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  background: var(--hl-selected);
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }
 
@@ -1479,7 +1479,7 @@ function fmtR(key: string): string {
 }
 
 .gridCell:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--fg) 12%, var(--button-bg));
+  background: var(--hl-hover);
 }
 
 .gridCell:disabled {

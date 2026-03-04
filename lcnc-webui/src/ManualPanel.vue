@@ -164,6 +164,15 @@ function onMdiKeydown(e: KeyboardEvent) {
 
     <div class="sep"></div>
 
+    <!-- Go-to navigation -->
+    <div class="gotoRow">
+      <button class="btn" :disabled="!can.ready" @click="emit('goToG30')">Go to G30</button>
+      <button class="btn" :disabled="!can.ready" @click="emit('goToHome')">Go to Home</button>
+      <button class="btn" :disabled="!can.ready" @click="emit('goToZero')">Go to Zero</button>
+    </div>
+
+    <div class="sep"></div>
+
     <!-- Jog section -->
     <JogPanel
       :axes="axes"
@@ -217,15 +226,6 @@ function onMdiKeydown(e: KeyboardEvent) {
           <div v-if="history.length === 0" class="mdiHistoryEmpty">No history</div>
         </div>
       </div>
-    </div>
-
-    <div class="sep"></div>
-
-    <!-- Go-to navigation -->
-    <div class="gotoRow">
-      <button class="btn" :disabled="!can.ready" @click="emit('goToG30')">Go to G30</button>
-      <button class="btn" :disabled="!can.ready" @click="emit('goToHome')">Go to Home</button>
-      <button class="btn" :disabled="!can.ready" @click="emit('goToZero')">Go to Zero</button>
     </div>
   </div>
 </template>

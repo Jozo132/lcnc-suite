@@ -48,6 +48,12 @@
   /* Opacity */
   --opacity-disabled: 0.4;
 
+  /* Highlight tiers (fg mixed into button-bg) */
+  --hl-hover: color-mix(in oklab, var(--fg) 12%, var(--button-bg));
+  --hl-selected: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  --hl-pressed: color-mix(in oklab, var(--fg) 18%, var(--button-bg));
+  --hl-active: color-mix(in oklab, var(--fg) 20%, var(--button-bg));
+
   /* Radius scale */
   --radius-sm: 3px;
   --radius-md: 4px;
@@ -173,11 +179,11 @@ button {
 }
 
 button:hover:not(:disabled) {
-  background: color-mix(in oklab, var(--fg) 12%, var(--button-bg));
+  background: var(--hl-hover);
 }
 
 button:active:not(:disabled) {
-  background: color-mix(in oklab, var(--fg) 18%, var(--button-bg));
+  background: var(--hl-pressed);
 }
 
 button:disabled {
@@ -457,7 +463,7 @@ input[type="checkbox"]:disabled {
 
 .tab-btn.active {
   opacity: 1;
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  background: var(--hl-selected);
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }
 

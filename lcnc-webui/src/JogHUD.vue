@@ -300,7 +300,7 @@ function onAngularVelInput(ev: Event) {
 }
 
 .incBtn.active {
-  background: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
+  background: var(--hl-selected);
   font-weight: 600;
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
 }
@@ -349,11 +349,11 @@ function onAngularVelInput(ev: Event) {
 }
 
 .sector:hover:not(.disabled) {
-  fill: color-mix(in oklab, var(--fg) 12%, var(--button-bg));
+  fill: var(--hl-hover);
 }
 
 .sector.active:not(.disabled) {
-  fill: color-mix(in oklab, var(--fg) 20%, var(--button-bg));
+  fill: var(--hl-active);
 }
 
 .sector.disabled {

@@ -1962,7 +1962,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 }
 
 .statusChip:hover {
-  background: color-mix(in oklab, var(--fg) 12%, var(--button-bg));
+  background: var(--hl-hover);
 }
 
 .statusChip.ok { border-color: color-mix(in srgb, var(--ok) 50%, transparent); background: color-mix(in oklab, var(--ok) 20%, var(--button-bg)); }
