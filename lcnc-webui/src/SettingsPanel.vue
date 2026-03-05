@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, inject, onMounted, type Ref, type ComputedRef } from "vue";
+import { ref, reactive, computed, inject, onMounted, onUnmounted, type Ref, type ComputedRef } from "vue";
 import TabPanel from "./TabPanel.vue";
 import {
   loadViewerDefaults, saveViewerDefaults,
@@ -102,6 +102,41 @@ const tsParams = ref({
 const OFFSET_DIR_LABELS: Record<number, string> = { 0: "X-", 1: "X+", 2: "Y-", 3: "Y+" };
 const BRAKE_LABELS: Record<number, string> = { 0: "None", 1: "M00", 2: "M01" };
 
+// ─── Context help ────────────────────────────────────────────────
+const activeTip = ref<string | null>(null);
+
+function toggleTip(key: string) {
+  activeTip.value = activeTip.value === key ? null : key;
+}
+
+const tipDesc: Record<string, { text: string; var: string }> = {
+  touchX:          { text: "X position (G53 machine coordinates) of the toolsetter button center. Jog to the button with no tool, read the machine X position.", var: "#3100" },
+  touchY:          { text: "Y position (G53 machine coordinates) of the toolsetter button center. Jog to the button with no tool, read the machine Y position.", var: "#3101" },
+  touchZ:          { text: "Z approach height (G53) above the toolsetter button. The tool moves to this height before probing downward. Set above the button top plus clearance.", var: "#3102" },
+  g30:             { text: "G30 tool change position — where the machine moves before a tool change (M6). Read-only, set in the LinuxCNC var file.", var: "#5181–#5183" },
+  fastFeed:        { text: "Feed rate for the initial fast probe approach to the touch plate. Higher values reduce cycle time but lower repeatability.", var: "#3004" },
+  slowFeed:        { text: "Feed rate for the refined slow measurement pass after retract. Set to 0 to skip the slow pass — faster but less accurate.", var: "#3005" },
+  traverseFeed:    { text: "Feed rate for non-probing positioning moves (travel to touch plate, retract, return). Does not affect measurement accuracy.", var: "#3006" },
+  maxZTravel:      { text: "Maximum downward travel before the probe aborts if no contact. Safety limit to prevent crashes if the touch plate is missing.", var: "#3007" },
+  retractDist:     { text: "Distance the tool retracts upward after fast probe contact before the slow pass begins. The slow pass probes 2× this distance.", var: "#3009" },
+  spindleZeroHeight:{ text: "G53 Z distance from spindle nose to touch plate surface with no tool loaded. Reference for zero-length tools. Measure carefully during initial setup.", var: "#3010" },
+  useToolTable:    { text: "When enabled, uses the tool table length to calculate a closer probe start height — faster for known tools. Disable during initial setup or if tool table data is unreliable.", var: "#3103" },
+  goBackToStart:   { text: "After measurement, return to the XYZ position where M600 was called. Disable only if the tool change is at the end of a program.", var: "#3106" },
+  disablePrePos:   { text: "Skip the G30 pre-positioning move before traveling to the touch plate. Faster, but risks collision with clamps or fixtures on uncluttered machines only.", var: "#3108" },
+  lastTry:         { text: "On the final retry attempt, ignore tool table offsets and use spindle zero height instead. Provides a fallback for tools with incorrect table entries.", var: "#3110" },
+  toolMinDis:      { text: "Safety clearance between the expected tool tip position and the touch plate when using tool table pre-positioning. Increase for widely varying tool lengths.", var: "#3104" },
+  addReps:         { text: "Number of extra retry attempts if probe contact fails. Each failure pauses for operator correction before retrying. Set to 0 for ATC.", var: "#3109" },
+  brakeAfter:      { text: "Pause after tool measurement: None = continue immediately, M00 = mandatory stop (press Cycle Start to resume), M01 = optional stop (active only when block delete is off).", var: "#3105" },
+  spindleStopM:    { text: "M-code sent to stop the spindle before probing. M5 = standard stop. M500 = stop and wait for spindle to fully decelerate (for VFD-controlled spindles).", var: "#3107" },
+  offsetDirection: { text: "Axis direction to offset the probe position for large tools: X−, X+, Y−, or Y+. Choose based on your machine layout to avoid clamp or fixture collisions.", var: "#3013" },
+  offsetDiameter:  { text: "Minimum tool diameter that triggers position offset. Tools smaller than this probe on-center. Set to 0 to disable offset for all tools.", var: "#3111" },
+  offsetValue:     { text: "Percentage of tool diameter to offset the probe position. Example: 20% on a large tool offsets the probe position by 20% of the diameter from center.", var: "#3112" },
+  probeTool:       { text: "Probe tool number, shared with the Probing tab. Must match the tool loaded in the spindle before any probe operation.", var: "#3014" },
+  finderTouchX:    { text: "X position (G53) of a secondary edge-finder reference point. Used only when the selected tool matches the probe tool number.", var: "#3113" },
+  finderTouchY:    { text: "Y position (G53) of a secondary edge-finder reference point. Used only when the selected tool matches the probe tool number.", var: "#3114" },
+  finderDiffZ:     { text: "Height difference between the edge-finder reference surface and the normal touch plate surface. May be negative if the reference is lower.", var: "#3115" },
+};
+
 const probeTool = computed(() => {
   try {
     const raw = localStorage.getItem("lcnc-probe-params");
@@ -178,7 +213,11 @@ onMounted(() => {
   loadTsParams();
   emit("setProbeVars", buildVarMap());
   loadG30();
+  document.addEventListener("click", dismissTip);
 });
+onUnmounted(() => document.removeEventListener("click", dismissTip));
+
+function dismissTip() { activeTip.value = null; }
 
 // ─── Sub-tabs ──────────────────────────────
 const subTabs = [
@@ -572,17 +611,17 @@ const halStats = computed(() => ({
           <div class="section">
             <div class="sub">Toolsetter Position (G53)</div>
             <div class="tsGrid">
-              <label>Touch X <span class="varNum">#3100</span></label>
+              <label>Touch X <span class="tip" @click.stop="toggleTip('touchX')">?</span></label>
               <input type="number" v-model.number="tsParams.touchX" step="0.001" @change="saveTsParams" />
-              <label>Touch Y <span class="varNum">#3101</span></label>
+              <label>Touch Y <span class="tip" @click.stop="toggleTip('touchY')">?</span></label>
               <input type="number" v-model.number="tsParams.touchY" step="0.001" @change="saveTsParams" />
-              <label>Touch Z <span class="varNum">#3102</span></label>
+              <label>Touch Z <span class="tip" @click.stop="toggleTip('touchZ')">?</span></label>
               <input type="number" v-model.number="tsParams.touchZ" step="0.001" @change="saveTsParams" />
             </div>
           </div>
 
           <div class="section">
-            <div class="sub">Tool Change Position (G30) <span class="varNum">#5181–#5183</span></div>
+            <div class="sub">Tool Change Position (G30) <span class="tip" @click.stop="toggleTip('g30')">?</span></div>
             <div class="tsGrid">
               <label>X</label>
               <span class="readonlyVal">{{ g30X != null ? g30X.toFixed(3) : '—' }}</span>
@@ -600,17 +639,17 @@ const halStats = computed(() => ({
           <div class="section">
             <div class="sub">Probe Settings</div>
             <div class="tsGrid">
-              <label>Fast Feed <span class="varNum">#3004</span></label>
+              <label>Fast Feed <span class="tip" @click.stop="toggleTip('fastFeed')">?</span></label>
               <input type="number" v-model.number="tsParams.fastFeed" min="1" step="10" @change="saveTsParams" />
-              <label>Slow Feed <span class="varNum">#3005</span></label>
+              <label>Slow Feed <span class="tip" @click.stop="toggleTip('slowFeed')">?</span></label>
               <input type="number" v-model.number="tsParams.slowFeed" min="0" step="1" @change="saveTsParams" />
-              <label>Traverse Feed <span class="varNum">#3006</span></label>
+              <label>Traverse Feed <span class="tip" @click.stop="toggleTip('traverseFeed')">?</span></label>
               <input type="number" v-model.number="tsParams.traverseFeed" min="1" step="100" @change="saveTsParams" />
-              <label>Max Z Travel <span class="varNum">#3007</span></label>
+              <label>Max Z Travel <span class="tip" @click.stop="toggleTip('maxZTravel')">?</span></label>
               <input type="number" v-model.number="tsParams.maxZTravel" min="1" step="5" @change="saveTsParams" />
-              <label>Retract Dist <span class="varNum">#3009</span></label>
+              <label>Retract Dist <span class="tip" @click.stop="toggleTip('retractDist')">?</span></label>
               <input type="number" v-model.number="tsParams.retractDist" min="0.1" step="0.5" @change="saveTsParams" />
-              <label>Spindle Zero H <span class="varNum">#3010</span></label>
+              <label>Spindle Zero H <span class="tip" @click.stop="toggleTip('spindleZeroHeight')">?</span></label>
               <input type="number" v-model.number="tsParams.spindleZeroHeight" min="0" step="1" @change="saveTsParams" />
             </div>
           </div>
@@ -620,39 +659,39 @@ const halStats = computed(() => ({
             <div class="tsCheckGrid">
               <label class="checkRow">
                 <input type="checkbox" :checked="tsParams.useToolTable === 1" @change="tsParams.useToolTable = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
-                Use Tool Table <span class="varNum">#3103</span>
+                Use Tool Table <span class="tip" @click.stop.prevent="toggleTip('useToolTable')">?</span>
               </label>
               <label class="checkRow">
                 <input type="checkbox" :checked="tsParams.goBackToStart === 1" @change="tsParams.goBackToStart = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
-                Return to Start <span class="varNum">#3106</span>
+                Return to Start <span class="tip" @click.stop.prevent="toggleTip('goBackToStart')">?</span>
               </label>
               <label class="checkRow">
                 <input type="checkbox" :checked="tsParams.disablePrePos === 1" @change="tsParams.disablePrePos = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
-                Skip G30 Pre-Pos <span class="varNum">#3108</span>
+                Skip G30 Pre-Pos <span class="tip" @click.stop.prevent="toggleTip('disablePrePos')">?</span>
               </label>
               <label class="checkRow">
                 <input type="checkbox" :checked="tsParams.lastTry === 1" @change="tsParams.lastTry = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
-                Last Try w/o Table <span class="varNum">#3110</span>
+                Last Try w/o Table <span class="tip" @click.stop.prevent="toggleTip('lastTry')">?</span>
               </label>
             </div>
             <div class="tsGrid" style="margin-top: 12px;">
-              <label>Tool Min Dist <span class="varNum">#3104</span></label>
+              <label>Tool Min Dist <span class="tip" @click.stop="toggleTip('toolMinDis')">?</span></label>
               <input type="number" v-model.number="tsParams.toolMinDis" min="0" step="1" @change="saveTsParams" />
-              <label>Extra Retries <span class="varNum">#3109</span></label>
+              <label>Extra Retries <span class="tip" @click.stop="toggleTip('addReps')">?</span></label>
               <input type="number" v-model.number="tsParams.addReps" min="0" step="1" @change="saveTsParams" />
 
-              <label>Brake After <span class="varNum">#3105</span></label>
+              <label>Brake After <span class="tip" @click.stop="toggleTip('brakeAfter')">?</span></label>
               <div class="tsBtnRow">
                 <button v-for="b in [0, 1, 2]" :key="b" class="optBtn tsToggle" :class="{ active: tsParams.brakeAfter === b }" @click="tsParams.brakeAfter = b; saveTsParams()">{{ BRAKE_LABELS[b] }}</button>
               </div>
 
-              <label>Spindle Stop <span class="varNum">#3107</span></label>
+              <label>Spindle Stop <span class="tip" @click.stop="toggleTip('spindleStopM')">?</span></label>
               <div class="tsBtnRow">
                 <button class="optBtn tsToggle" :class="{ active: tsParams.spindleStopM === 5 }" @click="tsParams.spindleStopM = 5; saveTsParams()">M5</button>
                 <button class="optBtn tsToggle" :class="{ active: tsParams.spindleStopM === 500 }" @click="tsParams.spindleStopM = 500; saveTsParams()">M500</button>
               </div>
 
-              <label>Offset Dir <span class="varNum">#3013</span></label>
+              <label>Offset Dir <span class="tip" @click.stop="toggleTip('offsetDirection')">?</span></label>
               <div class="tsBtnRow">
                 <button v-for="d in [0, 1, 2, 3]" :key="d" class="optBtn tsToggle" :class="{ active: tsParams.offsetDirection === d }" @click="tsParams.offsetDirection = d; saveTsParams()">{{ OFFSET_DIR_LABELS[d] }}</button>
               </div>
@@ -662,9 +701,9 @@ const halStats = computed(() => ({
           <div class="section">
             <div class="sub">Diameter Offset</div>
             <div class="tsGrid">
-              <label>Min Diameter <span class="varNum">#3111</span></label>
+              <label>Min Diameter <span class="tip" @click.stop="toggleTip('offsetDiameter')">?</span></label>
               <input type="number" v-model.number="tsParams.offsetDiameter" min="0" step="1" @change="saveTsParams" />
-              <label>Offset % <span class="varNum">#3112</span></label>
+              <label>Offset % <span class="tip" @click.stop="toggleTip('offsetValue')">?</span></label>
               <input type="number" v-model.number="tsParams.offsetValue" min="0" max="100" step="5" @change="saveTsParams" />
             </div>
           </div>
@@ -672,15 +711,21 @@ const halStats = computed(() => ({
           <div class="section">
             <div class="sub">Edge-Finder</div>
             <div class="tsGrid">
-              <label>Probe Tool # <span class="varNum">#3014</span></label>
-              <span class="readonlyVal">T{{ probeTool }} <span class="varNum">(set in Probe tab)</span></span>
-              <label>Finder X <span class="varNum">#3113</span></label>
+              <label>Probe Tool # <span class="tip" @click.stop="toggleTip('probeTool')">?</span></label>
+              <span class="readonlyVal">T{{ probeTool }}</span>
+              <label>Finder X <span class="tip" @click.stop="toggleTip('finderTouchX')">?</span></label>
               <input type="number" v-model.number="tsParams.finderTouchX" step="0.001" @change="saveTsParams" />
-              <label>Finder Y <span class="varNum">#3114</span></label>
+              <label>Finder Y <span class="tip" @click.stop="toggleTip('finderTouchY')">?</span></label>
               <input type="number" v-model.number="tsParams.finderTouchY" step="0.001" @change="saveTsParams" />
-              <label>Finder Z Diff <span class="varNum">#3115</span></label>
+              <label>Finder Z Diff <span class="tip" @click.stop="toggleTip('finderDiffZ')">?</span></label>
               <input type="number" v-model.number="tsParams.finderDiffZ" step="0.001" @change="saveTsParams" />
             </div>
+          </div>
+
+          <!-- Context help card -->
+          <div v-if="activeTip && tipDesc[activeTip]" class="tipCard" @click.stop>
+            {{ activeTip ? tipDesc[activeTip]?.text : '' }}
+            <span class="varRef">{{ activeTip ? tipDesc[activeTip]?.var : '' }}</span>
           </div>
         </div>
       </template>
@@ -867,6 +912,7 @@ const halStats = computed(() => ({
 .scrollContent {
   overflow-y: auto;
   height: 100%;
+  position: relative;
 }
 
 
@@ -1102,12 +1148,6 @@ const halStats = computed(() => ({
   font-size: var(--fs-base);
   border-radius: var(--radius-md);
   max-width: 100px;
-}
-
-.varNum {
-  opacity: 0.4;
-  font-size: var(--fs-xs);
-  font-family: var(--font-mono);
 }
 
 .readonlyVal {
