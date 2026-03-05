@@ -6,12 +6,15 @@ import os
 import subprocess
 from pathlib import Path
 import linuxcnc
+import gcode
+from rs274.interpret import Translated, ArcsToSegmentsMixin, StatMixin
 import hal  # must import in main thread — _hal C extension registers signal handlers on init
 
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, List
 from fastapi.staticfiles import StaticFiles
 import re
+import shutil
 import tempfile
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body
 from fastapi.middleware.cors import CORSMiddleware
@@ -2076,163 +2079,147 @@ def build_viewer_init(stl_base_url: str) -> Dict[str, Any]:
     }
 
 
+class PreviewCanon(Translated, ArcsToSegmentsMixin, StatMixin):
+    """Lightweight canon that collects feed/rapid polylines for 3D preview."""
+
+    def __init__(self, s, random=0):
+        StatMixin.__init__(self, s, random)
+        self.feed = []          # [(lineno, start_9, end_9, feedrate, tlo_3)]
+        self.rapid = []         # [(lineno, start_9, end_9, tlo_3)]
+        self.lineno = -1
+        self.feedrate = 1.0
+        self.lo = (0,) * 9     # last output position (9-axis)
+        self.first_move = True
+        self.suppress = 0
+        self.xo = self.yo = self.zo = 0.0
+        self.ao = self.bo = self.co = 0.0
+        self.uo = self.vo = self.wo = 0.0
+        self.g5x_index = 1
+        self.plane = 1
+        self.arcdivision = 64
+
+    def next_line(self, st):
+        self.state = st
+        self.lineno = st.sequence_number
+
+    def set_feed_rate(self, f): self.feedrate = f / 60.0
+    def set_spindle_rate(self, _): pass
+    def select_plane(self, _): pass
+    def comment(self, _): pass
+    def message(self, _): pass
+    def check_abort(self): pass
+    def user_defined_function(self, i, p, q): pass
+    def dwell(self, _): pass
+
+    def change_tool(self, idx):
+        StatMixin.change_tool(self, idx)
+        self.first_move = True
+
+    def tool_offset(self, xo, yo, zo, ao, bo, co, uo, vo, wo):
+        self.first_move = True
+        x, y, z, a, b, c, u, v, w = self.lo
+        self.lo = (x - xo + self.xo, y - yo + self.yo, z - zo + self.zo,
+                   a - ao + self.ao, b - bo + self.bo, c - co + self.co,
+                   u - uo + self.uo, v - vo + self.vo, w - wo + self.wo)
+        self.xo, self.yo, self.zo = xo, yo, zo
+        self.ao, self.bo, self.co = ao, bo, co
+        self.uo, self.vo, self.wo = uo, vo, wo
+
+    # Use rotate_and_translate so straight moves are in the same translated
+    # (machine) coordinate system as arc segments from gcode.arc_to_segments.
+    # WCS offsets are subtracted once at extraction time.
+    def straight_traverse(self, x, y, z, a, b, c, u, v, w):
+        if self.suppress > 0: return
+        l = self.rotate_and_translate(x, y, z, a, b, c, u, v, w)
+        if not self.first_move:
+            self.rapid.append((self.lineno, self.lo, l, (self.xo, self.yo, self.zo)))
+        self.lo = l
+
+    def straight_feed(self, x, y, z, a, b, c, u, v, w):
+        if self.suppress > 0: return
+        self.first_move = False
+        l = self.rotate_and_translate(x, y, z, a, b, c, u, v, w)
+        self.feed.append((self.lineno, self.lo, l, self.feedrate, (self.xo, self.yo, self.zo)))
+        self.lo = l
+
+    straight_probe = straight_feed
+
+    def rigid_tap(self, x, y, z):
+        if self.suppress > 0: return
+        self.first_move = False
+        l = self.rotate_and_translate(x, y, z, 0, 0, 0, 0, 0, 0)[:3]
+        l += (self.lo[3], self.lo[4], self.lo[5],
+              self.lo[6], self.lo[7], self.lo[8])
+        self.feed.append((self.lineno, self.lo, l, self.feedrate, (self.xo, self.yo, self.zo)))
+        self.feed.append((self.lineno, l, self.lo, self.feedrate, (self.xo, self.yo, self.zo)))
+
+    def straight_arcsegments(self, segs):
+        self.first_move = False
+        lo = self.lo
+        for l in segs:
+            self.feed.append((self.lineno, lo, l, self.feedrate, (self.xo, self.yo, self.zo)))
+            lo = l
+        self.lo = lo
+
+
 def parse_gcode_preview(filename: str, machine_units: str = "mm") -> Dict[str, Any]:
-    """
-    Preview-grade modal parser (work coords) inspired by vtk_vismach.GCodePath.
-    Returns polyline point lists in machine units for feed and rapid moves.
-    """
-    feed: List[List[float]] = []
-    feed_lines: List[int] = []          # parallel: g-code line number for each feed point
-    rapid: List[List[float]] = []
-
-    # current position (work coords, in machine units)
-    x = y = z = 0.0
-
-    # modal state
-    motion_mode: Optional[str] = None   # G0 / G1 / G2 / G3
-    plane = "G17"                       # G17=XY, G18=XZ, G19=YZ
-
-    # Unit scaling: convert gcode coords to machine units.
-    # Default gcode unit mode matches machine (G20 for inch, G21 for mm).
-    _machine_is_inch = machine_units in ("in", "inch")
-    _gcode_inch = _machine_is_inch      # tracks G20/G21 modal state
-    _scale = 1.0                        # updated on G20/G21 change
-
-    def _update_scale():
-        nonlocal _scale
-        if _gcode_inch == _machine_is_inch:
-            _scale = 1.0
-        elif _gcode_inch:
-            _scale = 25.4   # gcode inch → machine mm
-        else:
-            _scale = 1.0 / 25.4  # gcode mm → machine inch
-
-    _update_scale()
-
-    import math
-
-    def add(arr: List[List[float]], px: float, py: float, pz: float):
-        arr.append([float(px), float(py), float(pz)])
-
-    # basic safety: only read real files
+    """Full RS274NGC preview via LinuxCNC's native interpreter."""
+    empty = {"feed": [], "feed_lines": [], "rapid": []}
     if not filename or not os.path.isfile(filename):
+        return empty
+    if not STAT:
+        return empty
+
+    try:
+        STAT.poll()
+        ini_path = getattr(STAT, "ini_filename", None)
+        if not ini_path:
+            return empty
+
+        ini = linuxcnc.ini(ini_path)
+        random_tc = int(ini.find("EMCIO", "RANDOM_TOOLCHANGER") or 0)
+
+        canon = PreviewCanon(STAT, random_tc)
+
+        # Copy parameter file to temp dir (gcode.parse writes to it)
+        parameter = ini.find("RS274NGC", "PARAMETER_FILE")
+        td = tempfile.mkdtemp()
+        try:
+            temp_param = os.path.join(td, os.path.basename(parameter or "linuxcnc.var"))
+            if parameter:
+                param_path = parameter if os.path.isabs(parameter) else os.path.join(os.path.dirname(ini_path), parameter)
+                if os.path.exists(param_path):
+                    shutil.copy(param_path, temp_param)
+            canon.parameter_file = temp_param
+
+            unitcode = "G%d" % (20 + (STAT.linear_units == 1))
+            result, seq = gcode.parse(filename, canon, unitcode, "")
+            if result > gcode.MIN_ERROR:
+                print(f"[GCODE] parse error at line {seq}: {gcode.strerror(result)}")
+        finally:
+            shutil.rmtree(td, ignore_errors=True)
+
+        # Canon outputs in inches (LinuxCNC internal unit) in machine/translated
+        # coords.  Convert to work coords (subtract WCS offsets) then scale.
+        unit_scale = 25.4 if machine_units == "mm" else 1.0
+        ox = canon.g5x_offset_x + canon.g92_offset_x
+        oy = canon.g5x_offset_y + canon.g92_offset_y
+        oz = canon.g5x_offset_z + canon.g92_offset_z
+
+        feed: List[List[float]] = []
+        feed_lines: List[int] = []
+        for lineno, _start, end, _rate, _tlo in canon.feed:
+            feed.append([(end[0] - ox) * unit_scale, (end[1] - oy) * unit_scale, (end[2] - oz) * unit_scale])
+            feed_lines.append(lineno)
+
+        rapid: List[List[float]] = []
+        for _lineno, _start, end, _tlo in canon.rapid:
+            rapid.append([(end[0] - ox) * unit_scale, (end[1] - oy) * unit_scale, (end[2] - oz) * unit_scale])
         return {"feed": feed, "feed_lines": feed_lines, "rapid": rapid}
 
-
-    with open(filename, "r") as f:
-        for lineno, raw in enumerate(f, 1):
-            line = raw.strip().upper()
-            if not line or line.startswith(("(", ";")):
-                continue
-
-            words = line.split()
-
-            # update modal state
-            for w in words:
-                if w in ("G0", "G00"):
-                    motion_mode = "G0"
-                elif w in ("G1", "G01"):
-                    motion_mode = "G1"
-                elif w in ("G2", "G02"):
-                    motion_mode = "G2"
-                elif w in ("G3", "G03"):
-                    motion_mode = "G3"
-                elif w in ("G17", "G18", "G19"):
-                    plane = w
-                elif w in ("G20", "G70"):
-                    _gcode_inch = True
-                    _update_scale()
-                elif w in ("G21", "G71"):
-                    _gcode_inch = False
-                    _update_scale()
-
-            if motion_mode not in ("G0", "G1", "G2", "G3"):
-                continue
-
-            # parse endpoint + arc center offsets (IJK)
-            nx, ny, nz = x, y, z
-            i = j = k = 0.0
-
-            for w in words:
-                try:
-                    if w.startswith("X"):
-                        nx = float(w[1:]) * _scale
-                    elif w.startswith("Y"):
-                        ny = float(w[1:]) * _scale
-                    elif w.startswith("Z"):
-                        nz = float(w[1:]) * _scale
-                    elif w.startswith("I"):
-                        i = float(w[1:]) * _scale
-                    elif w.startswith("J"):
-                        j = float(w[1:]) * _scale
-                    elif w.startswith("K"):
-                        k = float(w[1:]) * _scale
-                except ValueError:
-                    pass
-
-            # linear / rapid
-            if motion_mode == "G0":
-                add(rapid, nx, ny, nz)  # rapids: no line tracking needed
-                x, y, z = nx, ny, nz
-                continue
-
-            if motion_mode == "G1":
-                add(feed, nx, ny, nz)
-                feed_lines.append(lineno)
-                x, y, z = nx, ny, nz
-                continue
-
-            # arcs (G2/G3)
-            cw = (motion_mode == "G2")
-
-            # select plane axes (copying the same structure you had in vtk_vismach)
-            if plane == "G17":  # XY
-                sx, sy = x, y
-                ex, ey = nx, ny
-                cx, cy = x + i, y + j
-                fixed_axis = ("Z", z)
-            elif plane == "G18":  # XZ
-                sx, sy = x, z
-                ex, ey = nx, nz
-                cx, cy = x + i, z + k
-                fixed_axis = ("Y", y)
-            else:  # G19 YZ
-                sx, sy = y, z
-                ex, ey = ny, nz
-                cx, cy = y + j, z + k
-                fixed_axis = ("X", x)
-
-            r = math.hypot(sx - cx, sy - cy)
-            if r <= 0:
-                x, y, z = nx, ny, nz
-                continue
-
-            a0 = math.atan2(sy - cy, sx - cx)
-            a1 = math.atan2(ey - cy, ex - cx)
-
-            if cw and a1 > a0:
-                a1 -= 2 * math.pi
-            elif (not cw) and a1 < a0:
-                a1 += 2 * math.pi
-
-            steps = max(12, int(abs(a1 - a0) * 16))
-
-            for s in range(1, steps + 1):
-                a = a0 + (a1 - a0) * (s / steps)
-                px = cx + math.cos(a) * r
-                py = cy + math.sin(a) * r
-
-                if plane == "G17":
-                    add(feed, px, py, fixed_axis[1])
-                elif plane == "G18":
-                    add(feed, px, fixed_axis[1], py)
-                else:
-                    add(feed, fixed_axis[1], px, py)
-                feed_lines.append(lineno)
-
-            x, y, z = nx, ny, nz
-
-    return {"feed": feed, "feed_lines": feed_lines, "rapid": rapid}
+    except Exception as e:
+        print(f"[GCODE] preview failed: {e}")
+        return empty
 
 
 app = FastAPI()
