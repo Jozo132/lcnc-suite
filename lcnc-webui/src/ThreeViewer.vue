@@ -259,6 +259,8 @@ function normalizeKinematics(kin: ViewerInit["kinematics"]): KinEntry[] {
 let toolMarker: THREE.Object3D | null = null;
 let feedLine: THREE.Line | null = null;
 let rapidLine: THREE.Line | null = null;
+let feedOverflow: THREE.Line | null = null;
+let rapidOverflow: THREE.Line | null = null;
 let highlightLine: THREE.Line | null = null;
 let workAxes: THREE.Group | null = null;
 let surfaceGroup: THREE.Group | null = null;
@@ -428,6 +430,8 @@ function setLayerVisible(layer: Layer, on: boolean) {
       toolpathVisible = on;
       if (feedLine) feedLine.visible = on;
       if (rapidLine) rapidLine.visible = on;
+      if (feedOverflow) feedOverflow.visible = on;
+      if (rapidOverflow) rapidOverflow.visible = on;
       if (highlightLine) highlightLine.visible = on;
       break;
     case "machine":
@@ -478,6 +482,14 @@ function setPathAlwaysOnTop(on: boolean) {
     m.depthTest = dt;
     m.depthWrite = dt;
     m.needsUpdate = true;
+  }
+  for (const ol of [feedOverflow, rapidOverflow]) {
+    if (ol) {
+      const m = ol.material as THREE.LineDashedMaterial;
+      m.depthTest = dt;
+      m.depthWrite = dt;
+      m.needsUpdate = true;
+    }
   }
   if (highlightLine) {
     const m = highlightLine.material as THREE.LineBasicMaterial;
@@ -638,6 +650,28 @@ function makeLine(points: number[][], colorHex: number | string, dashed = false,
   line.frustumCulled = false;
 
   if (dashed) (line as any).computeLineDistances?.();
+  return line;
+}
+
+/** Yellow dashed duplicate of a toolpath line, clipped to show only outside machine bounds. */
+function makeOverflowLine(srcLine: THREE.Line): THREE.Line | null {
+  if (boundsClipPlanes.length === 0) return null;
+  const geom = srcLine.geometry.clone();
+  const mat = new THREE.LineDashedMaterial({
+    color: 0xffcc00,
+    dashSize: 3,
+    gapSize: 2,
+    transparent: true,
+    opacity: 0.9,
+    depthTest: !pathAlwaysOnTop,
+    depthWrite: !pathAlwaysOnTop,
+    clipIntersection: true,
+    clippingPlanes: boundsClipPlanes,
+  });
+  const line = new THREE.Line(geom, mat);
+  line.renderOrder = 10;
+  line.frustumCulled = false;
+  line.computeLineDistances();
   return line;
 }
 
@@ -1121,21 +1155,10 @@ function applyGcode(g: ViewerGcode) {
   if (!scene || !workOrigin) return;
 
   // Remove old lines
-  if (feedLine) {
-    workOrigin.remove(feedLine);
-    disposeObject(feedLine);
-    feedLine = null;
+  for (const old of [feedLine, rapidLine, feedOverflow, rapidOverflow, highlightLine]) {
+    if (old) { workOrigin.remove(old); disposeObject(old); }
   }
-  if (rapidLine) {
-    workOrigin.remove(rapidLine);
-    disposeObject(rapidLine);
-    rapidLine = null;
-  }
-  if (highlightLine) {
-    workOrigin.remove(highlightLine);
-    disposeObject(highlightLine);
-    highlightLine = null;
-  }
+  feedLine = rapidLine = feedOverflow = rapidOverflow = highlightLine = null;
   feedLineMap = new Map();
 
   const feedPts = g.feed ?? [];
@@ -1160,10 +1183,14 @@ function applyGcode(g: ViewerGcode) {
   if (feedPts.length >= 2) {
     feedLine = makeLine(feedPts, feedColor, false, toolpathOp);
     workOrigin.add(feedLine);
+    feedOverflow = makeOverflowLine(feedLine);
+    if (feedOverflow) workOrigin.add(feedOverflow);
   }
   if (rapidPts.length >= 2) {
     rapidLine = makeLine(rapidPts, rapidColor, true, toolpathOp);
     workOrigin.add(rapidLine);
+    rapidOverflow = makeOverflowLine(rapidLine);
+    if (rapidOverflow) workOrigin.add(rapidOverflow);
   }
 
   // Prepare highlight line (reuses feed geometry, drawn on top with bright color)
@@ -1186,6 +1213,8 @@ function applyGcode(g: ViewerGcode) {
   if (!toolpathVisible) {
     if (feedLine) feedLine.visible = false;
     if (rapidLine) rapidLine.visible = false;
+    if (feedOverflow) feedOverflow.visible = false;
+    if (rapidOverflow) rapidOverflow.visible = false;
     if (highlightLine) highlightLine.visible = false;
   }
 }
