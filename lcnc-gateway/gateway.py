@@ -511,25 +511,35 @@ def save_tool_library(library: dict):
     _save_tool_library_all(all_data)
 
 
+_TOOL_META_FIELDS = (
+    "type", "description", "flutes", "oal", "flute_length", "corner_radius",
+    "body_length", "shaft_diameter", "taper_angle", "point_angle",
+    "tip_diameter", "material", "holder", "holder_segments",
+    "assembly_gauge_length",
+)
+
+
 def _merge_tool_data(tbl_tools: list, library: dict) -> list:
     """Merge tool.tbl entries with metadata from tool_library.json."""
     merged = []
     for t in tbl_tools:
         key = str(t["T"])
         meta = library.get(key, {})
-        merged.append({
+        entry = {
             "T": t["T"],
             "P": t["P"],
             "Z": t["Z"],
             "D": t["D"],
             "remark": t.get("remark", ""),
-            "type": meta.get("type", ""),
-            "description": meta.get("description", t.get("remark", "")),
-            "flutes": meta.get("flutes"),
-            "oal": meta.get("oal"),
-            "flute_length": meta.get("flute_length"),
-            "corner_radius": meta.get("corner_radius"),
-        })
+        }
+        for field in _TOOL_META_FIELDS:
+            if field == "description":
+                entry[field] = meta.get("description", t.get("remark", ""))
+            elif field == "type":
+                entry[field] = meta.get("type", "")
+            else:
+                entry[field] = meta.get(field)
+        merged.append(entry)
     return merged
 
 
@@ -1408,7 +1418,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             key = str(tool_num)
             if key not in library:
                 library[key] = {}
-            for field in ("type", "description", "flutes", "oal", "flute_length"):
+            for field in _TOOL_META_FIELDS:
                 if field in msg:
                     library[key][field] = msg[field]
             save_tool_library(library)
@@ -1441,7 +1451,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             library = load_tool_library()
             key = str(tool_num)
             library[key] = {}
-            for field in ("type", "description", "flutes", "oal", "flute_length"):
+            for field in _TOOL_META_FIELDS:
                 if field in msg:
                     library[key][field] = msg[field]
             save_tool_library(library)
@@ -2342,6 +2352,169 @@ async def save_gcode(path: str = Body(...), content: str = Body(...)):
     return {"ok": True, "path": abs_path, "size": len(encoded)}
 
 
+# ---- Fusion 360 Tool Library Import ----
+
+_FUSION_TYPE_MAP = {
+    "flat end mill": "endmill",
+    "ball end mill": "ball",
+    "bull nose end mill": "bullnose",
+    "chamfer mill": "chamfer",
+    "spot drill": "drill",
+    "counter sink": "countersink",
+    "dovetail mill": "dovetail",
+    "face mill": "facemill",
+    "lollipop mill": "lollipop",
+    "slot mill": "slotmill",
+    "thread mill": "threadmill",
+    "form mill": "formmill",
+    "radius mill": "radiusmill",
+    "tapered mill": "tapered",
+    "probe": "probe",
+}
+
+
+def _parse_fusion_library(data: dict) -> list:
+    """Parse a Fusion 360 Library.json → list of tool dicts for import."""
+    tools = []
+    for entry in data.get("data", []):
+        pp = entry.get("post-process", {})
+        geom = entry.get("geometry", {})
+        presets = entry.get("start-values", {}).get("presets", [])
+        holder = entry.get("holder", {})
+
+        tool_num = pp.get("number")
+        if tool_num is None:
+            continue
+
+        fusion_type = entry.get("type", "")
+        our_type = _FUSION_TYPE_MAP.get(fusion_type, "other")
+
+        tool = {
+            "T": int(tool_num),
+            "D": float(geom.get("DC", 0)),
+            "description": entry.get("description", "").strip(),
+            "type": our_type,
+            "flutes": geom.get("NOF"),
+            "oal": geom.get("OAL"),
+            "flute_length": geom.get("LCF"),
+            "corner_radius": geom.get("RE"),
+            "body_length": geom.get("LB"),
+            "shaft_diameter": geom.get("SFDM"),
+            "taper_angle": geom.get("TA"),
+            "point_angle": geom.get("SIG"),
+            "tip_diameter": geom.get("tip-diameter"),
+            "assembly_gauge_length": geom.get("assemblyGaugeLength"),
+            "material": entry.get("BMC"),
+            "holder": holder.get("description") if holder else None,
+            "fusion_type": fusion_type,
+        }
+        # Normalize holder segments (stacked frustums) for 3D rendering
+        holder_segs = holder.get("segments", []) if holder else []
+        if holder_segs:
+            tool["holder_segments"] = [
+                {"height": s["height"], "lower_diameter": s["lower-diameter"],
+                 "upper_diameter": s["upper-diameter"]}
+                for s in holder_segs if "height" in s
+            ]
+        # Preserve raw presets (speeds/feeds per material) for sidecar
+        if presets:
+            tool["presets"] = presets
+        tools.append(tool)
+    return tools
+
+
+@app.post("/import-tool-library")
+async def import_tool_library(file: UploadFile = File(...)):
+    """Preview or apply a Fusion 360 tool library import.
+
+    Query params:
+      ?apply=true  — actually write to tool table + library (default: preview only)
+      ?overwrite=true — overwrite existing tools (default: skip)
+    """
+    from starlette.requests import Request
+
+    raw = await file.read()
+    if len(raw) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large")
+
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    if "data" not in data or not isinstance(data["data"], list):
+        raise HTTPException(status_code=400, detail="Not a Fusion 360 tool library (missing 'data' array)")
+
+    parsed = _parse_fusion_library(data)
+    if not parsed:
+        raise HTTPException(status_code=400, detail="No tools found in library")
+
+    # Count existing tools for warning
+    tbl_path = get_tool_tbl_path()
+    existing_count = 0
+    if tbl_path:
+        try:
+            existing_count = len(parse_tool_table(tbl_path))
+        except Exception:
+            pass
+
+    preview = [{**t} for t in parsed]
+
+    return {"ok": True, "tools": preview, "total": len(parsed),
+            "existing_count": existing_count}
+
+
+@app.post("/import-tool-library/apply")
+async def apply_tool_library_import(
+    file: UploadFile = File(...),
+):
+    """Apply a Fusion 360 tool library import — replaces tool.tbl and tool_library.json."""
+    raw = await file.read()
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+
+    parsed = _parse_fusion_library(data)
+    if not parsed:
+        raise HTTPException(status_code=400, detail="No tools found")
+
+    tbl_path = get_tool_tbl_path()
+    if not tbl_path:
+        raise HTTPException(status_code=500, detail="Tool table path not available")
+
+    # Replace entire tool table and sidecar
+    tbl_tools = []
+    library: dict = {}
+
+    for tool in parsed:
+        t_num = tool["T"]
+        z_init = tool.get("body_length") or tool.get("oal") or 0.0
+        tbl_tools.append({
+            "T": t_num,
+            "P": t_num,
+            "Z": float(z_init),
+            "D": tool["D"],
+            "remark": tool.get("description", ""),
+        })
+
+        key = str(t_num)
+        library[key] = {}
+        for field in _TOOL_META_FIELDS:
+            val = tool.get(field)
+            if val is not None:
+                library[key][field] = val
+        if tool.get("presets"):
+            library[key]["presets"] = tool["presets"]
+
+    write_tool_table(tbl_path, tbl_tools)
+    if CMD:
+        CMD.load_tool_table()
+    save_tool_library(library)
+
+    return {"ok": True, "added": len(parsed)}
+
+
 @app.get("/files")
 def list_files(subdir: str = ""):
     """List G-code files in the NC files directory."""
@@ -2593,10 +2766,11 @@ async def ws_endpoint(ws: WebSocket):
     _poll_fails = 0  # consecutive poll failures (tolerates NML startup transient)
     _probe_results: dict = {}  # populated from DEBUG EVAL messages in real-time
     _prev_tc_req = False  # previous tool-change-requested state for edge detection
+    _prev_tool_num = None  # previous tool_number for metadata edge detection
 
 
     async def status_loop():
-        nonlocal last_file, armed, viewer_init_sent, _poll_fails, _probe_results, _prev_tc_req
+        nonlocal last_file, armed, viewer_init_sent, _poll_fails, _probe_results, _prev_tc_req, _prev_tool_num
         global lcnc_connected, STAT, CMD, ERR, _hal_last_hb, _reconnect_fails
         loop = asyncio.get_event_loop()
         while True:
@@ -2695,6 +2869,25 @@ async def ws_endpoint(ws: WebSocket):
                 }
                 if _probe_results:
                     status_msg["probe_results"] = _probe_results
+
+                # Inject tool_meta on tool_number change (for 3D rendering)
+                if st.tool_number != _prev_tool_num:
+                    _prev_tool_num = st.tool_number
+                    if st.tool_number is not None:
+                        try:
+                            _lib = load_tool_library()
+                            _meta = _lib.get(str(st.tool_number), {})
+                            if _meta:
+                                _tm = {k: _meta[k] for k in (
+                                    "type", "oal", "flute_length", "body_length",
+                                    "shaft_diameter", "taper_angle", "point_angle",
+                                    "tip_diameter", "corner_radius", "holder_segments",
+                                ) if k in _meta}
+                                if _tm:
+                                    status_msg["data"]["tool_meta"] = _tm
+                        except Exception:
+                            pass
+
                 await ws_send_json(ws, status_msg)
 
                 # Tool change: auto-deassert when request clears

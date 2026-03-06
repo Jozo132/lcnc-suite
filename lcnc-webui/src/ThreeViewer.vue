@@ -124,6 +124,25 @@ type ViewerInit = {
 type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
 
 
+interface HolderSegment {
+  height: number;
+  lower_diameter: number;
+  upper_diameter: number;
+}
+
+interface ToolMeta {
+  type?: string;
+  oal?: number;
+  flute_length?: number;
+  body_length?: number;
+  shaft_diameter?: number;
+  taper_angle?: number;
+  point_angle?: number;
+  tip_diameter?: number;
+  corner_radius?: number;
+  holder_segments?: HolderSegment[];
+}
+
 type ViewerState = {
   ts?: number;
 
@@ -140,6 +159,7 @@ type ViewerState = {
   tool_number?: number | null;
   tool_diameter?: number | null;
   tool_length?: number | null;
+  tool_meta?: ToolMeta | null;
 
   work_pos?: Vec3;
 
@@ -256,7 +276,11 @@ function normalizeKinematics(kin: ViewerInit["kinematics"]): KinEntry[] {
 }
 
 // Visual objects
-let toolMarker: THREE.Object3D | null = null;
+let toolMarker: THREE.Group | null = null;
+let toolBodyMesh: THREE.Mesh | null = null;
+let holderMesh: THREE.Mesh | null = null;
+let _currentToolNum: number | null = null;
+let _lastToolMeta: ToolMeta | null = null;
 let feedLine: THREE.Line | null = null;
 let rapidLine: THREE.Line | null = null;
 let feedOverflow: THREE.Line | null = null;
@@ -549,6 +573,7 @@ let buildToken = 0;
 // ---------- Materials (muted colors requested) ----------
 const MAT = {
   tool: new THREE.MeshStandardMaterial({ metalness: 0.2, roughness: 0.4 }),
+  holder: new THREE.MeshStandardMaterial({ metalness: 0.7, roughness: 0.3 }),
   frame: new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.8 }),
   axisX: new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.7 }),
   axisY: new THREE.MeshStandardMaterial({ metalness: 0.1, roughness: 0.7 }),
@@ -562,6 +587,7 @@ MAT.axisX.color.setHex(0x9b4a4a); // X muted red
 MAT.axisY.color.setHex(0x4a8f5a); // Y muted green
 MAT.axisZ.color.setHex(0x4a6f9b); // Z muted blue
 MAT.tool.color.setHex(0xf5f5f5);  // near-white tool
+MAT.holder.color.setHex(0x888888); // steel gray holder
 
 /** Apply machine STL opacity to all MAT materials */
 function applyMachineOpacity(op: number) {
@@ -787,24 +813,8 @@ resetBackplot();
 
 }
 
-
-  // Tool marker (TIP pinned at local origin, extends +Z into holder)
-  function makeToolMesh(diam: number, len: number) {
-    const r = Math.max(0.2, diam * 0.5);
-    const L = Math.max(5, len);
-
-    const g = new THREE.CylinderGeometry(r, r, L, 20);
-
-    // CylinderGeometry is Y-up by default.
-    // Rotate geometry to Z-up and translate so tip is at Z=0.
-    g.rotateX(Math.PI / 2);
-    g.translate(0, 0, L / 2);
-
-    return new THREE.Mesh(g, MAT.tool);
-  }
-
-  // Default until viewer_state arrives
-  toolMarker = makeToolMesh(6 * _unitScale, 60 * _unitScale);
+  // Default tool until viewer_state arrives
+  toolMarker = buildToolGroup(6 * _unitScale, 60 * _unitScale, null);
   _toolGrp!.add(toolMarker);
 
 
@@ -860,6 +870,178 @@ resetBackplot();
 
   // Apply tool color
   MAT.tool.color.set(viewerDefaults.colors.tool ?? "#ffdd00");
+}
+
+// ---- Parametric tool profile generation ----
+// Builds 2D outline (radius vs height) for THREE.LatheGeometry.
+// Tip at Y=0, extends upward. LatheGeometry revolves around Y axis.
+function buildToolProfile(
+  diam: number, len: number, meta: ToolMeta | null
+): THREE.Vector2[] {
+  const r = Math.max(0.2, diam * 0.5);
+  const type = meta?.type ?? "other";
+  const fluteLen = meta?.flute_length ?? len * 0.6;
+  const bodyLen = meta?.body_length ?? fluteLen;
+  const shaftR = (meta?.shaft_diameter ?? diam) * 0.5;
+  const oal = meta?.oal ?? len;
+  const tipR = (meta?.tip_diameter ?? 0) * 0.5;
+  const cornerR = meta?.corner_radius ?? 0;
+  const pointAngle = meta?.point_angle ?? 118;
+  const taperAngle = meta?.taper_angle ?? 45;
+
+  const pts: THREE.Vector2[] = [];
+  const V = (x: number, y: number) => new THREE.Vector2(Math.max(0, x), y);
+
+  switch (type) {
+    case "endmill":
+    case "slotmill":
+    case "threadmill": {
+      pts.push(V(0, 0), V(r, 0), V(r, fluteLen));
+      if (Math.abs(shaftR - r) > 0.01) pts.push(V(shaftR, fluteLen));
+      pts.push(V(shaftR, oal), V(0, oal));
+      break;
+    }
+    case "ball": {
+      const steps = 12;
+      pts.push(V(0, 0));
+      for (let i = 1; i <= steps; i++) {
+        const a = (Math.PI / 2) * (1 - i / steps);
+        pts.push(V(r * Math.cos(a), r - r * Math.sin(a)));
+      }
+      pts.push(V(r, fluteLen));
+      if (Math.abs(shaftR - r) > 0.01) pts.push(V(shaftR, fluteLen));
+      pts.push(V(shaftR, oal), V(0, oal));
+      break;
+    }
+    case "bullnose":
+    case "radiusmill": {
+      const cr = Math.min(cornerR || r * 0.2, r);
+      const arcN = 8;
+      pts.push(V(0, 0), V(r - cr, 0));
+      for (let i = 1; i <= arcN; i++) {
+        const a = (Math.PI / 2) * (i / arcN);
+        pts.push(V(r - cr + cr * Math.sin(a), cr - cr * Math.cos(a)));
+      }
+      pts.push(V(r, fluteLen));
+      if (Math.abs(shaftR - r) > 0.01) pts.push(V(shaftR, fluteLen));
+      pts.push(V(shaftR, oal), V(0, oal));
+      break;
+    }
+    case "drill": {
+      const halfA = (pointAngle / 2) * (Math.PI / 180);
+      const tipH = r / Math.tan(halfA);
+      pts.push(V(0, 0), V(r, tipH), V(r, fluteLen));
+      if (Math.abs(shaftR - r) > 0.01) pts.push(V(shaftR, fluteLen));
+      pts.push(V(shaftR, oal), V(0, oal));
+      break;
+    }
+    case "chamfer":
+    case "countersink": {
+      const chamA = taperAngle * (Math.PI / 180);
+      const chamH = (r - tipR) / Math.tan(chamA || 1);
+      pts.push(V(0, 0));
+      if (tipR > 0.01) pts.push(V(tipR, 0));
+      pts.push(V(r, chamH), V(r, fluteLen));
+      if (Math.abs(shaftR - r) > 0.01) pts.push(V(shaftR, fluteLen));
+      pts.push(V(shaftR, oal), V(0, oal));
+      break;
+    }
+    case "tapered": {
+      pts.push(V(0, 0));
+      if (tipR > 0.01) pts.push(V(tipR, 0));
+      else pts.push(V(0.1, 0));
+      pts.push(V(r, bodyLen), V(r, fluteLen));
+      if (Math.abs(shaftR - r) > 0.01) pts.push(V(shaftR, fluteLen));
+      pts.push(V(shaftR, oal), V(0, oal));
+      break;
+    }
+    case "dovetail": {
+      const wideR = tipR > r ? tipR : r * 1.5;
+      const neckR = Math.min(r, shaftR) * 0.5;
+      pts.push(V(0, 0), V(wideR, 0), V(neckR, fluteLen));
+      pts.push(V(shaftR, bodyLen), V(shaftR, oal), V(0, oal));
+      break;
+    }
+    case "lollipop": {
+      const ballR = r;
+      const neckR2 = (tipR || shaftR || r * 0.4);
+      const steps2 = 10;
+      pts.push(V(0, 0));
+      for (let i = 0; i <= steps2; i++) {
+        const a = -Math.PI / 2 + Math.PI * (i / steps2);
+        pts.push(V(ballR * Math.cos(a), ballR + ballR * Math.sin(a)));
+      }
+      pts.push(V(neckR2, ballR * 2), V(neckR2, fluteLen));
+      if (Math.abs(shaftR - neckR2) > 0.01) pts.push(V(shaftR, fluteLen));
+      pts.push(V(shaftR, oal), V(0, oal));
+      break;
+    }
+    case "facemill": {
+      const discH = Math.max(5, bodyLen * 0.3);
+      const arbor = shaftR || r * 0.3;
+      pts.push(V(0, 0), V(r, 0), V(r, discH));
+      pts.push(V(arbor, discH), V(arbor, oal), V(0, oal));
+      break;
+    }
+    case "probe": {
+      const probeR = tipR || r * 0.2;
+      const probeLen = fluteLen || oal * 0.5;
+      pts.push(V(0, 0), V(probeR, 0), V(probeR, probeLen));
+      pts.push(V(shaftR || r, probeLen), V(shaftR || r, oal), V(0, oal));
+      break;
+    }
+    default: {
+      pts.push(V(0, 0), V(r, 0), V(r, oal), V(0, oal));
+      break;
+    }
+  }
+  return pts;
+}
+
+/** Build LatheGeometry from 2D profile, rotated to Z-up with tip at Z=0 */
+function buildToolGeometry(profile: THREE.Vector2[], segments = 24): THREE.LatheGeometry {
+  const geom = new THREE.LatheGeometry(profile, segments);
+  geom.rotateX(Math.PI / 2);
+  return geom;
+}
+
+/** Build holder geometry from stacked frustum segments, starting at Z=toolOAL */
+function buildHolderGeometry(
+  segments: HolderSegment[], toolOAL: number, latheSegments = 24
+): THREE.LatheGeometry | null {
+  if (!segments.length) return null;
+  const pts: THREE.Vector2[] = [];
+  let z = toolOAL;
+  pts.push(new THREE.Vector2(0, z));
+  for (const seg of segments) {
+    pts.push(new THREE.Vector2(seg.lower_diameter * 0.5, z));
+    z += seg.height;
+    pts.push(new THREE.Vector2(seg.upper_diameter * 0.5, z));
+  }
+  pts.push(new THREE.Vector2(0, z));
+  const geom = new THREE.LatheGeometry(pts, latheSegments);
+  geom.rotateX(Math.PI / 2);
+  return geom;
+}
+
+/** Build full tool group (body + optional holder) */
+function buildToolGroup(diam: number, len: number, meta: ToolMeta | null): THREE.Group {
+  const grp = new THREE.Group();
+  const profile = buildToolProfile(diam, len, meta);
+  const geom = buildToolGeometry(profile);
+  toolBodyMesh = new THREE.Mesh(geom, MAT.tool);
+  grp.add(toolBodyMesh);
+
+  holderMesh = null;
+  if (meta?.holder_segments?.length) {
+    const oal = meta.oal ?? len;
+    const hGeom = buildHolderGeometry(meta.holder_segments, oal);
+    if (hGeom) {
+      holderMesh = new THREE.Mesh(hGeom, MAT.holder);
+      grp.add(holderMesh);
+    }
+  }
+  return grp;
 }
 
 function sceneBgFromTheme(): THREE.Color {
@@ -1092,36 +1274,45 @@ function applyState(init: ViewerInit, st: ViewerState) {
     updateOverflowCheck();
   }
 
-  // ---- Tool visual: diameter + length (TIP stays at local z=0) ----
-  if (toolMarker && (toolMarker as any).geometry) {
-    const diam   = st.tool_diameter ?? 6.0  * _unitScale;
-    const rawLen = st.tool_length   ?? 60.0 * _unitScale;
-
+  // ---- Tool visual: parametric profile (TIP stays at local z=0) ----
+  {
+    const toolNum = st.tool_number ?? null;
+    const meta: ToolMeta | null = st.tool_meta ?? null;
+    const diam = st.tool_diameter ?? 6.0 * _unitScale;
+    const rawLen = st.tool_length ?? 60.0 * _unitScale;
     const sinkIntoHolder = 20 * _unitScale;
-    const minVisualLen   = 40 * _unitScale;
+    const minVisualLen = 40 * _unitScale;
     const visLen = Math.max(minVisualLen, rawLen + sinkIntoHolder);
 
-    const r = Math.max(0.2, diam * 0.5);
+    if (toolNum !== _currentToolNum && _toolGrp) {
+      // Tool number changed — full rebuild with metadata
+      _currentToolNum = toolNum;
+      if (meta) _lastToolMeta = meta;
 
-    const mesh = toolMarker as THREE.Mesh;
+      if (toolMarker) {
+        _toolGrp.remove(toolMarker);
+        disposeObject(toolMarker);
+        toolBodyMesh = null;
+        holderMesh = null;
+      }
+      toolMarker = buildToolGroup(diam, visLen, _lastToolMeta);
+      _toolGrp.add(toolMarker);
+      if (toolBodyMesh) toolBodyMesh.userData.toolVis = { r: diam * 0.5, L: visLen };
+      console.log("[TOOL] rebuild:", { toolNum, diam, visLen, type: _lastToolMeta?.type, children: toolMarker.children.length, bodyVerts: toolBodyMesh?.geometry?.attributes?.position?.count });
 
-    // Only rebuild if it meaningfully changed (prevents churn)
-    const prev = (mesh.userData.toolVis as any) || {};
-    const changed = Math.abs((prev.r ?? 0) - r) > 0.01 || Math.abs((prev.L ?? 0) - visLen) > 0.5;
-
-    if (changed) {
-      mesh.geometry.dispose();
-
-      const g = new THREE.CylinderGeometry(r, r, visLen, 20);
-      g.rotateX(Math.PI / 2);      // axis -> Z
-      g.translate(0, 0, visLen / 2); // tip at z=0
-
-      mesh.geometry = g;
-      mesh.userData.toolVis = { r, L: visLen };
+    } else if (toolBodyMesh) {
+      // Same tool — rebuild body geometry only if diam/length changed
+      const r = Math.max(0.2, diam * 0.5);
+      const prev = (toolBodyMesh.userData.toolVis as any) || {};
+      const changed = Math.abs((prev.r ?? 0) - r) > 0.01
+                   || Math.abs((prev.L ?? 0) - visLen) > 0.5;
+      if (changed) {
+        toolBodyMesh.geometry.dispose();
+        const profile = buildToolProfile(diam, visLen, _lastToolMeta);
+        toolBodyMesh.geometry = buildToolGeometry(profile);
+        toolBodyMesh.userData.toolVis = { r, L: visLen };
+      }
     }
-  }
-    if (toolMarker) {
-    toolMarker.visible = true;
   }
 
 

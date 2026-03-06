@@ -1642,6 +1642,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
           <div class="toolActions">
             <button class="btn toolActionBtn" :disabled="!permissions.idle" @click="toolTableRef?.openAdd()">+ Add</button>
+            <button class="btn toolActionBtn" @click="toolTableRef?.triggerImport()">Import</button>
             <button class="btn toolActionBtn" :disabled="!permissions.idle" @click="toolTableRef?.fetchTools()">Refresh</button>
           </div>
           <div class="toolStatusRow">
