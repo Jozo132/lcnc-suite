@@ -913,6 +913,10 @@ function unloadFile() {
 }
 
 /** ---------- keyboard shortcuts ---------- */
+const keyboardJogEnabled = ref(loadMachineDefaults().keyboardJog);
+watch(settingsDialogOpen, (open) => {
+  if (!open) keyboardJogEnabled.value = loadMachineDefaults().keyboardJog;
+});
 const JOG_KEY_MAP: Record<string, { axis: number; dir: 1 | -1 }> = {
   ArrowLeft:  { axis: 0, dir: -1 },
   ArrowRight: { axis: 0, dir:  1 },
@@ -962,6 +966,7 @@ function onKeyDown(e: KeyboardEvent) {
   const isRotaryKey = !!rotaryJogKeys.value[e.key];
   const jog = JOG_KEY_MAP[e.key] ?? rotaryJogKeys.value[e.key];
   if (jog) {
+    if (!keyboardJogEnabled.value) return;
     e.preventDefault();
     if (e.repeat || jogKeys.has(e.key)) return;
     if (!permissions.value.jog) return;

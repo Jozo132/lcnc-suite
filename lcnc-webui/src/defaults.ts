@@ -156,6 +156,7 @@ export interface MachineDefaults {
   runFromLine: boolean;
   rflSpindleDir: SpindleDir;
   rflSpindleRpm: number;
+  keyboardJog: boolean;
 }
 
 const MACHINE_FALLBACK: MachineDefaults = {
@@ -163,6 +164,7 @@ const MACHINE_FALLBACK: MachineDefaults = {
   runFromLine: false,
   rflSpindleDir: "forward",
   rflSpindleRpm: 10000,
+  keyboardJog: true,
 };
 
 registerSection<MachineDefaults>("machine", MACHINE_FALLBACK, (saved, fb) => {
@@ -173,6 +175,7 @@ registerSection<MachineDefaults>("machine", MACHINE_FALLBACK, (saved, fb) => {
     runFromLine: saved.runFromLine ?? fb.runFromLine,
     rflSpindleDir: (dir === "off" || dir === "forward" || dir === "reverse" ? dir : fb.rflSpindleDir) as SpindleDir,
     rflSpindleRpm: typeof saved.rflSpindleRpm === "number" ? saved.rflSpindleRpm : fb.rflSpindleRpm,
+    keyboardJog: saved.keyboardJog ?? fb.keyboardJog,
   };
 });
 

@@ -9,6 +9,7 @@ const can = usePermissions();
 
 // ─── Sub-view navigation ──────────────────────────────────────────
 const manualView = ref<"position" | "jogging" | "mdi">("position");
+const g5xOptions = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"];
 
 const props = defineProps<{
   // DRO props
@@ -139,8 +140,20 @@ function onMdiKeydown(e: KeyboardEvent) {
       <button class="tab-btn" :class="{ active: manualView === 'mdi' }" @click="manualView = 'mdi'">MDI</button>
     </div>
 
+    <!-- WCS selector -->
+    <div class="g5xRow">
+      <button
+        v-for="g in g5xOptions"
+        :key="g"
+        class="g5xBtn"
+        :class="{ active: g === g5xLabel }"
+        :disabled="!can.idle"
+        @click="emit('setG5x', g)"
+      >{{ g }}</button>
+    </div>
+
     <!-- ═══ POSITION VIEW ═══ -->
-    <template v-if="manualView === 'position'">
+    <div v-if="manualView === 'position'" class="subView scroll-thin">
       <DroPanel
         :axes="axes"
         :workPos="workPos"
@@ -154,7 +167,6 @@ function onMdiKeydown(e: KeyboardEvent) {
         @update:touchoff="emit('update:touchoff', $event)"
         @setAxis="(axis: number, val: number) => emit('setAxis', axis, val)"
         @setAll="(vals: number[]) => emit('setAll', vals)"
-        @setG5x="emit('setG5x', $event)"
         @homeAll="emit('homeAll')"
         @unhomeAll="emit('unhomeAll')"
         @homeAxis="emit('homeAxis', $event)"
@@ -166,10 +178,10 @@ function onMdiKeydown(e: KeyboardEvent) {
         <button class="btn" :disabled="!can.ready" @click="emit('goToHome')">Go to Home</button>
         <button class="btn" :disabled="!can.ready" @click="emit('goToZero')">Go to Zero</button>
       </div>
-    </template>
+    </div>
 
     <!-- ═══ JOGGING VIEW ═══ -->
-    <template v-if="manualView === 'jogging'">
+    <div v-if="manualView === 'jogging'" class="subView scroll-thin">
       <JogPanel
         :axes="axes"
         :jogVel="jogVel"
@@ -189,39 +201,37 @@ function onMdiKeydown(e: KeyboardEvent) {
         @update:jogIncrement="emit('update:jogIncrement', $event)"
         @toggleTeleop="emit('toggleTeleop')"
       />
-    </template>
+    </div>
 
     <!-- ═══ MDI VIEW ═══ -->
-    <template v-if="manualView === 'mdi'">
-      <div class="mdiSection">
-        <div class="mdiRow">
-          <input
-            ref="mdiInputRef"
-            type="text"
-            class="mdiInput"
-            :value="mdiText"
-            @input="emit('update:mdiText', ($event.target as HTMLInputElement).value)"
-            @keyup.enter="handleSend"
-            @keydown="onMdiKeydown"
-            :disabled="!can.ready"
-            placeholder="G-code command (↑↓ history)"
-          />
-          <button class="btn-inline" @click="handleSend" :disabled="!can.ready">
-            Send
-          </button>
-        </div>
-        <div class="mdiHistoryHeader">
-          <span class="sub">History</span>
-          <button class="btn-inline" @click="clearHistory" :disabled="!can.ready || history.length === 0">Clear</button>
-        </div>
-        <div class="mdiHistoryList scroll-thin">
-          <div v-for="(cmd, i) in history" :key="i" class="mdiHistoryItem"
-               :class="{ active: historyIndex === i }"
-               @click="emit('update:mdiText', cmd)">{{ cmd }}</div>
-          <div v-if="history.length === 0" class="mdiHistoryEmpty">No history</div>
-        </div>
+    <div v-if="manualView === 'mdi'" class="mdiSection">
+      <div class="mdiRow">
+        <input
+          ref="mdiInputRef"
+          type="text"
+          class="mdiInput"
+          :value="mdiText"
+          @input="emit('update:mdiText', ($event.target as HTMLInputElement).value)"
+          @keyup.enter="handleSend"
+          @keydown="onMdiKeydown"
+          :disabled="!can.ready"
+          placeholder="G-code command (↑↓ history)"
+        />
+        <button class="btn-inline" @click="handleSend" :disabled="!can.ready">
+          Send
+        </button>
       </div>
-    </template>
+      <div class="mdiHistoryHeader">
+        <span class="sub">History</span>
+        <button class="btn-inline" @click="clearHistory" :disabled="!can.ready || history.length === 0">Clear</button>
+      </div>
+      <div class="mdiHistoryList scroll-thin">
+        <div v-for="(cmd, i) in history" :key="i" class="mdiHistoryItem"
+             :class="{ active: historyIndex === i }"
+             @click="emit('update:mdiText', cmd)">{{ cmd }}</div>
+        <div v-if="history.length === 0" class="mdiHistoryEmpty">No history</div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -231,6 +241,16 @@ function onMdiKeydown(e: KeyboardEvent) {
   flex-direction: column;
   gap: var(--gap-section);
   height: 100%;
+  min-height: 0;
+}
+
+.subView {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-section);
 }
 
 .mdiSection {
@@ -282,6 +302,12 @@ function onMdiKeydown(e: KeyboardEvent) {
   padding: 12px;
   text-align: center;
   opacity: 0.5;
+}
+
+.g5xRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
 .gotoRow {

@@ -580,6 +580,17 @@ function fmtR(key: string): string {
 
 <template>
   <div class="probePanel scroll-thin">
+    <!-- Sub-view tabs -->
+    <div class="viewTabs">
+      <button class="tab-btn" :class="{ active: probeView === 'outside' }" @click="probeView = 'outside'">Outside</button>
+      <button class="tab-btn" :class="{ active: probeView === 'inside' }" @click="probeView = 'inside'">Inside</button>
+      <button class="tab-btn" :class="{ active: probeView === 'boss' }" @click="probeView = 'boss'">Boss/Pocket</button>
+      <button class="tab-btn" :class="{ active: probeView === 'ridge' }" @click="probeView = 'ridge'">Ridge/Valley</button>
+      <button class="tab-btn" :class="{ active: probeView === 'angle' }" @click="probeView = 'angle'">Angle</button>
+      <button class="tab-btn" :class="{ active: probeView === 'cal' }" @click="probeView = 'cal'">Calibrate</button>
+      <button class="tab-btn" :class="{ active: probeView === 'surface' }" @click="probeView = 'surface'">Surface</button>
+    </div>
+
     <!-- WCS selector -->
     <div class="g5xRow">
       <button
@@ -590,17 +601,6 @@ function fmtR(key: string): string {
         :disabled="!can.idle"
         @click="emit('setG5x', g)"
       >{{ g }}</button>
-    </div>
-
-    <!-- Sub-view tabs -->
-    <div class="viewTabs">
-      <button class="tab-btn" :class="{ active: probeView === 'outside' }" @click="probeView = 'outside'">Outside</button>
-      <button class="tab-btn" :class="{ active: probeView === 'inside' }" @click="probeView = 'inside'">Inside</button>
-      <button class="tab-btn" :class="{ active: probeView === 'boss' }" @click="probeView = 'boss'">Boss/Pocket</button>
-      <button class="tab-btn" :class="{ active: probeView === 'ridge' }" @click="probeView = 'ridge'">Ridge/Valley</button>
-      <button class="tab-btn" :class="{ active: probeView === 'angle' }" @click="probeView = 'angle'">Angle</button>
-      <button class="tab-btn" :class="{ active: probeView === 'cal' }" @click="probeView = 'cal'">Calibrate</button>
-      <button class="tab-btn" :class="{ active: probeView === 'surface' }" @click="probeView = 'surface'">Surface</button>
     </div>
 
     <!-- Control bar -->
@@ -1355,14 +1355,6 @@ function fmtR(key: string): string {
   display: flex;
   gap: 6px;
   flex-wrap: wrap;
-  margin-top: 8px;
-}
-
-/* View tabs */
-.viewTabs {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 4px;
 }
 
 /* Fixed-height section so grid + params don't shift when switching tabs */
@@ -1682,7 +1674,6 @@ function fmtR(key: string): string {
 }
 .surfaceActions .btn {
   flex: 1;
-  min-width: 80px;
 }
 .surfaceActions .btn.active {
   background: var(--ok);

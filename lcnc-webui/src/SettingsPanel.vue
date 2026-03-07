@@ -63,6 +63,7 @@ const toolChangeMode = ref<ToolChangeMode>(machSaved.toolChangeMode);
 const runFromLine = ref(machSaved.runFromLine);
 const rflSpindleDir = ref<SpindleDir>(machSaved.rflSpindleDir);
 const rflSpindleRpm = ref(machSaved.rflSpindleRpm);
+const keyboardJog = ref(machSaved.keyboardJog);
 
 function saveMachine() {
   saveMachineDefaults({
@@ -70,6 +71,7 @@ function saveMachine() {
     runFromLine: runFromLine.value,
     rflSpindleDir: rflSpindleDir.value,
     rflSpindleRpm: rflSpindleRpm.value,
+    keyboardJog: keyboardJog.value,
   });
 }
 
@@ -606,6 +608,28 @@ const halStats = computed(() => ({
                   <input type="number" v-model.number="rflSpindleRpm" min="0" step="100" @change="saveMachine()" />
                 </div>
               </div>
+            </div>
+          </div>
+          <div class="section">
+            <div class="sub">Keyboard Jogging</div>
+            <div class="settingDesc">Allow arrow keys, Page Up/Down, and bracket keys to jog axes.</div>
+            <div class="btnGroup modeGroup">
+              <button
+                class="optBtn modeBtn"
+                :class="{ active: keyboardJog }"
+                @click="keyboardJog = true; saveMachine()"
+              >
+                <span class="modeName">Enabled</span>
+                <span class="modeDesc">Arrow/Page/bracket keys jog the machine</span>
+              </button>
+              <button
+                class="optBtn modeBtn"
+                :class="{ active: !keyboardJog }"
+                @click="keyboardJog = false; saveMachine()"
+              >
+                <span class="modeName">Disabled</span>
+                <span class="modeDesc">Keyboard jog keys are ignored</span>
+              </button>
             </div>
           </div>
         </div>

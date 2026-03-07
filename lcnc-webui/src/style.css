@@ -25,7 +25,7 @@
 
   /* Panel sizing */
   --panel-min-w: 460px;
-  --panel-min-w-wide: 720px;
+  --panel-min-w-wide: 580px;
   --panel-min-h: 400px;
   --panel-h-portrait: 500px;
   --viewer-min-h-portrait: 500px;
@@ -182,6 +182,7 @@ button {
   color: var(--fg);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, opacity 0.15s;
+  min-width: 48px;
 }
 
 button:hover:not(:disabled) {
@@ -512,6 +513,12 @@ input[type="checkbox"]:disabled {
   opacity: 1;
   background: var(--hl-selected);
   border-color: color-mix(in oklab, var(--fg) 30%, var(--border));
+}
+
+.viewTabs {
+  display: flex;
+  gap: var(--gap-tight);
+  flex-wrap: wrap;
 }
 
 /* ---- G5x coordinate system buttons ---- */

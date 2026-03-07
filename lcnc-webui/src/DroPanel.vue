@@ -26,10 +26,7 @@ const emit = defineEmits<{
   (e: "unhomeAll"): void;
   (e: "homeAxis", joint: number): void;
   (e: "unhomeAxis", joint: number): void;
-  (e: "setG5x", gcode: string): void;
 }>();
-
-const g5xOptions = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"];
 
 // Dynamic grid-row span for the "Set All" / "Home All" button
 const spanRows = computed(() => `1 / ${props.axes.length + 1}`);
@@ -62,17 +59,6 @@ function touchoffStep(letter: string) {
 
 <template>
   <div class="container">
-    <div class="g5xRow">
-      <button
-        v-for="g in g5xOptions"
-        :key="g"
-        class="g5xBtn"
-        :class="{ active: g === g5xLabel }"
-        :disabled="!can.idle"
-        @click="emit('setG5x', g)"
-      >{{ g }}</button>
-    </div>
-
     <div class="section">
       <div class="sub">Work Position ({{ g5xLabel }})</div>
       <div class="grid">
@@ -156,10 +142,4 @@ function touchoffStep(letter: string) {
   justify-content: center;
 }
 
-.g5xRow {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
-  margin-top: 8px;
-}
 </style>
