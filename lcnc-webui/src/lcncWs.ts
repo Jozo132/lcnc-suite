@@ -81,6 +81,7 @@ export function connectWs() {
 
   let _pendingStatus: any = null;
   let _flushScheduled = false;
+  let _lastToolMeta: { num: number; meta: any } | null = null;
 
   ws.onmessage = (ev) => {
     let msg: any;
@@ -119,6 +120,15 @@ export function connectWs() {
           unreadCount.value++;
         }
         persistMessages(messages.value);
+      }
+
+      // Preserve tool_meta across batched messages — gateway sends it only
+      // once per tool change, so if a second status overwrites _pendingStatus
+      // before the rAF fires, the one-shot tool_meta would be lost forever.
+      if (msg.data?.tool_meta && msg.data?.tool_number != null) {
+        _lastToolMeta = { num: msg.data.tool_number, meta: msg.data.tool_meta };
+      } else if (_lastToolMeta && msg.data?.tool_number === _lastToolMeta.num && !msg.data?.tool_meta) {
+        msg.data.tool_meta = _lastToolMeta.meta;
       }
 
       // Buffer status as plain data — flush to reactive ref once per rAF.

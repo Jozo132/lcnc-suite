@@ -825,9 +825,12 @@ resetBackplot();
 
 }
 
-  // Default tool until viewer_state arrives
-  toolMarker = buildToolGroup(6 * _unitScale, 60 * _unitScale, null);
-  _toolGrp!.add(toolMarker);
+  // Default tool until viewer_state arrives — but skip if applyState already
+  // built the real tool during the async gap (loadMachineAssets yield).
+  if (_currentToolNum == null) {
+    toolMarker = buildToolGroup(6 * _unitScale, 60 * _unitScale, null);
+    _toolGrp!.add(toolMarker);
+  }
 
 
 
@@ -1754,11 +1757,17 @@ watch(() => props.active, (now) => {
 }, { flush: 'post' });
 
 // Buffer latest status for rAF consumption (frame dropping)
-// Always buffer even when hidden so state is ready when viewer becomes active
+// Always buffer even when hidden so state is ready when viewer becomes active.
+// Also cache tool_meta in the shared cache — gateway sends it only once per
+// tool change, so we must grab it here before pendingState gets overwritten.
 watch(
   () => status.value,
   (msg) => {
-    if (msg?.data) pendingState = msg.data;
+    if (!msg?.data) return;
+    pendingState = msg.data;
+    if (msg.data.tool_meta && msg.data.tool_number != null) {
+      _toolMetaCache.set(msg.data.tool_number, msg.data.tool_meta);
+    }
   },
 );
 
