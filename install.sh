@@ -13,6 +13,14 @@ set -euo pipefail
 # The script will prompt for sudo when system packages are needed.
 # ============================================================
 
+# Don't run the whole script as root — only the apt parts need sudo
+if [[ "$EUID" -eq 0 ]]; then
+  echo "ERROR: Do not run this script as root or with sudo."
+  echo "       Run as your normal user:  ./install.sh"
+  echo "       The script will call sudo internally when needed."
+  exit 1
+fi
+
 NODE_MAJOR_MIN=18
 PY_MINOR_MIN=9
 
