@@ -91,7 +91,7 @@ function touchoffStep(letter: string) {
 .container {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--gap-panel);
 }
 
 .section {

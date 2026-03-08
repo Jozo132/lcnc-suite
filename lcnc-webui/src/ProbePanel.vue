@@ -1281,10 +1281,13 @@ function fmtR(key: string): string {
     </div>
 
     <!-- Context help card -->
-    <div v-if="activeTip && tipDesc[activeTip]" class="tipCard" @click.stop>
-      {{ activeTip ? tipDesc[activeTip]?.text : '' }}
-      <span class="varRef">{{ activeTip ? tipDesc[activeTip]?.var : '' }}</span>
-    </div>
+    <template v-if="activeTip && tipDesc[activeTip]">
+      <div class="sep"></div>
+      <div class="tipCard" @click.stop>
+        {{ tipDesc[activeTip]?.text }}
+        <span class="varRef">{{ tipDesc[activeTip]?.var }}</span>
+      </div>
+    </template>
 
   </div>
 
@@ -1304,7 +1307,7 @@ function fmtR(key: string): string {
 .probePanel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: var(--gap-panel);
   overflow-y: auto;
   height: 100%;
   position: relative;

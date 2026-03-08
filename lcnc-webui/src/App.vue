@@ -2143,7 +2143,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 .controlIcon { font-size: var(--fs-2xl); }
 
 .spindlePopover {
-  top: 0;
+  bottom: 0;
   left: 100%;
   margin-left: 6px;
   min-width: 280px;
@@ -2272,7 +2272,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
 /* ---- Coolant popover ---- */
 .coolantPopover {
-  top: 0;
+  bottom: 0;
   left: 100%;
   margin-left: 6px;
   min-width: 200px;

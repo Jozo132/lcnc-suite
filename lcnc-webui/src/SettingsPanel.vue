@@ -86,7 +86,7 @@ const tsParams = ref({
   offsetDirection: 0,
   touchX: 0,
   touchY: 0,
-  touchZ: -180,
+  touchZ: 0,
   useToolTable: 0,
   toolMinDis: 10,
   brakeAfter: 0,
@@ -447,6 +447,8 @@ const halStats = computed(() => ({
           </div>
         </div>
 
+        <div class="sep"></div>
+
         <div class="section">
           <div class="sub">Layer Defaults</div>
           <div class="layerGrid">
@@ -456,6 +458,8 @@ const halStats = computed(() => ({
             </label>
           </div>
         </div>
+
+        <div class="sep"></div>
 
         <div class="section">
           <div class="sub">Color Defaults</div>
@@ -471,6 +475,8 @@ const halStats = computed(() => ({
             </div>
           </div>
         </div>
+
+        <div class="sep"></div>
 
         <div class="section">
           <div class="sub">Opacity Defaults</div>
@@ -488,6 +494,9 @@ const halStats = computed(() => ({
             </div>
           </div>
         </div>
+
+        <div class="sep"></div>
+
         <div class="section" v-if="machineParts.length > 0">
           <div class="sub">Machine Colors</div>
           <div class="fieldGroup">
@@ -509,6 +518,8 @@ const halStats = computed(() => ({
             </label>
           </div>
         </div>
+
+        <div class="sep"></div>
 
         <div class="section">
           <div class="sub">Viewer Behavior</div>
@@ -571,6 +582,7 @@ const halStats = computed(() => ({
               </button>
             </div>
           </div>
+          <div class="sep"></div>
           <div class="section">
             <div class="sub">Run from Line</div>
             <div class="settingDesc">Allow starting program execution from a selected line in the code viewer.</div>
@@ -610,6 +622,7 @@ const halStats = computed(() => ({
               </div>
             </div>
           </div>
+          <div class="sep"></div>
           <div class="section">
             <div class="sub">Keyboard Jogging</div>
             <div class="settingDesc">Allow arrow keys, Page Up/Down, and bracket keys to jog axes.</div>
@@ -649,6 +662,8 @@ const halStats = computed(() => ({
             </div>
           </div>
 
+          <div class="sep"></div>
+
           <div class="section">
             <div class="sub">Tool Change Position (G30) <span class="tip" @click.stop="toggleTip('g30')">?</span></div>
             <div class="tsGrid">
@@ -664,6 +679,8 @@ const halStats = computed(() => ({
               <button class="optBtn" @click="loadG30" :disabled="g30Loading">Refresh</button>
             </div>
           </div>
+
+          <div class="sep"></div>
 
           <div class="section">
             <div class="sub">Probe Settings</div>
@@ -682,6 +699,8 @@ const halStats = computed(() => ({
               <input type="number" v-model.number="tsParams.spindleZeroHeight" min="0" step="1" @change="saveTsParams" />
             </div>
           </div>
+
+          <div class="sep"></div>
 
           <div class="section">
             <div class="sub">Options</div>
@@ -727,6 +746,8 @@ const halStats = computed(() => ({
             </div>
           </div>
 
+          <div class="sep"></div>
+
           <div class="section">
             <div class="sub">Diameter Offset</div>
             <div class="tsGrid">
@@ -736,6 +757,8 @@ const halStats = computed(() => ({
               <input type="number" v-model.number="tsParams.offsetValue" min="0" max="100" step="5" @change="saveTsParams" />
             </div>
           </div>
+
+          <div class="sep"></div>
 
           <div class="section">
             <div class="sub">Edge-Finder</div>
@@ -752,10 +775,13 @@ const halStats = computed(() => ({
           </div>
 
           <!-- Context help card -->
-          <div v-if="activeTip && tipDesc[activeTip]" class="tipCard" @click.stop>
-            {{ activeTip ? tipDesc[activeTip]?.text : '' }}
-            <span class="varRef">{{ activeTip ? tipDesc[activeTip]?.var : '' }}</span>
-          </div>
+          <template v-if="activeTip && tipDesc[activeTip]">
+            <div class="sep"></div>
+            <div class="tipCard" @click.stop>
+              {{ tipDesc[activeTip]?.text }}
+              <span class="varRef">{{ tipDesc[activeTip]?.var }}</span>
+            </div>
+          </template>
         </div>
       </template>
 
@@ -942,11 +968,13 @@ const halStats = computed(() => ({
   overflow-y: auto;
   height: 100%;
   position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-panel);
 }
 
 
 .section {
-  margin-bottom: 24px;
 }
 
 .sub {
