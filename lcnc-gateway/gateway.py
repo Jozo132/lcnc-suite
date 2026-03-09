@@ -2105,6 +2105,10 @@ class PreviewCanon(Translated, ArcsToSegmentsMixin, StatMixin):
         self.lo = (0,) * 9     # last output position (9-axis)
         self.first_move = True
         self.suppress = 0
+        self.arc_dist = 0.0     # accumulated arc distance (inches, pre-scale)
+        self.arc_moves = 0      # number of arc line segments
+        self.tools_used = set() # tool numbers seen via interpreter
+        self.tool_changes = 0   # number of tool changes
         self.xo = self.yo = self.zo = 0.0
         self.ao = self.bo = self.co = 0.0
         self.uo = self.vo = self.wo = 0.0
@@ -2128,6 +2132,9 @@ class PreviewCanon(Translated, ArcsToSegmentsMixin, StatMixin):
     def change_tool(self, idx):
         StatMixin.change_tool(self, idx)
         self.first_move = True
+        self.tool_changes += 1
+        if idx > 0:
+            self.tools_used.add(idx)
 
     def tool_offset(self, xo, yo, zo, ao, bo, co, uo, vo, wo):
         self.first_move = True
@@ -2172,6 +2179,9 @@ class PreviewCanon(Translated, ArcsToSegmentsMixin, StatMixin):
         lo = self.lo
         for l in segs:
             self.feed.append((self.lineno, lo, l, self.feedrate, (self.xo, self.yo, self.zo)))
+            dx, dy, dz = l[0] - lo[0], l[1] - lo[1], l[2] - lo[2]
+            self.arc_dist += (dx*dx + dy*dy + dz*dz) ** 0.5
+            self.arc_moves += 1
             lo = l
         self.lo = lo
 
@@ -2222,14 +2232,74 @@ def parse_gcode_preview(filename: str, machine_units: str = "mm") -> Dict[str, A
 
         feed: List[List[float]] = []
         feed_lines: List[int] = []
-        for lineno, _start, end, _rate, _tlo in canon.feed:
+        total_feed_dist = 0.0
+        total_feed_time = 0.0
+        feed_rates: set = set()
+        for lineno, start, end, rate, _tlo in canon.feed:
             feed.append([(end[0] - ox) * unit_scale, (end[1] - oy) * unit_scale, (end[2] - oz) * unit_scale])
             feed_lines.append(lineno)
+            dx = (end[0] - start[0]) * unit_scale
+            dy = (end[1] - start[1]) * unit_scale
+            dz = (end[2] - start[2]) * unit_scale
+            dist = (dx*dx + dy*dy + dz*dz) ** 0.5
+            total_feed_dist += dist
+            if rate > 0:
+                total_feed_time += dist / (rate * unit_scale)
+                feed_rates.add(round(rate * unit_scale * 60.0, 1))
 
         rapid: List[List[float]] = []
-        for _lineno, _start, end, _tlo in canon.rapid:
+        total_rapid_dist = 0.0
+        for _lineno, start, end, _tlo in canon.rapid:
             rapid.append([(end[0] - ox) * unit_scale, (end[1] - oy) * unit_scale, (end[2] - oz) * unit_scale])
-        return {"feed": feed, "feed_lines": feed_lines, "rapid": rapid}
+            dx = (end[0] - start[0]) * unit_scale
+            dy = (end[1] - start[1]) * unit_scale
+            dz = (end[2] - start[2]) * unit_scale
+            total_rapid_dist += (dx*dx + dy*dy + dz*dz) ** 0.5
+
+        # Estimate rapid time from INI max velocities (units/sec)
+        rapid_vel = None
+        try:
+            for ax in range(3):
+                v = ini.find("AXIS_%d" % ax, "MAX_VELOCITY")
+                if v:
+                    v_scaled = float(v)  # INI is in machine units/sec already
+                    if rapid_vel is None or v_scaled < rapid_vel:
+                        rapid_vel = v_scaled
+        except Exception:
+            pass
+        total_rapid_time = (total_rapid_dist / rapid_vel) if rapid_vel else 0.0
+
+        # Arc vs linear breakdown
+        arc_dist_scaled = canon.arc_dist * unit_scale
+        linear_dist = total_feed_dist - arc_dist_scaled
+        linear_moves = len(canon.feed) - canon.arc_moves
+
+        # File size
+        try:
+            file_size = os.path.getsize(filename)
+        except Exception:
+            file_size = 0
+
+        stats = {
+            "feedMoves": len(canon.feed),
+            "rapidMoves": len(canon.rapid),
+            "linearMoves": linear_moves,
+            "arcMoves": canon.arc_moves,
+            "feedDist": round(total_feed_dist, 2),
+            "rapidDist": round(total_rapid_dist, 2),
+            "linearDist": round(linear_dist, 2),
+            "arcDist": round(arc_dist_scaled, 2),
+            "feedTime": round(total_feed_time, 1),
+            "rapidTime": round(total_rapid_time, 1),
+            "totalTime": round(total_feed_time + total_rapid_time, 1),
+            "feedRates": sorted(feed_rates),
+            "toolChanges": canon.tool_changes,
+            "toolsUsed": sorted(canon.tools_used),
+            "unit": machine_units,
+            "fileSize": file_size,
+        }
+
+        return {"feed": feed, "feed_lines": feed_lines, "rapid": rapid, "stats": stats}
 
     except Exception as e:
         print(f"[GCODE] preview failed: {e}")
@@ -2762,6 +2832,7 @@ async def ws_endpoint(ws: WebSocket):
                         "feed": preview["feed"],
                         "feed_lines": preview["feed_lines"],
                         "rapid": preview["rapid"],
+                        "stats": preview.get("stats"),
                         "content": gcode_content,
                     },
                 },
@@ -2935,6 +3006,7 @@ async def ws_endpoint(ws: WebSocket):
                                     "feed": preview["feed"],
                                     "feed_lines": preview["feed_lines"],
                                     "rapid": preview["rapid"],
+                                    "stats": preview.get("stats"),
                                     "content": gcode_content,
                                 },
                             },

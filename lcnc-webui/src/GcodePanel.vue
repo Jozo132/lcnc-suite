@@ -1,12 +1,32 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
 import { loadMachineDefaults } from "./defaults";
 
+export interface GcodeStats {
+  feedMoves: number;
+  rapidMoves: number;
+  linearMoves: number;
+  arcMoves: number;
+  feedDist: number;
+  rapidDist: number;
+  linearDist: number;
+  arcDist: number;
+  feedTime: number;
+  rapidTime: number;
+  totalTime: number;
+  feedRates: number[];
+  toolChanges: number;
+  toolsUsed: number[];
+  unit: string;
+  fileSize: number;
+}
+
 const props = defineProps<{
   activeFile: string | null;
   gcodeContent: string | null;
+  gcodeStats: GcodeStats | null;
   currentLine: number | null;
   isPaused: boolean;
   elapsed: string;
@@ -30,6 +50,59 @@ const emit = defineEmits<{
 }>();
 
 const codeViewerRef = ref<HTMLDivElement | null>(null);
+const showStats = ref(false);
+
+function fmtTime(secs: number): string {
+  if (secs < 60) return `${Math.round(secs)}s`;
+  const m = Math.floor(secs / 60);
+  const s = Math.round(secs % 60);
+  if (m < 60) return `${m}m ${s}s`;
+  const h = Math.floor(m / 60);
+  return `${h}h ${m % 60}m`;
+}
+
+function fmtDist(val: number, unit: string): string {
+  return `${val.toFixed(1)} ${unit}`;
+}
+
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// SVG donut chart segments (distance breakdown: rapid / linear / arc)
+const DONUT_R = 40;
+const DONUT_C = 2 * Math.PI * DONUT_R;
+
+const donutSegments = computed(() => {
+  const s = props.gcodeStats;
+  if (!s) return [];
+  const total = s.rapidDist + s.linearDist + s.arcDist;
+  if (total <= 0) return [];
+  const segs: { color: string; label: string; value: number; pct: number; dasharray: string; dashoffset: number }[] = [];
+  let offset = 0;
+  const items = [
+    { color: "var(--warn)", label: "Rapid", value: s.rapidDist },
+    { color: "var(--info)", label: "Linear", value: s.linearDist },
+    { color: "var(--ok)", label: "Arc", value: s.arcDist },
+  ];
+  for (const item of items) {
+    if (item.value <= 0) continue;
+    const pct = item.value / total;
+    const len = pct * DONUT_C;
+    segs.push({
+      color: item.color,
+      label: item.label,
+      value: item.value,
+      pct: Math.round(pct * 100),
+      dasharray: `${len} ${DONUT_C - len}`,
+      dashoffset: -offset,
+    });
+    offset += len;
+  }
+  return segs;
+});
 
 const fileName = computed(() => {
   if (!props.activeFile) return "No file loaded";
@@ -245,11 +318,18 @@ const showRunDialog = ref(false);
 const dialogSpindleDir = ref<"off" | "forward" | "reverse">("forward");
 const dialogSpindleSpeed = ref(10000);
 
+function dismissStats() { showStats.value = false; }
+
 onMounted(() => {
   const mach = loadMachineDefaults();
   runFromLineEnabled.value = mach.runFromLine;
   dialogSpindleDir.value = mach.rflSpindleDir;
   dialogSpindleSpeed.value = mach.rflSpindleRpm;
+  document.addEventListener("click", dismissStats);
+});
+
+onUnmounted(() => {
+  document.removeEventListener("click", dismissStats);
 });
 
 function onLineClick(lineNum: number) {
@@ -330,7 +410,76 @@ async function saveEdit() {
       <div class="fileInfo">
         <span class="label">File:</span>
         <div class="fileName">{{ fileName }}</div>
-        <span class="stats" v-if="gcodeContent">{{ lineCount }} lines</span>
+        <span class="fileMeta" v-if="gcodeContent">{{ lineCount }} lines</span>
+        <div v-if="gcodeStats" class="statsAnchor">
+          <button class="actionBtn" @click.stop="showStats = !showStats">Stats</button>
+          <div class="popover statsPopover" :class="{ open: showStats }" @click.stop>
+            <!-- Donut chart -->
+            <div class="donutRow" v-if="donutSegments.length > 0">
+              <svg class="donut" viewBox="0 0 100 100">
+                <circle class="donutBg" cx="50" cy="50" r="40" />
+                <circle v-for="(seg, i) in donutSegments" :key="i"
+                  cx="50" cy="50" r="40"
+                  fill="none"
+                  :stroke="seg.color"
+                  stroke-width="12"
+                  :stroke-dasharray="seg.dasharray"
+                  :stroke-dashoffset="seg.dashoffset"
+                  transform="rotate(-90 50 50)"
+                />
+              </svg>
+              <div class="donutLegend">
+                <div v-for="seg in donutSegments" :key="seg.label" class="legendItem">
+                  <span class="legendDot" :style="{ background: seg.color }"></span>
+                  <span>{{ seg.label }}</span>
+                  <span class="legendPct">{{ seg.pct }}%</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="statsGrid">
+              <span class="statsLabel">Estimated time</span>
+              <span class="statsValue">{{ fmtTime(gcodeStats.totalTime) }}</span>
+
+              <span class="statsLabel">Feed time</span>
+              <span class="statsValue">{{ fmtTime(gcodeStats.feedTime) }}</span>
+
+              <span class="statsLabel">Rapid time</span>
+              <span class="statsValue">{{ fmtTime(gcodeStats.rapidTime) }}</span>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="statsGrid">
+              <span class="statsLabel">Rapid</span>
+              <span class="statsValue">{{ fmtDist(gcodeStats.rapidDist, gcodeStats.unit) }} ({{ gcodeStats.rapidMoves }})</span>
+
+              <span class="statsLabel">Linear</span>
+              <span class="statsValue">{{ fmtDist(gcodeStats.linearDist, gcodeStats.unit) }} ({{ gcodeStats.linearMoves }})</span>
+
+              <span class="statsLabel">Arc</span>
+              <span class="statsValue">{{ fmtDist(gcodeStats.arcDist, gcodeStats.unit) }} ({{ gcodeStats.arcMoves }})</span>
+            </div>
+
+            <div class="sep"></div>
+
+            <div class="statsGrid">
+              <span class="statsLabel">Tool changes</span>
+              <span class="statsValue">{{ gcodeStats.toolChanges }}</span>
+
+              <span class="statsLabel">Tools used</span>
+              <span class="statsValue">{{ gcodeStats.toolsUsed.length ? gcodeStats.toolsUsed.map(t => 'T' + t).join(', ') : 'None' }}</span>
+
+              <span class="statsLabel">Feed rates</span>
+              <span class="statsValue">{{ gcodeStats.feedRates.length ? gcodeStats.feedRates.join(', ') : '-' }}</span>
+
+              <span class="statsLabel">File size</span>
+              <span class="statsValue">{{ fmtSize(gcodeStats.fileSize) }}</span>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -621,10 +770,84 @@ async function saveEdit() {
   flex-shrink: 0;
 }
 
-.stats {
+.fileMeta {
   font-size: var(--fs-base);
   opacity: 0.7;
   white-space: nowrap;
+}
+
+.statsAnchor {
+  position: relative;
+  margin-left: auto;
+}
+
+.statsPopover.open {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-controls);
+  right: 0;
+  top: 100%;
+  margin-top: 6px;
+  min-width: 260px;
+}
+
+.statsGrid {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px var(--gap-controls);
+  font-size: var(--fs-base);
+}
+
+.statsLabel {
+  opacity: 0.6;
+}
+
+.statsValue {
+  font-family: var(--font-mono);
+  text-align: right;
+}
+
+.donutRow {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-section);
+}
+
+.donut {
+  width: 80px;
+  height: 80px;
+  flex-shrink: 0;
+}
+
+.donutBg {
+  fill: none;
+  stroke: color-mix(in oklab, var(--panel) 90%, var(--fg));
+  stroke-width: 12;
+}
+
+.donutLegend {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--fs-sm);
+}
+
+.legendItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legendDot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legendPct {
+  font-family: var(--font-mono);
+  opacity: 0.6;
   margin-left: auto;
 }
 

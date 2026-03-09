@@ -140,6 +140,7 @@ const workpieceOffset = ref<[number, number, number]>(_vd.workpieceOffset);
 
 // G-code viewer
 const gcodeContent = ref<string | null>(null);
+const gcodeStats = ref<Record<string, any> | null>(null);
 
 /** ---------- status helpers ---------- */
 const st = computed<Record<string, any>>(() => {
@@ -1067,6 +1068,7 @@ watch(viewerGcode, (newGcode) => {
   } else {
     gcodeContent.value = null;
   }
+  gcodeStats.value = newGcode?.stats ?? null;
 });
 
 /** Auto-switch to teleop after all joints home (standard LinuxCNC UI behavior) */
@@ -1574,6 +1576,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             <GcodePanel
               :activeFile="activeFile"
               :gcodeContent="gcodeContent"
+              :gcodeStats="gcodeStats"
               :currentLine="currentLine"
               :isPaused="isPaused"
               :elapsed="elapsedDisplay"
