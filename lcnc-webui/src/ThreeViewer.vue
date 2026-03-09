@@ -108,7 +108,7 @@ export function getCachedGeometry(id: string): THREE.BufferGeometry | undefined 
 import { computed, inject, onMounted, onUnmounted, ref, watch, type ComputedRef } from "vue";
 
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
-import { CSS2DRenderer, CSS2DObject } from "three/examples/jsm/renderers/CSS2DRenderer.js";
+import { Text } from "troika-three-text";
 
 import { viewerInit, viewerGcode, status } from "./lcncWs";
 import { loadViewerDefaults, ALL_LAYERS, type Vec3, type Layer } from "./defaults";
@@ -250,7 +250,6 @@ function toggleHud(panel: HudPanel) { activeHudPanel.value = activeHudPanel.valu
 
 // ---------- Three globals ----------
 let renderer: THREE.WebGLRenderer | null = null;
-let css2dRenderer: CSS2DRenderer | null = null;
 let scene: THREE.Scene | null = null;
 let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera | null = null;
 let perspCam: THREE.PerspectiveCamera | null = null;
@@ -258,6 +257,11 @@ let orthoCam: THREE.OrthographicCamera | null = null;
 const isOrtho = ref(false);
 let controls: OrbitControls | null = null;
 let raf = 0;
+
+// Orientation gizmo (viewport overlay)
+let _gizmoScene: THREE.Scene | null = null;
+let _gizmoCam: THREE.OrthographicCamera | null = null;
+const GIZMO_SIZE = 140; // pixels
 
 // Transform groups (logical)
 const groups: Record<string, THREE.Group> = {};
@@ -332,6 +336,7 @@ let lastBackplotPt: THREE.Vector3 | null = null;
 
 let machineBoundsMesh: THREE.Mesh | null = null;
 let boundsLabels: THREE.Group | null = null;
+const _billboardLabels: Text[] = [];
 let workpieceMesh: THREE.Mesh | null = null;
 let overflowEdges: THREE.LineSegments | null = null;
 const boundsClipPlanes: THREE.Plane[] = [];
@@ -341,6 +346,43 @@ let _machineEdgeLines: THREE.LineSegments[] = [];
 let machineEdges = false;
 let _groupDirMap: Record<string, string | null> = {};  // group → direction (x/y/z/null)
 let _partGroupMap: Record<string, string | null> = {};  // partId → group
+
+function mkTextLabel(text: string, color: string, fontSize: number): Text {
+  const t = new Text();
+  t.text = text;
+  t.fontSize = fontSize;
+  t.color = color;
+  t.anchorX = "center";
+  t.anchorY = "middle";
+  t.outlineWidth = "4%";
+  t.outlineColor = "#000000";
+  t.depthWrite = false;
+  t.sync();
+  return t;
+}
+
+function buildGizmo() {
+  _gizmoScene = new THREE.Scene();
+  const al = 60, ah = al * 0.15, aw = al * 0.08;
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), al, 0xff4444, ah, aw));
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), al, 0x44ff44, ah, aw));
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), al, 0x4488ff, ah, aw));
+
+  const fs = al * 0.35;
+  const lblOff = al * 1.15;
+  for (const [text, color, pos] of [
+    ["X", "#ff4444", [lblOff, 0, 0]],
+    ["Y", "#44ff44", [0, lblOff, 0]],
+    ["Z", "#4488ff", [0, 0, lblOff]],
+  ] as [string, string, number[]][]) {
+    const lbl = mkTextLabel(text, color, fs);
+    lbl.position.set(pos[0]!, pos[1]!, pos[2]!);
+    _gizmoScene.add(lbl);
+  }
+
+  _gizmoCam = new THREE.OrthographicCamera(-80, 80, 80, -80, 1, 500);
+  _gizmoCam.up.set(0, 0, 1);
+}
 
 function resetBackplot() {
   backplotCount = 0;
@@ -723,6 +765,8 @@ function ensureCoreGroups(init: ViewerInit) {
   if (!scene) return;
 
   // reset pointers
+  for (const lbl of _billboardLabels) lbl.dispose();
+  _billboardLabels.length = 0;
   workOrigin = null;
   workAxes = null;
   machineBoundsMesh = null;
@@ -775,17 +819,18 @@ function ensureCoreGroups(init: ViewerInit) {
   workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(), _al, 0x44ff44, _ah, _aw));
   workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(), _al, 0x4488ff, _ah, _aw));
 
-  function _mkAxisLabel(text: string, color: string): CSS2DObject {
-    const el = document.createElement("span");
-    el.textContent = text;
-    el.className = "css2d-label axis-label";
-    el.style.color = color;
-    return new CSS2DObject(el);
-  }
   const _lblOff = _al * 1.15;
-  const xLbl = _mkAxisLabel("X", "#ff4444"); xLbl.position.set(_lblOff, 0, 0); workAxes.add(xLbl);
-  const yLbl = _mkAxisLabel("Y", "#44ff44"); yLbl.position.set(0, _lblOff, 0); workAxes.add(yLbl);
-  const zLbl = _mkAxisLabel("Z", "#4488ff"); zLbl.position.set(0, 0, _lblOff); workAxes.add(zLbl);
+  const _fs = _al * 0.5;
+  for (const [text, color, pos] of [
+    ["X", "#ff4444", [_lblOff, 0, 0]],
+    ["Y", "#44ff44", [0, _lblOff, 0]],
+    ["Z", "#4488ff", [0, 0, _lblOff]],
+  ] as [string, string, number[]][]) {
+    const lbl = mkTextLabel(text, color, _fs);
+    lbl.position.set(pos[0]!, pos[1]!, pos[2]!);
+    workAxes.add(lbl);
+    _billboardLabels.push(lbl);
+  }
 
   workOrigin.add(workAxes);
 
@@ -1207,24 +1252,26 @@ async function buildFromInit(init: ViewerInit) {
       }
 
       // Dimension labels along bottom edges
-      if (boundsLabels) { _workGrp!.remove(boundsLabels); boundsLabels = null; }
+      if (boundsLabels) {
+        boundsLabels.traverse((c: any) => { if (c.dispose) { c.dispose(); _billboardLabels.splice(_billboardLabels.indexOf(c), 1); } });
+        _workGrp!.remove(boundsLabels);
+        boundsLabels = null;
+      }
       boundsLabels = new THREE.Group();
       const [sx, sy, sz] = mb.size as Vec3;
       const [ox, oy, oz] = mb.origin as Vec3;
       const unit = (init.units === "in" || init.units === "inch") ? "in" : "mm";
-      const axes: [string, number, THREE.Vector3, number][] = [
-        ["X", sx, new THREE.Vector3(ox + sx / 2, oy, oz), 0xff4444],
-        ["Y", sy, new THREE.Vector3(ox, oy + sy / 2, oz), 0x44ff44],
-        ["Z", sz, new THREE.Vector3(ox, oy, oz + sz / 2), 0x4488ff],
+      const boundsFs = Math.min(sx, sy, sz) * 0.12;
+      const axes: [string, number, THREE.Vector3, string][] = [
+        ["X", sx, new THREE.Vector3(ox + sx / 2, oy, oz), "#ff4444"],
+        ["Y", sy, new THREE.Vector3(ox, oy + sy / 2, oz), "#44ff44"],
+        ["Z", sz, new THREE.Vector3(ox, oy, oz + sz / 2), "#4488ff"],
       ];
       for (const [name, size, pos, color] of axes) {
-        const el = document.createElement("span");
-        el.textContent = `${name}: ${size.toFixed(0)} ${unit}`;
-        el.className = "css2d-label bounds-label";
-        el.style.color = `#${color.toString(16).padStart(6, "0")}`;
-        const obj = new CSS2DObject(el);
-        obj.position.copy(pos);
-        boundsLabels.add(obj);
+        const lbl = mkTextLabel(`${name}: ${size.toFixed(0)} ${unit}`, color, boundsFs);
+        lbl.position.copy(pos);
+        boundsLabels.add(lbl);
+        _billboardLabels.push(lbl);
       }
       _workGrp!.add(boundsLabels);
     } else {
@@ -1577,7 +1624,6 @@ function resize() {
   }
   camera.updateProjectionMatrix();
   renderer.setSize(w, h);
-  css2dRenderer?.setSize(w, h);
 }
 
 let pendingState: any = null;
@@ -1624,9 +1670,35 @@ function animate() {
     }
   }
 
+  // Billboard text labels — face camera each frame
+  if (camera) {
+    for (const lbl of _billboardLabels) lbl.quaternion.copy(camera.quaternion);
+  }
+
   controls?.update();
   renderer?.render(scene!, camera!);
-  css2dRenderer?.render(scene!, camera!);
+
+  // Orientation gizmo — always ortho, render into bottom-left viewport
+  if (renderer && _gizmoScene && _gizmoCam && camera) {
+    _gizmoCam.position.set(0, 0, 200).applyQuaternion(camera.quaternion);
+    _gizmoCam.quaternion.copy(camera.quaternion);
+
+    // Billboard gizmo labels
+    _gizmoScene.traverse((c: any) => { if (c instanceof Text) c.quaternion.copy(_gizmoCam!.quaternion); });
+
+    const px = renderer.getPixelRatio();
+    const gx = 8 * px, gy = 60 * px, gs = GIZMO_SIZE * px;
+    renderer.setViewport(gx, gy, gs, gs);
+    renderer.setScissor(gx, gy, gs, gs);
+    renderer.setScissorTest(true);
+    renderer.autoClear = false;
+    renderer.clearDepth();
+    renderer.render(_gizmoScene, _gizmoCam);
+    renderer.setScissorTest(false);
+    renderer.autoClear = true;
+    const el = renderer.domElement;
+    renderer.setViewport(0, 0, el.width, el.height);
+  }
 }
 
 watch(isDark, () => {
@@ -1652,15 +1724,8 @@ onMounted(() => {
   renderer.setPixelRatio(window.devicePixelRatio);
   renderer.localClippingEnabled = true;
 
-  css2dRenderer = new CSS2DRenderer();
-  css2dRenderer.domElement.style.position = "absolute";
-  css2dRenderer.domElement.style.top = "0";
-  css2dRenderer.domElement.style.left = "0";
-  css2dRenderer.domElement.style.pointerEvents = "none";
-
   if (host.value) {
     host.value.appendChild(renderer.domElement);
-    host.value.appendChild(css2dRenderer.domElement);
   }
 
   controls = new OrbitControls(camera, renderer.domElement);
@@ -1676,6 +1741,8 @@ onMounted(() => {
 
   resizeObs = new ResizeObserver(() => resize());
   resizeObs.observe(host.value!);
+
+  buildGizmo();
 
   resize();
   animate();
@@ -1708,14 +1775,20 @@ onUnmounted(() => {
       renderer.domElement.parentElement.removeChild(renderer.domElement);
     }
   }
-  if (css2dRenderer?.domElement.parentElement) {
-    css2dRenderer.domElement.parentElement.removeChild(css2dRenderer.domElement);
+  // Dispose troika text labels
+  for (const lbl of _billboardLabels) lbl.dispose();
+  _billboardLabels.length = 0;
+
+  // Dispose gizmo
+  if (_gizmoScene) {
+    _gizmoScene.traverse((c: any) => { if (c.dispose) c.dispose(); });
+    _gizmoScene = null;
   }
+  _gizmoCam = null;
 
   if (scene) clearScene();
 
   renderer = null;
-  css2dRenderer = null;
   scene = null;
   camera = null;
   controls = null;
@@ -2050,27 +2123,6 @@ defineExpose({
     <!-- HUD Overlay -->
     <div v-show="hudVisible" class="hud" :style="{ opacity: viewerDefaults.opacities.hud ?? 1 }">
       <div class="hudSection">
-        <div class="label">Machine Position</div>
-        <div class="hudCoords">
-          <div class="hudCol">
-            <div v-for="a in hudPrimary" :key="'m'+a.letter" class="hudCoord">
-              <span class="hudAxis">{{ a.letter }}</span> {{ formatCoord(vst?.machine_pos?.[a.index], a.letter) }}
-            </div>
-          </div>
-          <div v-if="hudAbc.length" class="hudCol">
-            <div v-for="a in hudAbc" :key="'m'+a.letter" class="hudCoord">
-              <span class="hudAxis">{{ a.letter }}</span> {{ formatCoord(vst?.machine_pos?.[a.index], a.letter) }}
-            </div>
-          </div>
-          <div v-if="hudUvw.length" class="hudCol">
-            <div v-for="a in hudUvw" :key="'m'+a.letter" class="hudCoord">
-              <span class="hudAxis">{{ a.letter }}</span> {{ formatCoord(vst?.machine_pos?.[a.index], a.letter) }}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="hudSection">
         <div class="label">Work Position ({{ props.g5xLabel || '-' }})</div>
         <div class="hudCoords">
           <div class="hudCol">
@@ -2086,6 +2138,27 @@ defineExpose({
           <div v-if="hudUvw.length" class="hudCol">
             <div v-for="a in hudUvw" :key="'w'+a.letter" class="hudCoord">
               <span class="hudAxis">{{ a.letter }}</span> {{ formatCoord(vst?.work_pos?.[a.index], a.letter) }}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="hudSection">
+        <div class="label">Machine Position</div>
+        <div class="hudCoords">
+          <div class="hudCol">
+            <div v-for="a in hudPrimary" :key="'m'+a.letter" class="hudCoord">
+              <span class="hudAxis">{{ a.letter }}</span> {{ formatCoord(vst?.machine_pos?.[a.index], a.letter) }}
+            </div>
+          </div>
+          <div v-if="hudAbc.length" class="hudCol">
+            <div v-for="a in hudAbc" :key="'m'+a.letter" class="hudCoord">
+              <span class="hudAxis">{{ a.letter }}</span> {{ formatCoord(vst?.machine_pos?.[a.index], a.letter) }}
+            </div>
+          </div>
+          <div v-if="hudUvw.length" class="hudCol">
+            <div v-for="a in hudUvw" :key="'m'+a.letter" class="hudCoord">
+              <span class="hudAxis">{{ a.letter }}</span> {{ formatCoord(vst?.machine_pos?.[a.index], a.letter) }}
             </div>
           </div>
         </div>
@@ -2255,24 +2328,6 @@ defineExpose({
   overflow: hidden;
   border: 1px solid var(--border);
   background: color-mix(in oklab, var(--panel) 70%, transparent);
-}
-
-:deep(.css2d-label) {
-  font-family: "Inter", "Segoe UI", system-ui, sans-serif;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  white-space: nowrap;
-  pointer-events: none;
-  user-select: none;
-  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
-}
-
-:deep(.axis-label) {
-  font-size: var(--fs-2xl);
-}
-
-:deep(.bounds-label) {
-  font-size: var(--fs-lg);
 }
 
 .hud {

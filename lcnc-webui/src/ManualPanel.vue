@@ -8,7 +8,7 @@ import { loadMdiHistory, saveMdiHistory } from "./defaults";
 const can = usePermissions();
 
 // ─── Sub-view navigation ──────────────────────────────────────────
-const manualView = ref<"position" | "jogging" | "mdi">("position");
+const manualView = ref<"dro" | "jogging" | "mdi">("dro");
 const g5xOptions = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"];
 
 const props = defineProps<{
@@ -135,7 +135,7 @@ function onMdiKeydown(e: KeyboardEvent) {
   <div class="manualPanel">
     <!-- Sub-view tabs -->
     <div class="viewTabs">
-      <button class="tab-btn" :class="{ active: manualView === 'position' }" @click="manualView = 'position'">Position</button>
+      <button class="tab-btn" :class="{ active: manualView === 'dro' }" @click="manualView = 'dro'">DRO</button>
       <button class="tab-btn" :class="{ active: manualView === 'jogging' }" @click="manualView = 'jogging'">Jog</button>
       <button class="tab-btn" :class="{ active: manualView === 'mdi' }" @click="manualView = 'mdi'">MDI</button>
     </div>
@@ -152,8 +152,8 @@ function onMdiKeydown(e: KeyboardEvent) {
       >{{ g }}</button>
     </div>
 
-    <!-- ═══ POSITION VIEW ═══ -->
-    <div v-if="manualView === 'position'" class="subView scroll-thin">
+    <!-- ═══ DRO VIEW ═══ -->
+    <div v-if="manualView === 'dro'" class="subView scroll-thin">
       <DroPanel
         :axes="axes"
         :workPos="workPos"
