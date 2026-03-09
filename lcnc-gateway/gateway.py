@@ -1834,10 +1834,11 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                         lines.sort(key=_var_key)
                     open(var_file, "w").writelines(lines)
                     file_ok = True
-            # 2) Best-effort: set in interpreter memory via MDI (requires armed + idle)
+            # 2) Best-effort: set in interpreter memory via MDI (requires armed + machine on + idle)
             # Split into chunks ≤250 chars to fit LinuxCNC's 256-char MDI buffer
             mdi_ok = False
-            if armed and not reject_if_auto_running():
+            STAT.poll()
+            if armed and bool(safe_get("enabled", False)) and not reject_if_auto_running():
                 try:
                     items = [f"#{k}={float(v)}" for k, v in vars_to_set.items()]
                     chunks, current = [], ""
