@@ -9,8 +9,8 @@
 
       <!-- Views pill -->
       <div class="toolPill">
-        <button class="pillLabel">Views</button>
-        <div class="popover pillPopover">
+        <button class="pillLabel" :class="{ active: openPill === 'views' }" @click.stop="togglePill('views')">Views</button>
+        <div class="popover pillPopover" :class="{ open: openPill === 'views' }" @click.stop>
           <div class="viewGrid">
             <button class="viewBtn" @click="$emit('setView', 'top')">Top</button>
             <button class="viewBtn" @click="$emit('setView', 'bottom')">Bottom</button>
@@ -31,8 +31,8 @@
 
       <!-- Layers pill -->
       <div class="toolPill">
-        <button class="pillLabel">Layers</button>
-        <div class="popover pillPopover">
+        <button class="pillLabel" :class="{ active: openPill === 'layers' }" @click.stop="togglePill('layers')">Layers</button>
+        <div class="popover pillPopover" :class="{ open: openPill === 'layers' }" @click.stop>
           <label><input type="checkbox" v-model="local.backplot" @change="emitToggle('backplot')" /> Backplot</label>
           <label><input type="checkbox" v-model="local.toolpath" @change="emitToggle('toolpath')" /> Toolpath</label>
           <label><input type="checkbox" v-model="local.machine"  @change="emitToggle('machine')"  /> Machine</label>
@@ -46,8 +46,8 @@
 
       <!-- Toolpath pill -->
       <div class="toolPill">
-        <button class="pillLabel">Toolpath</button>
-        <div class="popover pillPopover">
+        <button class="pillLabel" :class="{ active: openPill === 'toolpath' }" @click.stop="togglePill('toolpath')">Toolpath</button>
+        <div class="popover pillPopover" :class="{ open: openPill === 'toolpath' }" @click.stop>
           <button class="viewBtn" @click="$emit('resetBackplot')">Clear Backplot</button>
           <div class="sep"></div>
           <label><input type="checkbox" v-model="pathOnTop" @change="$emit('setPathOnTop', pathOnTop)" /> Always on top</label>
@@ -56,8 +56,8 @@
 
       <!-- Tracking pill -->
       <div class="toolPill">
-        <button class="pillLabel">Tracking</button>
-        <div class="popover pillPopover">
+        <button class="pillLabel" :class="{ active: openPill === 'tracking' }" @click.stop="togglePill('tracking')">Tracking</button>
+        <div class="popover pillPopover" :class="{ open: openPill === 'tracking' }" @click.stop>
           <button class="viewBtn" :class="{ active: trackMode === 'none' }" @click="setTrack('none')">None</button>
           <button class="viewBtn" :class="{ active: trackMode === 'tool' }" @click="setTrack('tool')">Tool</button>
           <button class="viewBtn" :class="{ active: trackMode === 'workpiece' }" @click="setTrack('workpiece')">Workpiece</button>
@@ -66,8 +66,8 @@
 
       <!-- Workpiece pill -->
       <div class="toolPill">
-        <button class="pillLabel">Workpiece</button>
-        <div class="popover pillPopover wpPopover">
+        <button class="pillLabel" :class="{ active: openPill === 'workpiece' }" @click.stop="togglePill('workpiece')">Workpiece</button>
+        <div class="popover pillPopover wpPopover" :class="{ open: openPill === 'workpiece' }" @click.stop>
           <div class="inputRow">
             <label class="inputLabel">Size X</label>
             <input type="number" class="numInput" :value="workpieceSize[0]"
@@ -113,7 +113,7 @@
 </template>
 
 <script setup lang="ts">
-import { reactive, ref } from "vue";
+import { onMounted, onUnmounted, reactive, ref } from "vue";
 import { loadViewerDefaults, type Vec3, type Layer, type TrackMode } from "./defaults";
 
 type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
@@ -177,6 +177,21 @@ function updateOffset(axis: number, value: number) {
   newOffset[axis] = value;
   emit("update:workpieceOffset", newOffset);
 }
+
+// Click-to-toggle popovers (matching sidebar pattern)
+const openPill = ref<string | null>(null);
+
+function togglePill(name: string) {
+  openPill.value = openPill.value === name ? null : name;
+}
+
+function onClickOutside(e: MouseEvent) {
+  const bar = document.querySelector(".floatingBar");
+  if (bar && !bar.contains(e.target as Node)) openPill.value = null;
+}
+
+onMounted(() => document.addEventListener("click", onClickOutside));
+onUnmounted(() => document.removeEventListener("click", onClickOutside));
 </script>
 
 <style scoped>
@@ -215,7 +230,7 @@ function updateOffset(axis: number, value: number) {
   opacity: 0.75;
 }
 
-.toolPill:hover > .pillLabel {
+.pillLabel.active {
   opacity: 1;
   background: var(--panel);
 }
@@ -224,10 +239,11 @@ function updateOffset(axis: number, value: number) {
 .pillPopover {
   bottom: 100%;
   left: 0;
+  margin-bottom: 6px;
   padding: 8px 8px 14px 8px;
 }
 
-.toolPill:hover > .pillPopover {
+.pillPopover.open {
   display: flex;
   flex-direction: column;
   gap: 4px;
