@@ -10,7 +10,7 @@ import GcodePanel from "./GcodePanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 import ToolTablePanel from "./ToolTablePanel.vue";
 import ProbePanel from "./ProbePanel.vue";
-import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, type ThemeMode } from "./defaults";
+import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, type ThemeMode, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 import {
   INTERP_IDLE, INTERP_READING, INTERP_PAUSED, INTERP_WAITING,
   TRAJ_MODE_FREE, TRAJ_MODE_TELEOP,
@@ -1264,7 +1264,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             <fieldset :disabled="!permissions.override" class="fs-reset">
             <div class="ovrRow">
               <span class="ovrLabel">Feed</span>
-              <input type="range" v-model.number="feedSlider" @change="onFeedChange" min="0" :max="maxFeedOverride" step="5" :disabled="!permissions.override || !feedOvrEnabled" />
+              <input type="range" v-model.number="feedSlider" @change="onFeedChange" min="0" :max="maxFeedOverride" :step="STEP_OVERRIDE" :disabled="!permissions.override || !feedOvrEnabled" />
               <span class="sliderVal" :class="{ warn: feedSlider !== 100 }">{{ feedSlider }}%</span>
             </div>
             <div class="ovrPresets">
@@ -1272,7 +1272,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             </div>
             <div class="ovrRow">
               <span class="ovrLabel">Spindle</span>
-              <input type="range" v-model.number="spindleSlider" @change="onSpindleSliderChange" :min="minSpindleOverride" :max="maxSpindleOverride" step="5" :disabled="!permissions.override || !spindleOvrEnabled" />
+              <input type="range" v-model.number="spindleSlider" @change="onSpindleSliderChange" :min="minSpindleOverride" :max="maxSpindleOverride" :step="STEP_OVERRIDE" :disabled="!permissions.override || !spindleOvrEnabled" />
               <span class="sliderVal" :class="{ warn: spindleSlider !== 100 }">{{ spindleSlider }}%</span>
             </div>
             <div class="ovrPresets">
@@ -1280,7 +1280,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             </div>
             <div class="ovrRow">
               <span class="ovrLabel">Rapid</span>
-              <input type="range" v-model.number="rapidSlider" @change="onRapidChange" min="25" max="100" step="25" :disabled="!permissions.override" />
+              <input type="range" v-model.number="rapidSlider" @change="onRapidChange" min="25" max="100" :step="STEP_RAPID_OVERRIDE" :disabled="!permissions.override" />
               <span class="sliderVal" :class="{ warn: rapidSlider !== 100 }">{{ rapidSlider }}%</span>
             </div>
             <div class="ovrPresets">
@@ -1375,7 +1375,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               v-model.number="rpmInput"
               :min="minSpindleSpeed"
               :max="maxSpindleSpeed"
-              step="100"
+              :step="STEP_RPM"
               :disabled="!permissions.ready"
             />
             <span class="spUnit">RPM</span>
@@ -1412,7 +1412,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               @change="onSpindleOvrChange"
               :min="minSpindleOverride"
               :max="maxSpindleOverride"
-              step="5"
+              :step="STEP_OVERRIDE"
               :disabled="!permissions.override || !spindleOvrEnabled"
             />
             <div class="spOvrPresets">
@@ -1666,7 +1666,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               class="toolNumInput"
               v-model.number="toolNumber"
               min="1"
-              step="1"
+              :step="STEP_DEFAULT"
               :disabled="!permissions.ready || !!st.probing"
               @change="saveToolNumber"
             />

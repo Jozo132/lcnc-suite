@@ -1,3 +1,10 @@
+// ─── Input step constants ─────────────────────────────────────────
+export const STEP_DEFAULT = 1;
+export const STEP_FEED = 10;
+export const STEP_RPM = 10;
+export const STEP_OVERRIDE = 5;
+export const STEP_RAPID_OVERRIDE = 25;
+
 // ─── Shared types (single source of truth) ───────────────────────
 
 export type Vec3 = [number, number, number];

@@ -7,6 +7,7 @@ import {
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir,
   type ThemeMode,
+  STEP_DEFAULT, STEP_FEED, STEP_RPM,
 } from "./defaults";
 import { fetchHal, fetchG30, type HalPin, type HalSignal, type HalParam } from "./lcncApi";
 import { usePermissions } from "./permissions";
@@ -485,7 +486,7 @@ const halStats = computed(() => ({
                   class="numInput"
                   :value="wpSize[i]"
                   @input="updateSize(i, parseFloat(($event.target as HTMLInputElement).value))"
-                  step="1" min="0" max="9999"
+                  :step="STEP_DEFAULT" min="0" max="9999"
                 />
               </div>
             </div>
@@ -497,7 +498,7 @@ const halStats = computed(() => ({
                   class="numInput"
                   :value="wpOffset[i]"
                   @input="updateOffset(i, parseFloat(($event.target as HTMLInputElement).value))"
-                  step="1" min="-9999" max="9999"
+                  :step="STEP_DEFAULT" min="-9999" max="9999"
                 />
               </div>
             </div>
@@ -676,7 +677,7 @@ const halStats = computed(() => ({
                 </div>
                 <div v-if="rflSpindleDir !== 'off'" class="rflRpm">
                   <label>RPM</label>
-                  <input type="number" v-model.number="rflSpindleRpm" min="0" step="100" @change="saveMachine()" />
+                  <input type="number" v-model.number="rflSpindleRpm" min="0" :step="STEP_RPM" @change="saveMachine()" />
                 </div>
               </div>
             </div>
@@ -715,11 +716,11 @@ const halStats = computed(() => ({
             <div class="sub">Toolsetter Position (G53)</div>
             <div class="tsGrid">
               <label>Touch X <span class="tip" @click.stop="toggleTip('touchX')">?</span></label>
-              <input type="number" v-model.number="tsParams.touchX" step="0.001" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.touchX" :step="STEP_DEFAULT" @change="saveTsParams" />
               <label>Touch Y <span class="tip" @click.stop="toggleTip('touchY')">?</span></label>
-              <input type="number" v-model.number="tsParams.touchY" step="0.001" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.touchY" :step="STEP_DEFAULT" @change="saveTsParams" />
               <label>Touch Z <span class="tip" @click.stop="toggleTip('touchZ')">?</span></label>
-              <input type="number" v-model.number="tsParams.touchZ" step="0.001" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.touchZ" :step="STEP_DEFAULT" @change="saveTsParams" />
             </div>
           </div>
 
@@ -747,17 +748,17 @@ const halStats = computed(() => ({
             <div class="sub">Probe Settings</div>
             <div class="tsGrid">
               <label>Fast Feed <span class="tip" @click.stop="toggleTip('fastFeed')">?</span></label>
-              <input type="number" v-model.number="tsParams.fastFeed" min="1" step="10" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.fastFeed" min="1" :step="STEP_FEED" @change="saveTsParams" />
               <label>Slow Feed <span class="tip" @click.stop="toggleTip('slowFeed')">?</span></label>
-              <input type="number" v-model.number="tsParams.slowFeed" min="0" step="1" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.slowFeed" min="0" :step="STEP_FEED" @change="saveTsParams" />
               <label>Traverse Feed <span class="tip" @click.stop="toggleTip('traverseFeed')">?</span></label>
-              <input type="number" v-model.number="tsParams.traverseFeed" min="1" step="100" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.traverseFeed" min="1" :step="STEP_FEED" @change="saveTsParams" />
               <label>Max Z Travel <span class="tip" @click.stop="toggleTip('maxZTravel')">?</span></label>
-              <input type="number" v-model.number="tsParams.maxZTravel" min="1" step="5" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.maxZTravel" min="1" :step="STEP_DEFAULT" @change="saveTsParams" />
               <label>Retract Dist <span class="tip" @click.stop="toggleTip('retractDist')">?</span></label>
-              <input type="number" v-model.number="tsParams.retractDist" min="0.1" step="0.5" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.retractDist" min="0.1" :step="STEP_DEFAULT" @change="saveTsParams" />
               <label>Spindle Zero H <span class="tip" @click.stop="toggleTip('spindleZeroHeight')">?</span></label>
-              <input type="number" v-model.number="tsParams.spindleZeroHeight" min="0" step="1" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.spindleZeroHeight" min="0" :step="STEP_DEFAULT" @change="saveTsParams" />
             </div>
           </div>
 
@@ -785,9 +786,9 @@ const halStats = computed(() => ({
             </div>
             <div class="tsGrid" style="margin-top: 12px;">
               <label>Tool Min Dist <span class="tip" @click.stop="toggleTip('toolMinDis')">?</span></label>
-              <input type="number" v-model.number="tsParams.toolMinDis" min="0" step="1" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.toolMinDis" min="0" :step="STEP_DEFAULT" @change="saveTsParams" />
               <label>Extra Retries <span class="tip" @click.stop="toggleTip('addReps')">?</span></label>
-              <input type="number" v-model.number="tsParams.addReps" min="0" step="1" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.addReps" min="0" :step="STEP_DEFAULT" @change="saveTsParams" />
 
               <label>Brake After <span class="tip" @click.stop="toggleTip('brakeAfter')">?</span></label>
               <div class="tsBtnRow">
@@ -813,9 +814,9 @@ const halStats = computed(() => ({
             <div class="sub">Diameter Offset</div>
             <div class="tsGrid">
               <label>Min Diameter <span class="tip" @click.stop="toggleTip('offsetDiameter')">?</span></label>
-              <input type="number" v-model.number="tsParams.offsetDiameter" min="0" step="1" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.offsetDiameter" min="0" :step="STEP_DEFAULT" @change="saveTsParams" />
               <label>Offset % <span class="tip" @click.stop="toggleTip('offsetValue')">?</span></label>
-              <input type="number" v-model.number="tsParams.offsetValue" min="0" max="100" step="5" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.offsetValue" min="0" max="100" :step="STEP_DEFAULT" @change="saveTsParams" />
             </div>
           </div>
 
@@ -827,11 +828,11 @@ const halStats = computed(() => ({
               <label>Probe Tool # <span class="tip" @click.stop="toggleTip('probeTool')">?</span></label>
               <span class="readonlyVal">T{{ probeTool }}</span>
               <label>Finder X <span class="tip" @click.stop="toggleTip('finderTouchX')">?</span></label>
-              <input type="number" v-model.number="tsParams.finderTouchX" step="0.001" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.finderTouchX" :step="STEP_DEFAULT" @change="saveTsParams" />
               <label>Finder Y <span class="tip" @click.stop="toggleTip('finderTouchY')">?</span></label>
-              <input type="number" v-model.number="tsParams.finderTouchY" step="0.001" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.finderTouchY" :step="STEP_DEFAULT" @change="saveTsParams" />
               <label>Finder Z Diff <span class="tip" @click.stop="toggleTip('finderDiffZ')">?</span></label>
-              <input type="number" v-model.number="tsParams.finderDiffZ" step="0.001" @change="saveTsParams" />
+              <input type="number" v-model.number="tsParams.finderDiffZ" :step="STEP_DEFAULT" @change="saveTsParams" />
             </div>
           </div>
 

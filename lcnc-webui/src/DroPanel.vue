@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { usePermissions } from "./permissions";
+import { STEP_DEFAULT } from "./defaults";
 
 const ROTARY = new Set(["A", "B", "C"]);
 
@@ -52,9 +53,6 @@ function fmt(n: any, letter?: string) {
   return x.toFixed(3);
 }
 
-function touchoffStep(letter: string) {
-  return ROTARY.has(letter) ? "0.01" : "0.001";
-}
 </script>
 
 <template>
@@ -64,7 +62,7 @@ function touchoffStep(letter: string) {
       <div class="grid">
         <template v-for="(letter, i) in axes" :key="'w' + letter">
           <div class="axis"><span>{{ letter }}</span><b>{{ fmt(workPos[i], letter) }}</b></div>
-          <input type="number" :step="touchoffStep(letter)" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" :disabled="!can.zero" @keydown.enter="setAxis(i)" />
+          <input type="number" :step="STEP_DEFAULT" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" :disabled="!can.zero" @keydown.enter="setAxis(i)" />
           <button class="zeroBtn" @click="setAxis(i)" :disabled="!can.zero">Set {{ letter }}</button>
         </template>
         <button class="homeBtn spanBtn" :style="{ gridColumn: 4, gridRow: spanRows }" @click="setAll()" :disabled="!can.zero">Set All</button>

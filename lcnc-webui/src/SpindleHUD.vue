@@ -2,6 +2,7 @@
 import { ref, watch, computed } from "vue";
 import { usePermissions } from "./permissions";
 import { SPINDLE_FORWARD, SPINDLE_REVERSE } from "./lcnc";
+import { STEP_RPM, STEP_OVERRIDE } from "./defaults";
 
 const props = defineProps<{
   spindleSpeed: number | null;
@@ -80,7 +81,7 @@ function formatRpm(val: number | null): string {
         v-model.number="rpmInput"
         :min="minSpindleSpeed"
         :max="maxSpindleSpeed"
-        step="100"
+        :step="STEP_RPM"
         :disabled="!can.ready"
       />
     </div>
@@ -101,7 +102,7 @@ function formatRpm(val: number | null): string {
         @change="onOverrideChange"
         :min="minSpindleOverride"
         :max="maxSpindleOverride"
-        step="5"
+        :step="STEP_OVERRIDE"
         :disabled="!can.override"
       />
       <span class="overrideLabel" :class="{ warn: overrideSlider !== 100 }">{{ overrideSlider }}%</span>

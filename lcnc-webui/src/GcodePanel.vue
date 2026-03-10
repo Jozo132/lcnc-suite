@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
-import { loadMachineDefaults } from "./defaults";
+import { loadMachineDefaults, STEP_RPM } from "./defaults";
 
 export interface GcodeStats {
   feedMoves: number;
@@ -629,7 +629,7 @@ async function saveEdit() {
           </div>
           <div v-if="dialogSpindleDir !== 'off'" class="rpmRow">
             <label>RPM</label>
-            <input type="number" v-model.number="dialogSpindleSpeed" min="0" step="100" />
+            <input type="number" v-model.number="dialogSpindleSpeed" min="0" :step="STEP_RPM" />
           </div>
         </div>
 

@@ -2,7 +2,7 @@
 import { ref, computed, watch, onMounted } from "vue";
 import { send, lastReply, connected } from "./lcncWs";
 import { usePermissions } from "./permissions";
-import { loadMachineDefaults, type ToolChangeMode } from "./defaults";
+import { loadMachineDefaults, STEP_DEFAULT, type ToolChangeMode } from "./defaults";
 
 const FETCH_DELAY_MS = 500;
 const REFETCH_AFTER_SAVE_MS = 400;
@@ -419,15 +419,15 @@ defineExpose({ openAdd, fetchTools, triggerImport });
             </label>
             <label class="editLabel">
               <span class="editLabelText">Diameter</span>
-              <input class="editInput editInputNum" type="number" step="0.001" v-model.number="editForm.D" />
+              <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.D" />
             </label>
             <label class="editLabel">
               <span class="editLabelText">Z Offset</span>
-              <input class="editInput editInputNum" type="number" step="0.0001" v-model.number="editForm.Z" />
+              <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.Z" />
             </label>
             <label class="editLabel">
               <span class="editLabelText">Flutes</span>
-              <input class="editInput editInputNum" type="number" step="1" v-model.number="editForm.flutes" />
+              <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.flutes" />
             </label>
 
             <!-- Geometry section (collapsible) -->
@@ -437,35 +437,35 @@ defineExpose({ openAdd, fetchTools, triggerImport });
             <template v-if="showGeometry">
               <label class="editLabel">
                 <span class="editLabelText">OAL</span>
-                <input class="editInput editInputNum" type="number" step="0.01" v-model.number="editForm.oal" placeholder="mm" />
+                <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.oal" placeholder="mm" />
               </label>
               <label class="editLabel">
                 <span class="editLabelText">Flute Len</span>
-                <input class="editInput editInputNum" type="number" step="0.01" v-model.number="editForm.flute_length" placeholder="mm" />
+                <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.flute_length" placeholder="mm" />
               </label>
               <label class="editLabel">
                 <span class="editLabelText">Body Len</span>
-                <input class="editInput editInputNum" type="number" step="0.01" v-model.number="editForm.body_length" placeholder="mm" />
+                <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.body_length" placeholder="mm" />
               </label>
               <label class="editLabel">
                 <span class="editLabelText">Shaft Ø</span>
-                <input class="editInput editInputNum" type="number" step="0.01" v-model.number="editForm.shaft_diameter" placeholder="mm" />
+                <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.shaft_diameter" placeholder="mm" />
               </label>
               <label class="editLabel">
                 <span class="editLabelText">Corner R</span>
-                <input class="editInput editInputNum" type="number" step="0.01" v-model.number="editForm.corner_radius" placeholder="mm" />
+                <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.corner_radius" placeholder="mm" />
               </label>
               <label class="editLabel">
                 <span class="editLabelText">Tip Ø</span>
-                <input class="editInput editInputNum" type="number" step="0.01" v-model.number="editForm.tip_diameter" placeholder="mm" />
+                <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.tip_diameter" placeholder="mm" />
               </label>
               <label class="editLabel">
                 <span class="editLabelText">Taper °</span>
-                <input class="editInput editInputNum" type="number" step="0.1" v-model.number="editForm.taper_angle" placeholder="deg" />
+                <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.taper_angle" placeholder="deg" />
               </label>
               <label class="editLabel">
                 <span class="editLabelText">Point °</span>
-                <input class="editInput editInputNum" type="number" step="0.1" v-model.number="editForm.point_angle" placeholder="deg" />
+                <input class="editInput editInputNum" type="number" :step="STEP_DEFAULT" v-model.number="editForm.point_angle" placeholder="deg" />
               </label>
               <label class="editLabel">
                 <span class="editLabelText">Material</span>

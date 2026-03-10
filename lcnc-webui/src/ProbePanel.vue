@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { usePermissions } from "./permissions";
+import { STEP_DEFAULT, STEP_FEED } from "./defaults";
 
 const STORAGE_KEY = "lcnc-probe-params";
 
@@ -889,11 +890,11 @@ function fmtR(key: string): string {
       <!-- Hint parameters (inline) -->
       <div class="inlineParams">
         <label>Diameter <span class="tip" @click.stop="toggleTip('diameterHint')">?</span></label>
-        <input type="number" v-model.number="params.diameterHint" min="0" step="0.5" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.diameterHint" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
         <label>X Hint <span class="tip" @click.stop="toggleTip('xHintBP')">?</span></label>
-        <input type="number" v-model.number="params.xHintBP" min="0" step="0.5" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.xHintBP" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
         <label>Y Hint <span class="tip" @click.stop="toggleTip('yHintBP')">?</span></label>
-        <input type="number" v-model.number="params.yHintBP" min="0" step="0.5" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.yHintBP" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
       </div>
       </div>
     </template>
@@ -995,7 +996,7 @@ function fmtR(key: string): string {
       <!-- Angle parameters (inline) -->
       <div class="inlineParams">
         <label>Edge Width <span class="tip" @click.stop="toggleTip('edgeWidth')">?</span></label>
-        <input type="number" v-model.number="params.edgeWidth" min="0.1" step="0.1" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.edgeWidth" min="0.1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
       </div>
       </div>
     </template>
@@ -1034,7 +1035,7 @@ function fmtR(key: string): string {
           <div class="calParamStacked">
             <div class="calParamRow">
               <label>Diameter <span class="tip" @click.stop="toggleTip('calDiameter')">?</span></label>
-              <input type="number" v-model.number="params.calDiameter" min="0" step="0.001" :disabled="!can.ready" @change="saveParams" />
+              <input type="number" v-model.number="params.calDiameter" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
             </div>
           </div>
         </div>
@@ -1071,11 +1072,11 @@ function fmtR(key: string): string {
           <div class="calParamStacked">
             <div class="calParamRow">
               <label>X Width <span class="tip" @click.stop="toggleTip('xCalWidth')">?</span></label>
-              <input type="number" v-model.number="params.xCalWidth" min="0" step="0.001" :disabled="!can.ready" @change="saveParams" />
+              <input type="number" v-model.number="params.xCalWidth" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
             </div>
             <div class="calParamRow">
               <label>Y Width <span class="tip" @click.stop="toggleTip('yCalWidth')">?</span></label>
-              <input type="number" v-model.number="params.yCalWidth" min="0" step="0.001" :disabled="!can.ready" @change="saveParams" />
+              <input type="number" v-model.number="params.yCalWidth" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
             </div>
           </div>
         </div>
@@ -1167,9 +1168,9 @@ function fmtR(key: string): string {
       <!-- Hint parameters (inline) -->
       <div class="inlineParams">
         <label>X Hint <span class="tip" @click.stop="toggleTip('xHintRV')">?</span></label>
-        <input type="number" v-model.number="params.xHintRV" min="0" step="0.5" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.xHintRV" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
         <label>Y Hint <span class="tip" @click.stop="toggleTip('yHintRV')">?</span></label>
-        <input type="number" v-model.number="params.yHintRV" min="0" step="0.5" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.yHintRV" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
       </div>
       </div>
     </template>
@@ -1180,21 +1181,21 @@ function fmtR(key: string): string {
         <div class="sub">Scan Grid</div>
         <div class="paramGrid twoCol">
           <label>X0 <span class="tip" @click.stop="toggleTip('scanX0')">?</span></label>
-          <input type="number" v-model.number="params.scanX0" step="1" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanX0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
           <label>X1 <span class="tip" @click.stop="toggleTip('scanX1')">?</span></label>
-          <input type="number" v-model.number="params.scanX1" step="1" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanX1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
           <label>Y0 <span class="tip" @click.stop="toggleTip('scanY0')">?</span></label>
-          <input type="number" v-model.number="params.scanY0" step="1" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanY0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
           <label>Y1 <span class="tip" @click.stop="toggleTip('scanY1')">?</span></label>
-          <input type="number" v-model.number="params.scanY1" step="1" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanY1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
           <label>X Probes <span class="tip" @click.stop="toggleTip('scanXProbes')">?</span></label>
-          <input type="number" v-model.number="params.scanXProbes" min="2" step="1" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanXProbes" min="2" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
           <label>Y Probes <span class="tip" @click.stop="toggleTip('scanYProbes')">?</span></label>
-          <input type="number" v-model.number="params.scanYProbes" min="2" step="1" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanYProbes" min="2" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
           <label>Safe Z <span class="tip" @click.stop="toggleTip('scanSafeZ')">?</span></label>
-          <input type="number" v-model.number="params.scanSafeZ" step="1" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanSafeZ" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
           <label>Probe Depth <span class="tip" @click.stop="toggleTip('scanDepthZ')">?</span></label>
-          <input type="number" v-model.number="params.scanDepthZ" min="0.1" step="1" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanDepthZ" min="0.1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
         </div>
       </div>
 
@@ -1227,34 +1228,34 @@ function fmtR(key: string): string {
       <div class="sub">Parameters</div>
       <div class="paramGrid twoCol">
         <label>Probe Tool # <span class="tip" @click.stop="toggleTip('probeTool')">?</span></label>
-        <input type="number" v-model.number="params.probeTool" min="1" step="1" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.probeTool" min="1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
 
         <label>Probe Slow FRate <span class="tip" @click.stop="toggleTip('slowFr')">?</span></label>
-        <input type="number" v-model.number="params.slowFr" min="0" step="1" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.slowFr" min="0" :step="STEP_FEED" :disabled="!can.ready" @change="saveParams" />
 
         <label>Probe Traverse FR <span class="tip" @click.stop="toggleTip('traverseFr')">?</span></label>
-        <input type="number" v-model.number="params.traverseFr" min="1" step="100" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.traverseFr" min="1" :step="STEP_FEED" :disabled="!can.ready" @change="saveParams" />
 
         <label>Probe Fast FRate <span class="tip" @click.stop="toggleTip('fastFr')">?</span></label>
-        <input type="number" v-model.number="params.fastFr" min="1" step="10" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.fastFr" min="1" :step="STEP_FEED" :disabled="!can.ready" @change="saveParams" />
 
         <label>Max X/Y Distance <span class="tip" @click.stop="toggleTip('maxXYDistance')">?</span></label>
-        <input type="number" v-model.number="params.maxXYDistance" min="0" step="0.5" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.maxXYDistance" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
 
         <label>X/Y Clearance <span class="tip" @click.stop="toggleTip('xyClearance')">?</span></label>
-        <input type="number" v-model.number="params.xyClearance" min="0" step="0.1" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.xyClearance" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
 
         <label>Max Z Distance <span class="tip" @click.stop="toggleTip('maxZDistance')">?</span></label>
-        <input type="number" v-model.number="params.maxZDistance" min="0" step="0.5" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.maxZDistance" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
 
         <label>Z Clearance <span class="tip" @click.stop="toggleTip('zClearance')">?</span></label>
-        <input type="number" v-model.number="params.zClearance" min="0" step="0.1" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.zClearance" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
 
         <label>Extra Probe Depth <span class="tip" @click.stop="toggleTip('extraProbeDepth')">?</span></label>
-        <input type="number" v-model.number="params.extraProbeDepth" min="0" step="0.1" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.extraProbeDepth" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
 
         <label>Step Off Width <span class="tip" @click.stop="toggleTip('stepOffWidth')">?</span></label>
-        <input type="number" v-model.number="params.stepOffWidth" min="0.1" step="0.5" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.stepOffWidth" min="0.1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
 
         <label>Cal Offset <span class="tip" @click.stop="toggleTip('calOffset')">?</span></label>
         <span class="calOffsetReadonly">{{ fmt(params.calOffset) }} <button class="calResetBtn" :disabled="!can.ready || probing" @click="resetCal">Reset</button></span>

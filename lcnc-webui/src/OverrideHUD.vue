@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from "vue";
 import { usePermissions } from "./permissions";
+import { STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 
 const props = defineProps<{
   feedOverride: number | null;
@@ -57,7 +58,7 @@ function resetAll() {
       <input
         type="range" class="ovSlider"
         v-model.number="feedSlider" @change="onFeedChange"
-        min="0" :max="maxFeedOverride" step="5"
+        min="0" :max="maxFeedOverride" :step="STEP_OVERRIDE"
         :disabled="!can.override"
       />
       <span class="sliderVal" :class="{ warn: feedSlider !== 100 }">{{ feedSlider }}%</span>
@@ -69,7 +70,7 @@ function resetAll() {
       <input
         type="range" class="ovSlider"
         v-model.number="spindleSlider" @change="onSpindleChange"
-        :min="minSpindleOverride" :max="maxSpindleOverride" step="5"
+        :min="minSpindleOverride" :max="maxSpindleOverride" :step="STEP_OVERRIDE"
         :disabled="!can.override"
       />
       <span class="sliderVal" :class="{ warn: spindleSlider !== 100 }">{{ spindleSlider }}%</span>
@@ -81,7 +82,7 @@ function resetAll() {
       <input
         type="range" class="ovSlider"
         v-model.number="rapidSlider" @change="onRapidChange"
-        min="25" max="100" step="25"
+        min="25" max="100" :step="STEP_RAPID_OVERRIDE"
         :disabled="!can.override"
       />
       <span class="sliderVal" :class="{ warn: rapidSlider !== 100 }">{{ rapidSlider }}%</span>

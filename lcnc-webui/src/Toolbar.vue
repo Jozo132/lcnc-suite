@@ -72,38 +72,38 @@
             <label class="inputLabel">Size X</label>
             <input type="number" class="numInput" :value="workpieceSize[0]"
               @input="updateSize(0, parseFloat(($event.target as HTMLInputElement).value))"
-              step="1" min="0" max="9999" />
+              :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Size Y</label>
             <input type="number" class="numInput" :value="workpieceSize[1]"
               @input="updateSize(1, parseFloat(($event.target as HTMLInputElement).value))"
-              step="1" min="0" max="9999" />
+              :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Size Z</label>
             <input type="number" class="numInput" :value="workpieceSize[2]"
               @input="updateSize(2, parseFloat(($event.target as HTMLInputElement).value))"
-              step="1" min="0" max="9999" />
+              :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="sep"></div>
           <div class="inputRow">
             <label class="inputLabel">Offset X</label>
             <input type="number" class="numInput" :value="workpieceOffset[0]"
               @input="updateOffset(0, parseFloat(($event.target as HTMLInputElement).value))"
-              step="1" min="-9999" max="9999" />
+              :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Offset Y</label>
             <input type="number" class="numInput" :value="workpieceOffset[1]"
               @input="updateOffset(1, parseFloat(($event.target as HTMLInputElement).value))"
-              step="1" min="-9999" max="9999" />
+              :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Offset Z</label>
             <input type="number" class="numInput" :value="workpieceOffset[2]"
               @input="updateOffset(2, parseFloat(($event.target as HTMLInputElement).value))"
-              step="1" min="-9999" max="9999" />
+              :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
         </div>
       </div>
@@ -114,7 +114,7 @@
 
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from "vue";
-import { loadViewerDefaults, type Vec3, type Layer, type TrackMode } from "./defaults";
+import { loadViewerDefaults, STEP_DEFAULT, type Vec3, type Layer, type TrackMode } from "./defaults";
 
 type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
 

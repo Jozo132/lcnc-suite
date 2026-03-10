@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { usePermissions } from "./permissions";
-
-const ROTARY = new Set(["A", "B", "C"]);
+import { STEP_DEFAULT } from "./defaults";
 
 
 const props = defineProps<{
@@ -36,9 +35,6 @@ function updateTouchoff(axis: number, val: number) {
   emit("update:touchoff", copy);
 }
 
-function touchoffStep(letter: string) {
-  return ROTARY.has(letter) ? "0.01" : "0.001";
-}
 </script>
 
 <template>
@@ -61,7 +57,7 @@ function touchoffStep(letter: string) {
 
     <!-- Set individual axes -->
     <div class="axisRow" v-for="(letter, i) in axesList" :key="letter">
-      <input type="number" :step="touchoffStep(letter)" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" :disabled="zeroDisabled" @keydown.enter="emit('setAxis', i, touchoff[i] ?? 0)" />
+      <input type="number" :step="STEP_DEFAULT" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" :disabled="zeroDisabled" @keydown.enter="emit('setAxis', i, touchoff[i] ?? 0)" />
       <button class="btn" :disabled="zeroDisabled" @click="emit('setAxis', i, touchoff[i] ?? 0)">Set {{ letter }}</button>
     </div>
 
