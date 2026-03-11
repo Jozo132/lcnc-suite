@@ -98,4 +98,6 @@ export type WsCommand =
   | { cmd: "clear_wcs"; target: string }
   | { cmd: "set_wcs"; target: string; x?: number; y?: number; z?: number; a?: number; b?: number; c?: number; u?: number; v?: number; w?: number; r?: number }
   // Heartbeat
-  | { cmd: "heartbeat" };
+  | { cmd: "heartbeat" }
+  // Shutdown
+  | { cmd: "shutdown" };

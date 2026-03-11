@@ -1397,6 +1397,12 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             CMD.wait_complete()
             return {"ok": True}
 
+        if cmd == "shutdown":
+            # No require_armed — confirmation dialog is the safety gate
+            print("Shutdown requested via web UI", flush=True)
+            _hal_disconnect()
+            os._exit(0)
+
         if cmd == "abort":
             require_armed(armed)
             CMD.abort()

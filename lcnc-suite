@@ -60,19 +60,18 @@ source "$GATEWAY_DIR/.venv/bin/activate"
 if [[ "$DEV" == "1" ]]; then
   echo "lcnc-suite: DEV mode — Vite on :$VITE_PORT, gateway on :$PORT"
 
-  VITE_PID=""
-  GW_PID=""
+  VITE_PGID=""
 
   cleanup() {
-    [[ -n "$VITE_PID" ]] && kill "$VITE_PID" 2>/dev/null || true
-    [[ -n "$GW_PID" ]]   && kill "$GW_PID"   2>/dev/null || true
+    # Kill Vite's entire process group (npm → node tree)
+    [[ -n "$VITE_PGID" ]] && kill -TERM -- -"$VITE_PGID" 2>/dev/null || true
     wait 2>/dev/null || true
   }
   trap cleanup EXIT INT TERM
 
-  # Start Vite dev server in background
-  (cd "$WEBUI_DIR" && exec npm run dev -- --host "$HOST" --port "$VITE_PORT" --strictPort) &
-  VITE_PID=$!
+  # Start Vite in its own session so we can kill the whole process tree
+  setsid bash -c "cd '$WEBUI_DIR' && exec npm run dev -- --host '$HOST' --port '$VITE_PORT' --strictPort" &
+  VITE_PGID=$!
 
   # Open browser to Vite port
   if [[ "$BROWSER" == "1" ]]; then

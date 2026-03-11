@@ -140,7 +140,7 @@ const workpieceOffset = ref<[number, number, number]>(_vd.workpieceOffset);
 
 // G-code viewer
 const gcodeContent = ref<string | null>(null);
-const gcodeStats = ref<Record<string, any> | null>(null);
+const gcodeStats = ref<import('./GcodePanel.vue').GcodeStats | null>(null);
 
 /** ---------- status helpers ---------- */
 const st = computed<Record<string, any>>(() => {
@@ -629,6 +629,7 @@ function toggleBlockDelete() {
 // Tool sidebar state
 const toolDialogOpen = ref(false);
 const settingsDialogOpen = ref(false);
+const showShutdownConfirm = ref(false);
 const toolTableRef = ref<InstanceType<typeof ToolTablePanel> | null>(null);
 const toolNumber = ref(1);
 const TS_TOOL_KEY = "lcnc-tool-number";
@@ -1169,6 +1170,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
         >
           <span class="safetyIcon">&#x23FB;</span>
           <span class="safetyLabel">{{ isEnabled ? "Machine Off" : "Machine On" }}</span>
+        </button>
+
+        <div class="vsep"></div>
+
+        <button class="btn safetyBtn danger" @click="showShutdownConfirm = true">
+          <span class="safetyIcon">&#x23FC;</span>
+          <span class="safetyLabel">Shut Down</span>
         </button>
       </div>
     </section>
@@ -1726,6 +1734,17 @@ watch(isHomed, (nowHomed, wasHomed) => {
           <button class="btn primary" :disabled="!armed" @click="confirmToolChange">
             Confirm
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="showShutdownConfirm" class="dialogOverlay safetyDialog">
+      <div class="dialog">
+        <div class="dialogTitle danger">Shut Down LinuxCNC?</div>
+        <div class="dialogBody">This will stop all motion and exit LinuxCNC.</div>
+        <div class="dialogActions">
+          <button class="btn" @click="showShutdownConfirm = false">Cancel</button>
+          <button class="btn danger" @click="send({ cmd: 'shutdown' }); showShutdownConfirm = false">Shut Down</button>
         </div>
       </div>
     </div>

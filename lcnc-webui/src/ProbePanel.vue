@@ -493,7 +493,7 @@ function render3DSurface(pts: [number, number, number][]) {
       scene.add(yArrow);
       scene.add(zArrow);
 
-      function makeAxisLabel(text: string, color: string): Sprite {
+      function makeAxisLabel(text: string, color: string) {
         const c = document.createElement("canvas");
         c.width = 64; c.height = 64;
         const cx = c.getContext("2d")!;
