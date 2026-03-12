@@ -10,7 +10,7 @@ import GcodePanel from "./GcodePanel.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 import ToolTablePanel from "./ToolTablePanel.vue";
 import ProbePanel from "./ProbePanel.vue";
-import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, type ThemeMode, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
+import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, type ThemeMode, type MacroDef, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 import {
   INTERP_IDLE, INTERP_READING, INTERP_PAUSED, INTERP_WAITING,
   TRAJ_MODE_FREE, TRAJ_MODE_TELEOP,
@@ -630,6 +630,41 @@ function toggleBlockDelete() {
 const toolDialogOpen = ref(false);
 const settingsDialogOpen = ref(false);
 const showShutdownConfirm = ref(false);
+
+// Macro state
+const userMacros = ref<MacroDef[]>(loadMacrosDefaults().macros);
+const macroParamDialog = ref<{ macro: MacroDef; values: Record<string, string> } | null>(null);
+
+provide("updateMacros", (macros: MacroDef[]) => { userMacros.value = macros; });
+
+function executeMacro(m: MacroDef) {
+  if (m.params.length === 0) {
+    fire({ cmd: "mdi", text: m.command });
+    openChip.value = null;
+  } else {
+    const values: Record<string, string> = {};
+    for (const p of m.params) values[p.name] = p.default;
+    macroParamDialog.value = { macro: m, values };
+    openChip.value = null;
+  }
+}
+
+function substituteMacro(command: string, values: Record<string, string>): string {
+  let cmd = command;
+  for (const [key, val] of Object.entries(values)) cmd = cmd.split(`{${key}}`).join(val);
+  return cmd;
+}
+
+function confirmMacroParams() {
+  if (!macroParamDialog.value) return;
+  fire({ cmd: "mdi", text: substituteMacro(macroParamDialog.value.macro.command, macroParamDialog.value.values) });
+  macroParamDialog.value = null;
+}
+
+function macroPreview(): string {
+  if (!macroParamDialog.value) return "";
+  return substituteMacro(macroParamDialog.value.macro.command, macroParamDialog.value.values);
+}
 const toolTableRef = ref<InstanceType<typeof ToolTablePanel> | null>(null);
 const toolNumber = ref(1);
 const TS_TOOL_KEY = "lcnc-tool-number";
@@ -1475,6 +1510,31 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </button>
         </div>
         <div class="controlGroup">
+        <button
+          class="btn controlBtn"
+          :class="{ active: openChip === 'macros' }"
+          @click.stop="toggleChip('macros')"
+          title="Macros"
+        >
+          <span class="controlIcon">&#x25B6;</span>
+        </button>
+        <div class="popover macroPopover" :class="{ open: openChip === 'macros' }" @click.stop>
+          <div v-if="userMacros.length === 0" class="macroEmpty">
+            No macros configured.<br>Add macros in Settings.
+          </div>
+          <template v-else>
+            <button
+              v-for="m in userMacros"
+              :key="m.id"
+              class="btn macroBtn"
+              :disabled="!permissions.ready"
+              @click="executeMacro(m)"
+            >{{ m.name }}</button>
+          </template>
+        </div>
+        </div>
+
+        <div class="controlGroup">
         <button class="btn controlBtn" @click.stop="settingsDialogOpen = true" title="Settings">
           <span class="controlIcon">&#x2699;</span>
         </button>
@@ -1734,6 +1794,29 @@ watch(isHomed, (nowHomed, wasHomed) => {
           <button class="btn primary" :disabled="!armed" @click="confirmToolChange">
             Confirm
           </button>
+        </div>
+      </div>
+    </div>
+
+    <div v-if="macroParamDialog" class="dialogOverlay" @click.self="macroParamDialog = null">
+      <div class="dialog">
+        <div class="dialogTitle">{{ macroParamDialog.macro.name }}</div>
+        <div class="dialogBody">
+          <div class="macroParamFields">
+            <div v-for="p in macroParamDialog.macro.params" :key="p.name" class="macroParamRow">
+              <label class="macroParamLabel">{{ p.label || p.name }}</label>
+              <input
+                type="text"
+                v-model="macroParamDialog.values[p.name]"
+                @keydown.enter="confirmMacroParams"
+              />
+            </div>
+          </div>
+          <code class="macroPreview">{{ macroPreview() }}</code>
+        </div>
+        <div class="dialogActions">
+          <button class="btn" @click="macroParamDialog = null">Cancel</button>
+          <button class="btn primary" :disabled="!permissions.ready" @click="confirmMacroParams">Execute</button>
         </div>
       </div>
     </div>
@@ -2322,6 +2405,48 @@ watch(isHomed, (nowHomed, wasHomed) => {
 }
 
 /* ---- Coolant popover ---- */
+.macroPopover {
+  bottom: 0;
+  left: 100%;
+  margin-left: 6px;
+  min-width: 180px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+.macroPopover.open {
+  display: flex !important;
+  flex-direction: column;
+  gap: var(--gap-tight);
+}
+.macroBtn { width: 100%; text-align: left; }
+.macroEmpty {
+  font-size: var(--fs-sm);
+  opacity: var(--opacity-disabled);
+  text-align: center;
+  padding: var(--gap-section);
+}
+.macroParamFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-controls);
+}
+.macroParamRow {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-controls);
+}
+.macroParamLabel {
+  min-width: 100px;
+  font-size: var(--fs-base);
+}
+.macroPreview {
+  display: block;
+  margin-top: var(--gap-section);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  opacity: 0.6;
+}
+
 .coolantPopover {
   bottom: 0;
   left: 100%;

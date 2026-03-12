@@ -281,6 +281,67 @@ export function saveDisplayDefaults(data: DisplayDefaults): void {
   saveSection("display", data);
 }
 
+// ─── Macros section ─────────────────────────────────────────────
+
+export interface MacroParam {
+  name: string;      // placeholder key, e.g. "depth"
+  label: string;     // display label, e.g. "Depth (mm)"
+  default: string;   // default value shown in prompt
+}
+
+export interface MacroDef {
+  id: string;        // unique ID
+  name: string;      // button label, e.g. "Face Top"
+  command: string;   // G-code template, e.g. "G0 Z{depth} F{feed}"
+  params: MacroParam[];
+}
+
+export interface MacrosDefaults {
+  macros: MacroDef[];
+}
+
+const MACROS_FALLBACK: MacrosDefaults = { macros: [] };
+
+registerSection<MacrosDefaults>("macros", MACROS_FALLBACK, (saved, fb) => {
+  if (!saved) return { ...fb };
+  if (!Array.isArray(saved.macros)) return { ...fb };
+  const macros = saved.macros
+    .filter((m: any) => m && typeof m.id === "string" && typeof m.name === "string" && typeof m.command === "string")
+    .map((m: any) => ({
+      id: m.id,
+      name: m.name,
+      command: m.command,
+      params: Array.isArray(m.params) ? m.params
+        .filter((p: any) => p && typeof p.name === "string")
+        .map((p: any) => ({
+          name: p.name,
+          label: typeof p.label === "string" ? p.label : p.name,
+          default: typeof p.default === "string" ? p.default : "",
+        })) : [],
+    }))
+    .slice(0, 20);
+  return { macros };
+});
+
+export function loadMacrosDefaults(): MacrosDefaults {
+  return loadSection<MacrosDefaults>("macros");
+}
+
+export function saveMacrosDefaults(data: MacrosDefaults): void {
+  saveSection("macros", data);
+}
+
+/** Extract unique placeholder names from a macro command string. */
+export function extractParams(command: string): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const match of command.matchAll(/\{(\w+)\}/g)) {
+    const name = match[1]!;
+    if (!seen.has(name)) { seen.add(name); result.push(name); }
+  }
+  return result;
+}
+
 /** Clear all persisted settings so next load returns factory defaults. */
 export function resetAllDefaults(): void {
   localStorage.removeItem(STORAGE_KEY);

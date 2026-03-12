@@ -4,9 +4,10 @@ import TabPanel from "./TabPanel.vue";
 import {
   loadViewerDefaults, saveViewerDefaults,
   loadMachineDefaults, saveMachineDefaults, resetAllDefaults,
+  loadMacrosDefaults, saveMacrosDefaults, extractParams,
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir,
-  type ThemeMode,
+  type ThemeMode, type MacroDef, type MacroParam,
   STEP_DEFAULT, STEP_FEED, STEP_RPM,
 } from "./defaults";
 import { fetchHal, fetchG30, type HalPin, type HalSignal, type HalParam } from "./lcncApi";
@@ -22,6 +23,68 @@ const machineParts = inject<ComputedRef<Array<{ id: string; group: string | null
 const setMachinePartColor = inject<(id: string, color: string | null) => void>("setMachinePartColor", () => {});
 const setMachineEdges = inject<(on: boolean) => void>("setMachineEdges", () => {});
 const setToolColors = inject<(toolColor: string | null, cutterColor: string | null) => void>("setToolColors", () => {});
+const updateMacros = inject<(macros: MacroDef[]) => void>("updateMacros", () => {});
+
+// ─── Macros CRUD ────────────────────────────────────────────────
+const macros = ref<MacroDef[]>(loadMacrosDefaults().macros);
+const editingMacro = ref<MacroDef | null>(null);
+
+const editingMacroParams = computed<MacroParam[]>(() => {
+  if (!editingMacro.value) return [];
+  const names = extractParams(editingMacro.value.command);
+  const existing = new Map(editingMacro.value.params.map(p => [p.name, p]));
+  const result = names.map(name => existing.get(name) || { name, label: name, default: "" });
+  editingMacro.value.params = result;
+  return result;
+});
+
+function addMacro() {
+  editingMacro.value = {
+    id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    name: "",
+    command: "",
+    params: [],
+  };
+}
+
+function editMacro(m: MacroDef) {
+  editingMacro.value = JSON.parse(JSON.stringify(m));
+}
+
+function saveMacro() {
+  if (!editingMacro.value) return;
+  const m = editingMacro.value;
+  if (!m.name.trim() || !m.command.trim()) return;
+  // Sync params from command placeholders
+  const paramNames = extractParams(m.command);
+  const existingMap = new Map(m.params.map(p => [p.name, p]));
+  m.params = paramNames.map(name => existingMap.get(name) || { name, label: name, default: "" });
+  const idx = macros.value.findIndex(x => x.id === m.id);
+  if (idx >= 0) macros.value[idx] = m;
+  else macros.value.push(m);
+  editingMacro.value = null;
+  persistMacros();
+}
+
+function deleteMacro(id: string) {
+  macros.value = macros.value.filter(m => m.id !== id);
+  if (editingMacro.value?.id === id) editingMacro.value = null;
+  persistMacros();
+}
+
+function moveMacro(idx: number, dir: -1 | 1) {
+  const target = idx + dir;
+  if (target < 0 || target >= macros.value.length) return;
+  const arr = [...macros.value];
+  [arr[idx]!, arr[target]!] = [arr[target]!, arr[idx]!];
+  macros.value = arr;
+  persistMacros();
+}
+
+function persistMacros() {
+  saveMacrosDefaults({ macros: macros.value });
+  updateMacros(macros.value);
+}
 
 const props = defineProps<{
   lastReply?: unknown;
@@ -285,6 +348,7 @@ const subTabs = [
   { id: "machine", label: "Machine" },
   { id: "toolsetter", label: "Toolsetter" },
   { id: "display", label: "Display" },
+  { id: "macros", label: "Macros" },
   { id: "hal", label: "HAL" },
   { id: "debug", label: "Debug" },
 ];
@@ -864,6 +928,65 @@ const halStats = computed(() => ({
             </div>
           </div>
           </fieldset>
+        </div>
+      </template>
+
+      <template #macros>
+        <div class="scrollContent scroll-thin">
+          <div class="section">
+            <div class="sub">User Macros</div>
+
+            <div v-if="macros.length === 0 && !editingMacro" class="macroSettingsEmpty">
+              No macros configured. Click "Add Macro" to create one.
+            </div>
+
+            <div class="macroSettingsList">
+              <div v-for="(m, idx) in macros" :key="m.id" class="macroSettingsItem">
+                <div class="macroSettingsInfo">
+                  <span class="macroSettingsName">{{ m.name }}</span>
+                  <code class="macroSettingsCmd">{{ m.command }}</code>
+                </div>
+                <div class="macroSettingsActions">
+                  <button class="btn-icon" :disabled="idx === 0" @click="moveMacro(idx, -1)" title="Move up">&#x25B2;</button>
+                  <button class="btn-icon" :disabled="idx === macros.length - 1" @click="moveMacro(idx, 1)" title="Move down">&#x25BC;</button>
+                  <button class="btn-icon" @click="editMacro(m)" title="Edit">&#x270E;</button>
+                  <button class="btn-icon" @click="deleteMacro(m.id)" title="Delete">&times;</button>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="editingMacro" class="macroEditForm">
+              <div class="sub">{{ macros.some(m => m.id === editingMacro!.id) ? 'Edit' : 'New' }} Macro</div>
+              <div class="fieldGroup">
+                <div class="inputRow">
+                  <span class="inputLabel">Name</span>
+                  <input type="text" v-model="editingMacro.name" placeholder="e.g. Face Top" />
+                </div>
+                <div class="inputRow">
+                  <span class="inputLabel">Command</span>
+                  <input type="text" v-model="editingMacro.command" placeholder="e.g. G0 Z{depth} F{feed}" />
+                </div>
+                <div class="macroParamHint">
+                  Use <code>{"{name}"}</code> for parameters. Users will be prompted for values.
+                </div>
+
+                <div v-if="editingMacroParams.length > 0" class="macroParamEditor">
+                  <div class="sub">Parameters</div>
+                  <div v-for="p in editingMacroParams" :key="p.name" class="macroParamEditRow">
+                    <code class="macroParamBadge">{{"{"}}{{ p.name }}{{"}"}}</code>
+                    <input type="text" v-model="p.label" placeholder="Display label" />
+                    <input type="text" v-model="p.default" placeholder="Default value" />
+                  </div>
+                </div>
+              </div>
+              <div class="macroEditActions">
+                <button class="btn" @click="editingMacro = null">Cancel</button>
+                <button class="btn primary" @click="saveMacro" :disabled="!editingMacro.name.trim() || !editingMacro.command.trim()">Save</button>
+              </div>
+            </div>
+
+            <button v-if="!editingMacro && macros.length < 20" class="btn primary" @click="addMacro" style="margin-top: var(--gap-section);">Add Macro</button>
+          </div>
         </div>
       </template>
 
@@ -1516,5 +1639,79 @@ const halStats = computed(() => ({
 
 .halSigPin {
   white-space: nowrap;
+}
+
+/* ─── Macros tab ─────────────────────────────────────────────── */
+.macroSettingsEmpty {
+  opacity: var(--opacity-disabled);
+  text-align: center;
+  padding: var(--gap-panel);
+}
+.macroSettingsList {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-controls);
+}
+.macroSettingsItem {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-controls);
+  padding: var(--gap-tight) var(--gap-controls);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+}
+.macroSettingsInfo {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.macroSettingsName {
+  font-weight: 600;
+}
+.macroSettingsCmd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  opacity: 0.6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.macroSettingsActions {
+  display: flex;
+  gap: var(--gap-tight);
+  flex-shrink: 0;
+}
+.macroEditForm {
+  margin-top: var(--gap-section);
+  padding: var(--gap-controls);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+}
+.macroParamHint {
+  font-size: var(--fs-sm);
+  opacity: 0.6;
+}
+.macroParamEditor {
+  margin-top: var(--gap-controls);
+}
+.macroParamEditRow {
+  display: flex;
+  align-items: center;
+  gap: var(--gap-controls);
+  margin-top: var(--gap-tight);
+}
+.macroParamBadge {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  min-width: 70px;
+  flex-shrink: 0;
+}
+.macroEditActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--gap-controls);
+  margin-top: var(--gap-section);
 }
 </style>
