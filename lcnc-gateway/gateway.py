@@ -1445,14 +1445,12 @@ def handle_command(msg: Dict[str, Any], armed: bool):
 
         if cmd == "estop":
             CMD.state(linuxcnc.STATE_ESTOP)
-            CMD.wait_complete()
             _hal_send({"connected": False})  # HAL-level defense-in-depth
             return {"ok": True}
 
         if cmd == "estop_reset":
             require_armed(armed)
             CMD.state(linuxcnc.STATE_ESTOP_RESET)
-            CMD.wait_complete()
             return {"ok": True}
 
         if cmd == "machine_on":
@@ -1462,13 +1460,11 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             if bool(safe_get("estop", True)):
                 return {"ok": False, "error": "Cannot Machine On while in E-stop"}
             CMD.state(linuxcnc.STATE_ON)
-            CMD.wait_complete()
             return {"ok": True}
 
         if cmd == "machine_off":
             require_armed(armed)
             CMD.state(linuxcnc.STATE_OFF)
-            CMD.wait_complete()
             return {"ok": True}
 
         if cmd == "shutdown":
@@ -3313,7 +3309,8 @@ async def ws_endpoint(ws: WebSocket):
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 
-            reply = handle_command(msg, armed)
+            reply = await asyncio.get_event_loop().run_in_executor(
+                None, handle_command, msg, armed)
             if msg.get("cmd") == "load_file" and reply.get("ok"):
                 last_file = None  # force status_loop to re-read on next poll
             elif msg.get("cmd") == "unload_file" and reply.get("ok"):
