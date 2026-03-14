@@ -2887,7 +2887,7 @@ async def ws_endpoint(ws: WebSocket):
     await ws.accept()
     armed = False  # connection-local arming
 
-    global _next_client_id
+    global _next_client_id, _estop_hold
     client_id = _next_client_id
     _next_client_id += 1
     client_ip = ws.client.host if ws.client else "unknown"
