@@ -3322,7 +3322,7 @@ async def ws_endpoint(ws: WebSocket):
                 })
             await ws_send_json(ws, {"type": "reply", **reply})
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
         pass
     finally:
         _clients.pop(client_id, None)
