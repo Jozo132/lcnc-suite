@@ -99,6 +99,7 @@ signal.signal(signal.SIGINT, _shutdown_signal_handler)
 # A HAL component's h['pin'] is a direct pointer dereference (<1μs).
 # We create input pins and connect them to the source pins' signals.
 _hal_comp = None  # type: Optional[hal.component]
+_hal_connected_pins: set = set()  # local pin names that were successfully wired
 
 # (source_pin, local_pin_name, hal_type)
 _HAL_MONITOR_PINS = [
@@ -199,19 +200,32 @@ def _hal_connect_monitor_pin(source_pin: str, local_pin: str):
             print(f"[HAL] net {signal_name} {full_local} failed: "
                   f"{r.stderr.strip()}", flush=True)
         else:
+            _hal_connected_pins.add(local_pin)
             print(f"[HAL] {full_local} <= {signal_name}", flush=True)
     except Exception as e:
         print(f"[HAL] connect {source_pin} failed: {e}", flush=True)
 
 
 def _hal_read(local_pin: str, default=None):
-    """Fast read from webui-monitor component. Returns default if unavailable."""
-    if _hal_comp is not None:
+    """Fast read from webui-monitor component. Returns default if pin not wired."""
+    if _hal_comp is not None and local_pin in _hal_connected_pins:
         try:
             return _hal_comp[local_pin]
         except Exception:
             pass
     return default
+
+
+# Map from local pin name to source HAL pin name (for fallback)
+_HAL_PIN_MAP = {local: source for source, local, _ in _HAL_MONITOR_PINS}
+
+
+def _hal_fast(local_pin: str, default=None):
+    """Read HAL pin: fast path if wired, fallback to hal_get() if not."""
+    v = _hal_read(local_pin)
+    if v is not None:
+        return v
+    return hal_get(_HAL_PIN_MAP.get(local_pin, ""), default)
 
 
 def _hal_send(msg: dict):
@@ -1567,12 +1581,12 @@ def poll_status() -> StatusPayload:
 
 
     # Tool change request from HAL iocontrol
-    _tc_req = _hal_read('tool-change', None) if _hal_comp else hal_get('iocontrol.0.tool-change', 0)
+    _tc_req = _hal_fast('tool-change', 0)
     tool_change_requested = bool(_tc_req) if _tc_req else False
     tool_change_tool = None
     tool_change_info = None
     if tool_change_requested:
-        _tc_num = _hal_read('tool-prep-number', 0) if _hal_comp else hal_get('iocontrol.0.tool-prep-number', 0)
+        _tc_num = _hal_fast('tool-prep-number', 0)
         tool_change_tool = int(_tc_num) if _tc_num else None
         if tool_change_tool is not None:
             try:
@@ -1628,7 +1642,7 @@ def poll_status() -> StatusPayload:
         max_jog_velocity=get_max_jog_velocity(),
         current_vel=current_vel,
         spindle_speed=spindle_speed,
-        spindle_speed_actual=(_hal_read('spindle-speed-in', 0) if _hal_comp else hal_get('spindle.0.speed-in', 0)) * 60,
+        spindle_speed_actual=_hal_fast('spindle-speed-in', 0) * 60,
         spindle_direction=spindle_direction,
         active_file=safe_get("file", None),
         motion_line=safe_get("motion_line", None),
@@ -1646,9 +1660,9 @@ def poll_status() -> StatusPayload:
         probed_position=to_float_list(safe_get("probed_position", None)),
         flood=bool(safe_get("flood", 0)),
         mist=bool(safe_get("mist", 0)),
-        eoffset_z=_hal_read("z-eoffset", None) if _hal_comp else hal_get("axis.z.eoffset", None),
-        eoffset_enabled=bool(_hal_read("z-eoffset-enable", False) if _hal_comp else hal_get("axis.z.eoffset-enable", False)),
-        comp_method=_hal_read("comp-method", None) if _hal_comp else hal_get("compensation.method", None),
+        eoffset_z=_hal_fast("z-eoffset", None),
+        eoffset_enabled=bool(_hal_fast("z-eoffset-enable", False)),
+        comp_method=_hal_fast("comp-method", None),
         linear_units=ini_cfg.get("linear_units"),
         default_jog_velocity=ini_cfg.get("default_jog_velocity"),
         min_jog_velocity=ini_cfg.get("min_jog_velocity"),
