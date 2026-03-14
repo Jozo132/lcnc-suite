@@ -203,9 +203,28 @@ button.primary {
   font-weight: 600;
 }
 
+button.ok {
+  border-color: color-mix(in srgb, var(--ok) 50%, transparent);
+  background: color-mix(in oklab, var(--ok) 25%, var(--button-bg));
+}
+
 button.danger {
   border-color: color-mix(in srgb, var(--danger) 50%, transparent);
   background: color-mix(in oklab, var(--danger) 25%, var(--button-bg));
+}
+
+button.estop {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+
+button.estop.flashing {
+  animation: flash-estop 0.6s step-start infinite;
+}
+
+@keyframes flash-estop {
+  0%, 100% { background: color-mix(in oklab, var(--danger) 40%, var(--button-bg)); }
+  50% { background: var(--button-bg); }
 }
 
 input[type="range"] {

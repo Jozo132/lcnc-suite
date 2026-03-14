@@ -11,6 +11,7 @@ import SettingsPanel from "./SettingsPanel.vue";
 import ToolTablePanel from "./ToolTablePanel.vue";
 import ProbePanel from "./ProbePanel.vue";
 import CameraViewer from "./CameraViewer.vue";
+import { HeartPulse, Info, LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff } from "lucide-vue-next";
 import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, type ThemeMode, type MacroDef, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 import {
   INTERP_IDLE, INTERP_READING, INTERP_PAUSED, INTERP_WAITING,
@@ -1164,6 +1165,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <div class="pill" :class="armed ? 'armed' : 'disarmed'">
           {{ armed ? "ARMED" : "DISARMED" }}
         </div>
+
+        <button class="btn btn-icon hdrShutdown" title="Shut Down LinuxCNC" @click="showShutdownConfirm = true">
+          <PowerOff :size="16" />
+        </button>
       </div>
     </header>
 
@@ -1180,41 +1185,33 @@ watch(isHomed, (nowHomed, wasHomed) => {
     <section class="card">
       <div class="sub">Machine Safety</div>
       <div class="btnrow">
-        <button class="btn safetyBtn" :class="{ danger: armed }" @click="arm(!armed)" :disabled="busy">
-          <span class="safetyIcon">{{ armed ? "\u{1F513}" : "\u{1F512}" }}</span>
-          <span class="safetyLabel">{{ armed ? "Disarm" : "Arm" }}</span>
+        <button class="btn safetyBtn" :class="{ ok: armed }" @click="arm(!armed)" :disabled="busy">
+          <component :is="armed ? LockOpen : Lock" class="safetyIcon" />
         </button>
 
         <div class="vsep"></div>
 
         <button
-          class="btn safetyBtn"
-          :class="isEstop ? '' : 'danger'"
+          class="btn safetyBtn estop"
+          :class="{ flashing: isEstop }"
           @click="send({ cmd: isEstop ? 'estop_reset' : 'estop' })"
           :disabled="!(isEstop ? canResetEstop : canEstop)"
         >
-          <span class="safetyIcon">&#x26A0;</span>
-          <span class="safetyLabel">{{ isEstop ? "Reset E-Stop" : "E-Stop" }}</span>
+          <TriangleAlert class="safetyIcon" />
+          <span class="safetyLabel">{{ isEstop ? "Reset" : "E-Stop" }}</span>
         </button>
 
         <div class="vsep"></div>
 
         <button
           class="btn safetyBtn"
-          :class="{ danger: isEnabled }"
+          :class="{ ok: isEnabled }"
           @click="fire({ cmd: isEnabled ? 'machine_off' : 'machine_on' })"
           :disabled="!(isEnabled ? canMachineOff : canMachineOn) || busy"
         >
-          <span class="safetyIcon">&#x23FB;</span>
-          <span class="safetyLabel">{{ isEnabled ? "Machine Off" : "Machine On" }}</span>
+          <Power class="safetyIcon" />
         </button>
 
-        <div class="vsep"></div>
-
-        <button class="btn safetyBtn danger" @click="showShutdownConfirm = true">
-          <span class="safetyIcon">&#x23FC;</span>
-          <span class="safetyLabel">Shut Down</span>
-        </button>
       </div>
     </section>
 
@@ -1222,8 +1219,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
       <div class="sub">Machine Status</div>
 
       <div class="compactStatus">
-        <div class="statusChip" :class="isEstop ? 'bad' : (isEnabled && isHomed ? 'ok' : '')" @click.stop="toggleChip('machine')">
-          <span class="chipIcon">&#x2699;</span>
+        <div class="statusChip" :class="isEstop ? 'bad' : (isEnabled && isHomed ? 'ok' : '')" @click.stop="toggleChip('machine')" title="Machine">
+          <HeartPulse class="chipIcon" />
           <span class="label">Machine</span>
           <span class="chipValue">{{ isEstop ? 'E-STOP' : (!isEnabled ? 'OFF' : (!isHomed ? 'NOT HOMED' : 'READY')) }}</span>
           <div class="popover chipPopover" :class="{ open: openChip === 'machine' }">
@@ -1240,8 +1237,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
         </div>
 
-        <div class="statusChip" :class="isRunning ? 'ok' : (isPaused ? 'warn' : '')" @click.stop="toggleChip('program')">
-          <span class="chipIcon">&#x25B6;</span>
+        <div class="statusChip" :class="isRunning ? 'ok' : (isPaused ? 'warn' : '')" @click.stop="toggleChip('program')" title="Program">
+          <Info class="chipIcon" />
           <span class="label">Program</span>
           <span class="chipValue">{{ isRunning ? 'RUNNING' : (isPaused ? 'PAUSED' : 'IDLE') }}</span>
           <div class="popover chipPopover programPopover" :class="{ open: openChip === 'program' }">
@@ -1253,7 +1250,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
         </div>
 
-        <div class="statusChip" :class="{ warn: hasOffsetWarning }" @click.stop="openOffsetsPopover()">
+        <div class="statusChip" :class="{ warn: hasOffsetWarning }" @click.stop="openOffsetsPopover()" title="Offsets">
+          <LocateFixed class="chipIcon" />
           <span class="label">Offsets</span>
           <span class="chipValue">{{ offsetChipValue }}</span>
           <div class="popover chipPopover offsetsPopover" :class="{ open: openChip === 'offsets' }" @click.stop>
@@ -1301,8 +1299,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
         </div>
 
-        <div class="statusChip overridesChip" :class="{ warn: overridesActive && !overridesDisabled, bad: overridesDisabled }" @click.stop="toggleChip('overrides')">
-          <span class="chipIcon">%</span>
+        <div class="statusChip overridesChip" :class="{ warn: overridesActive && !overridesDisabled, bad: overridesDisabled }" @click.stop="toggleChip('overrides')" title="Overrides">
+          <Gauge class="chipIcon" />
           <span class="label">Overrides</span>
           <span class="chipValue">{{ overridesDisabled ? 'DISABLED' : (overridesActive ? 'ACTIVE' : 'DEFAULT') }}</span>
           <div class="popover chipPopover overridesPopover" :class="{ open: openChip === 'overrides' }" @click.stop>
@@ -1336,7 +1334,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
         </div>
 
-        <div class="statusChip" :class="{ warn: unreadCount > 0 }" @click.stop="toggleChip('messages')">
+        <div class="statusChip" :class="{ warn: unreadCount > 0 }" @click.stop="toggleChip('messages')" title="Messages">
+          <MessageSquare class="chipIcon" />
           <span class="label">Messages</span>
           <span class="chipValue">{{ unreadCount > 0 ? unreadCount : 'NONE' }}</span>
           <div class="popover chipPopover messagesPopover" :class="{ open: openChip === 'messages' }" @click.stop>
@@ -1373,7 +1372,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           @click.stop="toggleChip('spindle')"
           title="Spindle"
         >
-          <span class="controlIcon">&#x21BB;</span>
+          <RotateCw class="controlIcon" />
         </button>
         <div class="popover spindlePopover" :class="{ open: openChip === 'spindle' }" @click.stop>
           <fieldset :disabled="!permissions.ready" class="fs-reset">
@@ -1475,7 +1474,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           @click.stop="toggleChip('coolant')"
           title="Coolant"
         >
-          <span class="controlIcon">&#x1F4A7;</span>
+          <Droplets class="controlIcon" />
         </button>
         <div class="popover coolantPopover" :class="{ open: openChip === 'coolant' }" @click.stop>
           <fieldset :disabled="!permissions.ready" class="fs-reset">
@@ -1508,7 +1507,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           @click.stop="toolDialogOpen = true"
           title="Tool"
         >
-          <span class="controlIcon">&#x1F527;</span>
+          <Drill class="controlIcon" />
         </button>
         </div>
         <div class="controlGroup">
@@ -1518,7 +1517,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           @click.stop="toggleChip('macros')"
           title="Macros"
         >
-          <span class="controlIcon">&#x25B6;</span>
+          <CodeXml class="controlIcon" />
         </button>
         <div class="popover macroPopover" :class="{ open: openChip === 'macros' }" @click.stop>
           <div v-if="userMacros.length === 0" class="macroEmpty">
@@ -1538,7 +1537,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
         <div class="controlGroup">
         <button class="btn controlBtn" @click.stop="settingsDialogOpen = true" title="Settings">
-          <span class="controlIcon">&#x2699;</span>
+          <SlidersHorizontal class="controlIcon" />
         </button>
         </div>
         <div class="controlGroup simtripGroup">
@@ -2029,11 +2028,9 @@ watch(isHomed, (nowHomed, wasHomed) => {
 }
 
 .topRow .compactStatus {
-  flex-direction: column;
-}
-
-.topRow .statusChip {
-  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--gap-controls);
 }
 
 .card {
@@ -2129,13 +2126,11 @@ watch(isHomed, (nowHomed, wasHomed) => {
   flex-direction: column;
   align-items: center;
   gap: 2px;
-  padding: 8px 14px;
+  padding: 10px;
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
   background: var(--button-bg);
   cursor: default;
-  flex: 1;
-  min-width: 100px;
   transition: background 0.12s, border-color 0.12s;
 }
 
@@ -2152,8 +2147,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
   50% { background: color-mix(in oklab, var(--warn) 10%, var(--button-bg)); }
 }
 
-.chipIcon { display: none; font-size: var(--fs-xl); }
+.chipIcon { width: var(--fs-2xl); height: var(--fs-2xl); }
 .chipValue { font-size: var(--fs-md); font-weight: 600; }
+.topRow .statusChip .label,
+.topRow .statusChip .chipValue { display: none; }
 
 .chipPopover {
   top: 0;
@@ -2280,7 +2277,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   50% { opacity: 0.5; }
 }
 
-.controlIcon { font-size: var(--fs-2xl); }
+.controlIcon { width: var(--fs-2xl); height: var(--fs-2xl); }
 
 .spindlePopover {
   bottom: 0;
@@ -2666,6 +2663,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
 .safetyIcon {
   font-size: var(--fs-3xl);
   line-height: 1;
+  width: var(--fs-3xl);
+  height: var(--fs-3xl);
 }
 
 .safetyLabel {
@@ -2674,6 +2673,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   text-transform: uppercase;
   letter-spacing: 0.5px;
 }
+
 
 .hint {
   margin-top: 10px;
