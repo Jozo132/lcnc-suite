@@ -170,16 +170,25 @@ def _hal_connect_monitor_pin(source_pin: str, local_pin: str):
             print(f"[HAL] pin {source_pin} not found, skipping", flush=True)
             return
 
-        # halcmd -s output: "owner type dir value name [signal_name]"
-        parts = result.stdout.strip().split('\n')[0].split()
-        if len(parts) < 5:
-            print(f"[HAL] unexpected halcmd output for {source_pin}", flush=True)
+        # halcmd -s output: "owner type dir value name [arrow signal_name]"
+        # e.g. "motmod float IN 0.005 spindle.0.speed-in <== spindle-rps-filtered"
+        # show pin returns prefix matches, so find the exact pin line
+        signal_name = None
+        found = False
+        for line in result.stdout.strip().split('\n'):
+            parts = line.split()
+            if len(parts) >= 5 and parts[4] == source_pin:
+                found = True
+                if len(parts) >= 7:
+                    # parts[5] is arrow (<== or ==>), parts[6] is signal name
+                    signal_name = parts[6]
+                break
+
+        if not found:
+            print(f"[HAL] pin {source_pin} not found in halcmd output", flush=True)
             return
 
-        if len(parts) >= 6:
-            # Source pin already connected to a signal — join it
-            signal_name = parts[5]
-        else:
+        if signal_name is None:
             # Source pin not connected — create a new signal
             signal_name = f"webui-mon-{local_pin}"
             r = subprocess.run(
@@ -206,26 +215,14 @@ def _hal_connect_monitor_pin(source_pin: str, local_pin: str):
         print(f"[HAL] connect {source_pin} failed: {e}", flush=True)
 
 
-def _hal_read(local_pin: str, default=None):
-    """Fast read from webui-monitor component. Returns default if pin not wired."""
+def _hal_fast(local_pin: str, default=None):
+    """Read HAL pin from webui-monitor component. Returns default if not wired."""
     if _hal_comp is not None and local_pin in _hal_connected_pins:
         try:
             return _hal_comp[local_pin]
         except Exception:
             pass
     return default
-
-
-# Map from local pin name to source HAL pin name (for fallback)
-_HAL_PIN_MAP = {local: source for source, local, _ in _HAL_MONITOR_PINS}
-
-
-def _hal_fast(local_pin: str, default=None):
-    """Read HAL pin: fast path if wired, fallback to hal_get() if not."""
-    v = _hal_read(local_pin)
-    if v is not None:
-        return v
-    return hal_get(_HAL_PIN_MAP.get(local_pin, ""), default)
 
 
 def _hal_send(msg: dict):
