@@ -1,0 +1,164 @@
+<script setup lang="ts">
+import { ref, computed } from "vue";
+import { GCODE_REFERENCE, GCODE_GROUPS, type GcodeEntry } from "./gcodeReference";
+import { usePermissions } from "./permissions";
+
+defineProps<{ open: boolean }>();
+const emit = defineEmits<{ (e: "close"): void }>();
+const can = usePermissions();
+
+const search = ref("");
+const filterGroup = ref("");
+const sortKey = ref<"code" | "name">("code");
+const sortAsc = ref(true);
+
+const filtered = computed<GcodeEntry[]>(() => {
+  let entries = GCODE_REFERENCE;
+  if (filterGroup.value) {
+    entries = entries.filter(e => e.group === filterGroup.value);
+  }
+  const q = search.value.trim().toLowerCase();
+  if (q) {
+    entries = entries.filter(e =>
+      e.code.toLowerCase().includes(q) ||
+      e.name.toLowerCase().includes(q) ||
+      e.desc.toLowerCase().includes(q)
+    );
+  }
+  const key = sortKey.value;
+  const dir = sortAsc.value ? 1 : -1;
+  return [...entries].sort((a, b) => a[key].localeCompare(b[key]) * dir);
+});
+
+function toggleSort(key: "code" | "name") {
+  if (sortKey.value === key) sortAsc.value = !sortAsc.value;
+  else { sortKey.value = key; sortAsc.value = true; }
+}
+</script>
+
+<template>
+  <div v-if="open" class="dialogOverlay" @click.self="emit('close')">
+    <div class="dialog lg dialog-full">
+      <div class="dialogHeader">
+        <span class="dialogTitle">G-code Reference</span>
+        <button class="btn-icon" @click="emit('close')">&times;</button>
+      </div>
+      <div class="refContent" :class="{ inactive: !can.idle }">
+        <input
+          type="text"
+          v-model="search"
+          placeholder="Search codes, names, descriptions…"
+          class="refSearch"
+          :disabled="!can.idle"
+        />
+        <div class="refTable dataTable scroll-thin">
+          <table>
+            <thead>
+              <tr>
+                <th class="colCode">
+                  <button class="sortHeader" :disabled="!can.idle" @click="toggleSort('code')">Code {{ sortKey === 'code' ? (sortAsc ? '▲' : '▼') : '' }}</button>
+                </th>
+                <th class="colName">
+                  <button class="sortHeader" :disabled="!can.idle" @click="toggleSort('name')">Name {{ sortKey === 'name' ? (sortAsc ? '▲' : '▼') : '' }}</button>
+                </th>
+                <th class="colDesc">Description</th>
+                <th class="colSyntax">Syntax</th>
+                <th class="colGroup">
+                  <select class="filterSelect" v-model="filterGroup" :disabled="!can.idle">
+                    <option value="">Group</option>
+                    <option v-for="g in GCODE_GROUPS" :key="g" :value="g">{{ g }}</option>
+                  </select>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="entry in filtered" :key="entry.code">
+                <td class="colCode refCode">{{ entry.code }}</td>
+                <td class="colName">{{ entry.name }}</td>
+                <td class="colDesc">{{ entry.desc }}</td>
+                <td class="colSyntax refSyntax">{{ entry.syntax }}</td>
+                <td class="colGroup">{{ entry.group }}</td>
+              </tr>
+              <tr v-if="filtered.length === 0">
+                <td colspan="5" class="refEmpty">No matching codes found.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="refFooter">
+          {{ filtered.length }} {{ filtered.length === 1 ? 'code' : 'codes' }}
+          <span v-if="filterGroup"> in {{ filterGroup }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</template>
+
+<style scoped>
+.refContent {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: var(--gap-controls);
+  padding: var(--gap-section) 14px 14px;
+}
+
+.refSearch {
+  width: 100%;
+  flex-shrink: 0;
+}
+
+.refTable {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.colCode {
+  width: 80px;
+  white-space: nowrap;
+}
+
+.colName {
+  width: 140px;
+  white-space: nowrap;
+}
+
+.colDesc {
+  min-width: 200px;
+}
+
+.colSyntax {
+  width: 200px;
+  white-space: nowrap;
+}
+
+.colGroup {
+  width: 120px;
+}
+
+.refCode {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.refSyntax {
+  font-family: var(--font-mono);
+  opacity: 0.7;
+}
+
+.refEmpty {
+  text-align: center;
+  opacity: 0.5;
+  padding: var(--gap-panel) !important;
+}
+
+.refFooter {
+  font-size: var(--fs-xs);
+  opacity: 0.5;
+  text-align: right;
+}
+
+</style>

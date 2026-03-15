@@ -45,6 +45,7 @@ const tools = ref<Tool[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const filterType = ref("");
+const searchText = ref("");
 const sortKey = ref<"T" | "D" | "Z">("T");
 const sortAsc = ref(true);
 
@@ -83,6 +84,16 @@ const filteredTools = computed(() => {
   let list = tools.value;
   if (filterType.value) {
     list = list.filter(t => t.type === filterType.value);
+  }
+  const q = searchText.value.trim().toLowerCase();
+  if (q) {
+    list = list.filter(t =>
+      `T${t.T}`.toLowerCase().includes(q) ||
+      (t.description || "").toLowerCase().includes(q) ||
+      (t.remark || "").toLowerCase().includes(q) ||
+      typeLabel(t.type).toLowerCase().includes(q) ||
+      (t.material || "").toLowerCase().includes(q)
+    );
   }
   const key = sortKey.value;
   const dir = sortAsc.value ? 1 : -1;
@@ -358,7 +369,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
 </script>
 
 <template>
-  <div class="container" :style="{ opacity: can.idle ? 1 : 'var(--opacity-disabled)' }">
+  <div class="container" :class="{ inactive: !can.idle }">
     <!-- Hidden file input for import (works via triggerImport / header button) -->
     <input ref="importInputRef" type="file" accept=".json" @change="onImportFileSelect" hidden />
 
@@ -371,6 +382,14 @@ defineExpose({ openAdd, fetchTools, triggerImport });
         <button class="btn" @click="fetchTools" :disabled="loading || !can.idle">Refresh</button>
       </div>
     </div>
+
+    <input
+      type="text"
+      v-model="searchText"
+      placeholder="Search tools…"
+      class="toolSearch"
+      :disabled="!can.idle"
+    />
 
     <!-- Error banner -->
     <div v-if="error" class="errorBanner">{{ error }}</div>
@@ -519,75 +538,57 @@ defineExpose({ openAdd, fetchTools, triggerImport });
     </Teleport>
 
     <!-- Table -->
-    <div class="tableWrap scroll-thin">
-      <!-- Table header -->
-      <div class="trow theader">
-        <button class="tcell tcellT sortHeader" @click="toggleSort('T')">
-          T# {{ sortKey === 'T' ? (sortAsc ? '▲' : '▼') : '' }}
-        </button>
-        <button class="tcell tcellNum sortHeader" @click="toggleSort('D')">
-          Ø {{ sortKey === 'D' ? (sortAsc ? '▲' : '▼') : '' }}
-        </button>
-        <button class="tcell tcellNum sortHeader" @click="toggleSort('Z')">
-          Z Offset {{ sortKey === 'Z' ? (sortAsc ? '▲' : '▼') : '' }}
-        </button>
-        <div class="tcell tcellType">
-          <select class="filterSelect" v-model="filterType">
-            <option value="">Type</option>
-            <option v-for="tt in TOOL_TYPES" :key="tt" :value="tt">{{ typeLabel(tt) }}</option>
-          </select>
-        </div>
-        <div class="tcell tcellSm">Flutes</div>
-        <div class="tcell tcellDesc">Description</div>
-        <div class="tcell tcellAction"></div>
-        <div class="tcell tcellAction"></div>
-      </div>
-
-      <!-- Tool rows -->
-      <div
-        v-for="tool in filteredTools"
-        :key="tool.T"
-        class="trow"
-        :class="{ activeTool: tool.T === currentTool }"
-      >
-        <div class="tcell tcellT">
-          <button class="btn" :disabled="!can.ready" @click="requestToolChange(tool.T)">
-            T{{ tool.T }}
-          </button>
-        </div>
-        <div class="tcell tcellNum">
-          <span class="cellText mono">{{ fmtNum(tool.D) }}</span>
-        </div>
-        <div class="tcell tcellNum">
-          <span class="cellText mono">{{ fmtNum(tool.Z, 6) }}</span>
-        </div>
-        <div class="tcell tcellType">
-          <span class="cellText">{{ typeLabel(tool.type) }}</span>
-        </div>
-        <div class="tcell tcellSm">
-          <span class="cellText mono">{{ tool.flutes ?? "-" }}</span>
-        </div>
-        <div class="tcell tcellDesc">
-          <span class="cellText cellDesc" :title="tool.description">{{ tool.description || tool.remark || "-" }}</span>
-        </div>
-        <div class="tcell tcellAction">
-          <button class="btn" :disabled="!can.idle" @click="openEdit(tool)" title="Edit tool"><Pencil :size="14" /></button>
-        </div>
-        <div class="tcell tcellAction">
-          <button
-            v-if="tool.T !== currentTool"
-            class="btn danger"
-            @click.stop="requestDelete(tool.T)"
-            :disabled="!can.idle"
-            title="Delete tool"
-          ><Trash2 :size="14" /></button>
-        </div>
-      </div>
-
-      <!-- Empty state -->
-      <div v-if="!loading && filteredTools.length === 0" class="emptyState">
-        No tools loaded. Add tools manually or import a Fusion 360 library.
-      </div>
+    <div class="tableWrap dataTable scroll-thin">
+      <table>
+        <thead>
+          <tr>
+            <th class="colT"><button class="sortHeader" @click="toggleSort('T')">T# {{ sortKey === 'T' ? (sortAsc ? '▲' : '▼') : '' }}</button></th>
+            <th class="colNum"><button class="sortHeader" @click="toggleSort('D')">Ø {{ sortKey === 'D' ? (sortAsc ? '▲' : '▼') : '' }}</button></th>
+            <th class="colNum"><button class="sortHeader" @click="toggleSort('Z')">Z Offset {{ sortKey === 'Z' ? (sortAsc ? '▲' : '▼') : '' }}</button></th>
+            <th class="colType">
+              <select class="filterSelect" v-model="filterType">
+                <option value="">Type</option>
+                <option v-for="tt in TOOL_TYPES" :key="tt" :value="tt">{{ typeLabel(tt) }}</option>
+              </select>
+            </th>
+            <th class="colSm">Flutes</th>
+            <th class="colDesc">Description</th>
+            <th class="colAction"></th>
+            <th class="colAction"></th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            v-for="tool in filteredTools"
+            :key="tool.T"
+            :class="{ activeTool: tool.T === currentTool }"
+          >
+            <td class="colT">
+              <button class="btn" :disabled="!can.ready" @click="requestToolChange(tool.T)">T{{ tool.T }}</button>
+            </td>
+            <td class="colNum mono">{{ fmtNum(tool.D) }}</td>
+            <td class="colNum mono">{{ fmtNum(tool.Z, 6) }}</td>
+            <td class="colType">{{ typeLabel(tool.type) }}</td>
+            <td class="colSm mono">{{ tool.flutes ?? "-" }}</td>
+            <td class="colDesc" :title="tool.description">{{ tool.description || tool.remark || "-" }}</td>
+            <td class="colAction">
+              <button class="btn" :disabled="!can.idle" @click="openEdit(tool)" title="Edit tool"><Pencil :size="14" /></button>
+            </td>
+            <td class="colAction">
+              <button
+                v-if="tool.T !== currentTool"
+                class="btn danger"
+                @click.stop="requestDelete(tool.T)"
+                :disabled="!can.idle"
+                title="Delete tool"
+              ><Trash2 :size="14" /></button>
+            </td>
+          </tr>
+          <tr v-if="!loading && filteredTools.length === 0">
+            <td colspan="8" class="emptyState">No tools loaded. Add tools manually or import a Fusion 360 library.</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </div>
 </template>
@@ -598,6 +599,8 @@ defineExpose({ openAdd, fetchTools, triggerImport });
   flex-direction: column;
   height: 100%;
   position: relative;
+  padding: var(--gap-section) 14px 14px;
+  gap: var(--gap-controls);
 }
 
 .header {
@@ -758,34 +761,13 @@ defineExpose({ openAdd, fetchTools, triggerImport });
 /* ---- Table ---- */
 .tableWrap {
   flex: 1;
-  overflow-y: auto;
-  overflow-x: auto;
+  overflow: auto;
   min-height: 0;
 }
 
-.trow {
-  display: flex;
-  align-items: center;
-  min-height: 34px;
-  min-width: 560px;
-  border-bottom: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
-}
-
-.trow:hover:not(.theader) {
-  background: color-mix(in oklab, var(--fg) 4%, transparent);
-}
-
-.theader {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--panel);
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  color: color-mix(in oklab, var(--fg) 60%, transparent);
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  border-bottom: 1px solid var(--border);
+.toolSearch {
+  width: 100%;
+  flex-shrink: 0;
 }
 
 .activeTool {
@@ -795,106 +777,41 @@ defineExpose({ openAdd, fetchTools, triggerImport });
   background: color-mix(in oklab, var(--active-tool) 18%, transparent);
 }
 
-.tcell {
-  padding: 4px 6px;
-  font-size: var(--fs-base);
-  flex-shrink: 0;
-  min-width: 0;
-  box-sizing: border-box;
-  border-right: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
-}
-
 /* Compact buttons inside table cells */
-.tcell .btn {
+td .btn {
   padding: 2px 6px;
-  width: 100%;
-  box-sizing: border-box;
 }
 
-.tcell:last-child {
-  border-right: none;
-}
-
-.tcellT {
+.colT {
   width: 50px;
+  white-space: nowrap;
   font-weight: 600;
   font-family: var(--font-mono);
 }
 
-.sortHeader {
-  background: none;
-  border: none;
-  border-right: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
-  border-radius: 0;
-  color: inherit;
-  font: inherit;
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.3px;
-  cursor: pointer;
-  user-select: none;
-  padding: 4px 6px;
-  box-sizing: border-box;
-}
-.sortHeader:hover {
-  opacity: 1;
-  background: none;
-}
-
-.filterSelect {
-  padding: 0;
-  font-size: inherit;
-  font-weight: inherit;
-  text-transform: inherit;
-  letter-spacing: inherit;
-  border: none;
-  background: var(--panel);
-  color: inherit;
-  font-family: inherit;
-  cursor: pointer;
-  outline: none;
-}
-
-.tcellType { width: 80px; }
-
-.tcellDesc {
-  flex: 1;
-  min-width: 120px;
-  overflow: hidden;
-}
-
-.tcellNum {
+.colNum {
   width: 90px;
-  text-align: right;
+  white-space: nowrap;
 }
 
-.tcellSm {
+.colSm {
   width: 55px;
-  text-align: right;
 }
 
-.tcellAction {
+.colType { width: 80px; }
+
+.colDesc {
+  min-width: 200px;
+}
+
+.colAction {
   width: 42px;
   text-align: center;
-}
-
-.cellText {
-  display: block;
-  padding: 2px 4px;
-}
-
-.cellDesc {
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .mono {
   font-family: var(--font-mono);
 }
-
-.dim { opacity: 0.5; }
 
 .emptyState {
   padding: 24px;

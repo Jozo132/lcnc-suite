@@ -144,6 +144,10 @@ html, body {
   color: var(--fg);
 }
 
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
 html {
   height: 100%;
   overflow: auto;
@@ -457,6 +461,8 @@ label:has(input:disabled, select:disabled) {
   overflow: clip;
 }
 
+.dialog.lg.dialog-full { height: 75vh; }
+
 .dialogHeader {
   display: flex;
   align-items: center;
@@ -560,4 +566,71 @@ label:has(input:disabled, select:disabled) {
 .sliderVal.warn {
   color: var(--warn);
   opacity: 1;
+}
+
+/* ---- Data tables ---- */
+.dataTable table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.dataTable thead {
+  position: sticky;
+  top: 0;
+  background: var(--panel);
+  z-index: 1;
+}
+
+.dataTable th {
+  text-align: left;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  opacity: 0.6;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.dataTable td {
+  padding: 4px 8px;
+  font-size: var(--fs-sm);
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 40%, transparent);
+  vertical-align: middle;
+}
+
+.dataTable tbody tr:hover {
+  background: color-mix(in oklab, var(--fg) 5%, transparent);
+}
+
+.sortHeader {
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: inherit;
+  font: inherit;
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  padding: 0;
+}
+.sortHeader:hover {
+  opacity: 1;
+  background: none;
+}
+
+.filterSelect {
+  padding: 0;
+  font-size: inherit;
+  font-weight: inherit;
+  border: none;
+  background: transparent;
+  color: inherit;
+  font-family: inherit;
+  cursor: pointer;
+  outline: none;
+}
+
+.inactive {
+  opacity: var(--opacity-disabled);
 }

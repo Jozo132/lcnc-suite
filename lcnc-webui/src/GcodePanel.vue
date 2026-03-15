@@ -4,7 +4,6 @@ import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
 import { loadMachineDefaults, STEP_RPM } from "./defaults";
 import { Play, SkipForward, Pause, Square } from "lucide-vue-next";
-
 export interface GcodeStats {
   feedMoves: number;
   rapidMoves: number;

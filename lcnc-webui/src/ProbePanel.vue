@@ -1249,7 +1249,7 @@ function fmtR(key: string): string {
 
   <!-- Surface map popout dialog -->
   <div v-if="mapDialogOpen" class="dialogOverlay" @click.self="mapDialogOpen = false">
-    <div class="dialog lg mapDialogSize">
+    <div class="dialog lg dialog-full">
       <div class="dialogHeader">
         <span class="dialogTitle">Surface Compensation Map</span>
         <button class="btn-icon" @click="mapDialogOpen = false">&times;</button>
@@ -1679,7 +1679,6 @@ function fmtR(key: string): string {
   color: #fff;
   border-color: var(--accent);
 }
-.mapDialogSize { height: 65vh; }
 .surface3d {
   flex: 1;
   min-height: 0;

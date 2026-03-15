@@ -11,7 +11,8 @@ import SettingsPanel from "./SettingsPanel.vue";
 import ToolTablePanel from "./ToolTablePanel.vue";
 import ProbePanel from "./ProbePanel.vue";
 import CameraViewer from "./CameraViewer.vue";
-import { HeartPulse, Info, LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2 } from "lucide-vue-next";
+import { HeartPulse, Info, LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2, BookOpen } from "lucide-vue-next";
+import GcodeReferenceDialog from "./GcodeReferenceDialog.vue";
 import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, loadGamepadDefaults, saveGamepadDefaults, type ThemeMode, type MacroDef, type GamepadDefaults, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 import { useGamepad } from "./useGamepad";
 import {
@@ -633,6 +634,16 @@ function toggleBlockDelete() {
 // Tool sidebar state
 const toolDialogOpen = ref(false);
 const settingsDialogOpen = ref(false);
+const gcodeRefOpen = ref(false);
+
+function openDialog(name: "tool" | "settings" | "gcodeRef") {
+  toolDialogOpen.value = false;
+  settingsDialogOpen.value = false;
+  gcodeRefOpen.value = false;
+  if (name === "tool") toolDialogOpen.value = true;
+  else if (name === "settings") settingsDialogOpen.value = true;
+  else if (name === "gcodeRef") gcodeRefOpen.value = true;
+}
 const showShutdownConfirm = ref(false);
 
 // Macro state
@@ -1537,7 +1548,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <button
           class="btn controlBtn"
           :class="{ active: !!st.probing }"
-          @click.stop="toolDialogOpen = true"
+          @click.stop="openDialog('tool')"
           title="Tool"
         >
           <Drill class="controlIcon" />
@@ -1569,7 +1580,12 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </div>
 
         <div class="controlGroup">
-        <button class="btn controlBtn" @click.stop="settingsDialogOpen = true" title="Settings">
+        <button class="btn controlBtn" @click.stop="openDialog('gcodeRef')" title="G-code Reference">
+          <BookOpen class="controlIcon" />
+        </button>
+        </div>
+        <div class="controlGroup">
+        <button class="btn controlBtn" @click.stop="openDialog('settings')" title="Settings">
           <SlidersHorizontal class="controlIcon" />
         </button>
         </div>
@@ -1761,7 +1777,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
     <!-- Tool table dialog -->
     <div v-if="toolDialogOpen" class="dialogOverlay" @click.self="toolDialogOpen = false">
-      <div class="dialog lg toolDialogSize">
+      <div class="dialog lg dialog-full">
         <div class="dialogHeader">
           <span class="dialogTitle">Tool Table</span>
           <button class="btn-icon" @click="toolDialogOpen = false">&times;</button>
@@ -1803,7 +1819,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
     <!-- Settings dialog -->
     <div v-if="settingsDialogOpen" class="dialogOverlay" @click.self="settingsDialogOpen = false">
-      <div class="dialog lg settingsDialogSize">
+      <div class="dialog lg dialog-full">
         <div class="dialogHeader">
           <span class="dialogTitle">Settings</span>
           <button class="btn-icon" @click="settingsDialogOpen = false">&times;</button>
@@ -1823,6 +1839,9 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </div>
       </div>
     </div>
+
+    <!-- G-code reference dialog -->
+    <GcodeReferenceDialog :open="gcodeRefOpen" @close="gcodeRefOpen = false" />
 
     <!-- Safety confirmation dialogs — z-index 1010 to always appear above other dialogs -->
     <div v-if="toolChangeRequested" class="dialogOverlay safetyDialog">
@@ -2522,7 +2541,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
 }
 
 /* ---- Tool dialog ---- */
-.toolDialogSize { height: 75vh; }
 .toolDialogActions {
   display: flex;
   align-items: center;
@@ -2535,7 +2553,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
   flex: 1;
   min-height: 0;
   overflow: hidden;
-  padding: 0 12px 12px;
 }
 .toolInputRow {
   display: flex;
@@ -2596,7 +2613,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
 .simtripGroup { grid-column: 1 / -1; }
 
 /* ---- Settings dialog ---- */
-.settingsDialogSize { height: 75vh; }
 .settingsDialogBody {
   flex: 1;
   min-height: 0;
