@@ -13,7 +13,7 @@ import ProbePanel from "./ProbePanel.vue";
 import CameraViewer from "./CameraViewer.vue";
 import { HeartPulse, Info, LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2, BookOpen } from "lucide-vue-next";
 import GcodeReferenceDialog from "./GcodeReferenceDialog.vue";
-import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, loadGamepadDefaults, saveGamepadDefaults, type ThemeMode, type MacroDef, type GamepadDefaults, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
+import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, loadGamepadDefaults, saveGamepadDefaults, settingsVersion, type ThemeMode, type MacroDef, type GamepadDefaults, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 import { useGamepad } from "./useGamepad";
 import {
   INTERP_IDLE, INTERP_READING, INTERP_PAUSED, INTERP_WAITING,
@@ -693,13 +693,7 @@ const TS_TOOL_KEY = "lcnc-tool-number";
 function loadToolNumber() {
   try {
     const raw = localStorage.getItem(TS_TOOL_KEY);
-    if (raw) { toolNumber.value = parseInt(raw, 10) || 1; return; }
-    // Migrate from old toolsetter params key
-    const old = localStorage.getItem("lcnc-toolsetter-params");
-    if (old) {
-      const saved = JSON.parse(old);
-      if (saved.toolNumber != null) toolNumber.value = saved.toolNumber;
-    }
+    if (raw) { toolNumber.value = parseInt(raw, 10) || 1; }
   } catch { /* ignore */ }
 }
 loadToolNumber();
@@ -1099,6 +1093,15 @@ function setGamepadConfig(cfg: GamepadDefaults) {
 
 provide("gamepadAxes", gamepad.gamepadAxesState);
 provide("gamepadButtons", gamepad.gamepadButtonsState);
+
+// Re-read server-synced settings when another client saves
+watch(settingsVersion, () => {
+  userMacros.value = loadMacrosDefaults().macros;
+  const mach = loadMachineDefaults();
+  runFromLineEnabled.value = mach.runFromLine;
+  keyboardJogEnabled.value = mach.keyboardJog;
+  gamepadConfig.value = loadGamepadDefaults();
+});
 
 /** ---------- safety: stop jog on focus loss ---------- */
 function stopAllJog() {

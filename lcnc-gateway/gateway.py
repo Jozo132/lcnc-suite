@@ -902,7 +902,7 @@ _TOOL_META_FIELDS = (
 SETTINGS_PATH = BASE_DIR / "settings.json"
 _settings_version = 0
 _settings_cache: Optional[dict] = None
-_VALID_SETTINGS_SECTIONS = {"macros", "machine", "viewer", "camera", "mdi"}
+_VALID_SETTINGS_SECTIONS = {"macros", "machine", "viewer", "camera", "mdi", "gamepad", "probe", "toolsetter"}
 
 
 def _load_settings_all() -> dict:

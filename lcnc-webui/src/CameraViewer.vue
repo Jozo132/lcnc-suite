@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
-import { loadCameraDefaults, saveCameraDefaults } from "./defaults";
+import { loadCameraDefaults, saveCameraDefaults, settingsVersion } from "./defaults";
 import { Crosshair, Circle, Grid3x3 } from "lucide-vue-next";
 
 const props = defineProps<{ active?: boolean }>();
@@ -42,6 +42,18 @@ function saveOverlay() {
 
 // Auto-save overlay changes
 watch([showCrosshair, showCircle, showGrid, circleRadius, gridSpacing, overlayOpacity, overlayColor], saveOverlay);
+
+// Re-read when another client changes camera settings
+watch(settingsVersion, () => {
+  const u = loadCameraDefaults();
+  showCrosshair.value = u.showCrosshair;
+  showCircle.value = u.showCircle;
+  showGrid.value = u.showGrid;
+  circleRadius.value = u.circleRadius;
+  gridSpacing.value = u.gridSpacing;
+  overlayOpacity.value = u.overlayOpacity;
+  overlayColor.value = u.overlayColor;
+});
 
 // Stream URL management — pause when tab hidden to save bandwidth
 const streamActive = ref(false);

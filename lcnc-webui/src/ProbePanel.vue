@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { usePermissions } from "./permissions";
-import { STEP_DEFAULT, STEP_FEED } from "./defaults";
-
-const STORAGE_KEY = "lcnc-probe-params";
+import { STEP_DEFAULT, STEP_FEED, loadProbeDefaults, saveProbeDefaults, settingsVersion } from "./defaults";
 
 const props = defineProps<{
   probing: boolean;
@@ -185,19 +183,14 @@ function buildVarMap(probeMode: number): Record<string, number> {
 }
 
 function loadParams() {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const saved = JSON.parse(raw);
-      if (saved.autoZero != null) autoZero.value = saved.autoZero;
-      delete saved.autoZero;
-      Object.assign(params.value, saved);
-    }
-  } catch { /* ignore */ }
+  const saved = loadProbeDefaults();
+  autoZero.value = saved.autoZero;
+  const { autoZero: _, ...rest } = saved;
+  Object.assign(params.value, rest);
 }
 
 function saveParams() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
+  saveProbeDefaults({ ...params.value, autoZero: autoZero.value });
   // Sync to var file (and best-effort MDI) on every change
   const varMap = buildVarMap(autoZero.value ? 0 : 1);
   emit("setProbeVars", varMap);
@@ -207,9 +200,12 @@ function saveParams() {
 watch(() => props.probeResults?.cal_offset, (v) => {
   if (v != null) {
     params.value.calOffset = v;
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...params.value, autoZero: autoZero.value }));
+    saveProbeDefaults({ ...params.value, autoZero: autoZero.value });
   }
 });
+
+// Re-read when another client changes probe settings
+watch(settingsVersion, () => { loadParams(); });
 
 onMounted(() => {
   loadParams();

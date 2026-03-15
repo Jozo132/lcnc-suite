@@ -1,3 +1,5 @@
+import { ref } from "vue";
+
 // ─── Input step constants ─────────────────────────────────────────
 export const STEP_DEFAULT = 1;
 export const STEP_FEED = 10;
@@ -69,7 +71,11 @@ export function registerSection<T>(key: string, fallback: T, merge: (saved: any,
 // ─── Storage I/O ─────────────────────────────────────────────────
 
 /** Sections stored on the server (shared across all clients). */
-const SERVER_SECTIONS = new Set(["macros", "machine", "viewer", "camera", "mdi"]);
+const SERVER_SECTIONS = new Set(["macros", "machine", "camera", "mdi", "gamepad", "probe", "toolsetter"]);
+
+/** Reactive version counter — incremented on every server settings update.
+ *  Components watch this to re-read their section when another client saves. */
+export const settingsVersion = ref(0);
 
 /** In-memory cache — localStorage is read at most once per page load. */
 let _cache: Record<string, any> | null = null;
@@ -96,6 +102,7 @@ export function updateServerCache(data: Record<string, any>): void {
   for (const [key, val] of Object.entries(data)) {
     _cache[key] = val;
   }
+  settingsVersion.value++;
 }
 
 function readAll(): Record<string, any> {
@@ -479,7 +486,7 @@ export const DEFAULT_MAPPING: GamepadMapping = {
   btn_lb: "z_mod",
   btn_rb: "none",
   btn_lt: "none",
-  btn_rt: "none",
+  btn_rt: "dead_man",
   btn_back: "none",
   btn_start: "none",
   btn_ls: "none",
@@ -567,10 +574,133 @@ export function saveGamepadDefaults(data: GamepadDefaults): void {
   saveSection("gamepad", data);
 }
 
+// ─── Probe section ──────────────────────────────────────────────
+
+export interface ProbeDefaults {
+  probeTool: number;
+  slowFr: number;
+  fastFr: number;
+  traverseFr: number;
+  maxXYDistance: number;
+  xyClearance: number;
+  maxZDistance: number;
+  zClearance: number;
+  calOffset: number;
+  stepOffWidth: number;
+  extraProbeDepth: number;
+  edgeWidth: number;
+  diameterHint: number;
+  xHintBP: number;
+  yHintBP: number;
+  xHintRV: number;
+  yHintRV: number;
+  wcoRotation: number;
+  calDiameter: number;
+  xCalWidth: number;
+  yCalWidth: number;
+  scanX0: number;
+  scanX1: number;
+  scanY0: number;
+  scanY1: number;
+  scanXProbes: number;
+  scanYProbes: number;
+  scanSafeZ: number;
+  scanDepthZ: number;
+  autoZero: boolean;
+}
+
+const PROBE_FALLBACK: ProbeDefaults = {
+  probeTool: 99, slowFr: 50, fastFr: 200, traverseFr: 1000,
+  maxXYDistance: 10, xyClearance: 2, maxZDistance: 10, zClearance: 2,
+  calOffset: 0, stepOffWidth: 5, extraProbeDepth: 0, edgeWidth: 0.5,
+  diameterHint: 0, xHintBP: 0, yHintBP: 0, xHintRV: 0, yHintRV: 0,
+  wcoRotation: 0, calDiameter: 0, xCalWidth: 0, yCalWidth: 0,
+  scanX0: 10, scanX1: 200, scanY0: 10, scanY1: 200,
+  scanXProbes: 5, scanYProbes: 5, scanSafeZ: 20, scanDepthZ: 24,
+  autoZero: false,
+};
+
+function mergeNumField(saved: any, key: string, fb: number): number {
+  return typeof saved?.[key] === "number" ? saved[key] : fb;
+}
+
+registerSection<ProbeDefaults>("probe", PROBE_FALLBACK, (saved, fb) => {
+  if (!saved) return { ...fb };
+  const r: any = {};
+  for (const [k, v] of Object.entries(fb)) {
+    if (typeof v === "boolean") r[k] = saved[k] ?? v;
+    else r[k] = mergeNumField(saved, k, v as number);
+  }
+  return r as ProbeDefaults;
+});
+
+export function loadProbeDefaults(): ProbeDefaults {
+  return loadSection<ProbeDefaults>("probe");
+}
+
+export function saveProbeDefaults(data: ProbeDefaults): void {
+  saveSection("probe", data);
+}
+
+// ─── Toolsetter section ─────────────────────────────────────────
+
+export interface ToolsetterDefaults {
+  fastFeed: number;
+  slowFeed: number;
+  traverseFeed: number;
+  maxZTravel: number;
+  retractDist: number;
+  spindleZeroHeight: number;
+  offsetDirection: number;
+  touchX: number;
+  touchY: number;
+  touchZ: number;
+  useToolTable: number;
+  toolMinDis: number;
+  brakeAfter: number;
+  goBackToStart: number;
+  spindleStopM: number;
+  disablePrePos: number;
+  addReps: number;
+  lastTry: number;
+  offsetDiameter: number;
+  offsetValue: number;
+  finderTouchX: number;
+  finderTouchY: number;
+  finderDiffZ: number;
+}
+
+const TOOLSETTER_FALLBACK: ToolsetterDefaults = {
+  fastFeed: 500, slowFeed: 50, traverseFeed: 6000, maxZTravel: 150,
+  retractDist: 2, spindleZeroHeight: 180, offsetDirection: 0,
+  touchX: 0, touchY: 0, touchZ: 0, useToolTable: 0, toolMinDis: 10,
+  brakeAfter: 0, goBackToStart: 0, spindleStopM: 5, disablePrePos: 1,
+  addReps: 0, lastTry: 0, offsetDiameter: 0, offsetValue: 50,
+  finderTouchX: 0, finderTouchY: 0, finderDiffZ: 0,
+};
+
+registerSection<ToolsetterDefaults>("toolsetter", TOOLSETTER_FALLBACK, (saved, fb) => {
+  if (!saved) return { ...fb };
+  const r: any = {};
+  for (const [k, v] of Object.entries(fb)) {
+    r[k] = mergeNumField(saved, k, v as number);
+  }
+  return r as ToolsetterDefaults;
+});
+
+export function loadToolsetterDefaults(): ToolsetterDefaults {
+  return loadSection<ToolsetterDefaults>("toolsetter");
+}
+
+export function saveToolsetterDefaults(data: ToolsetterDefaults): void {
+  saveSection("toolsetter", data);
+}
+
 /** Clear all persisted settings so next load returns factory defaults. */
 export function resetAllDefaults(): void {
   localStorage.removeItem(STORAGE_KEY);
   localStorage.removeItem("lcnc-toolsetter-params");
+  localStorage.removeItem("lcnc-probe-params");
   _cache = null;
   _serverData = {};
   // Fire-and-forget server reset

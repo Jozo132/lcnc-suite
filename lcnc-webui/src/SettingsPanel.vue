@@ -6,7 +6,9 @@ import {
   loadMachineDefaults, saveMachineDefaults,
   loadMacrosDefaults, saveMacrosDefaults, extractParams,
   loadCameraDefaults, saveCameraDefaults, type CameraDefaults,
-  saveDisplayDefaults,
+  loadToolsetterDefaults, saveToolsetterDefaults,
+  loadProbeDefaults,
+  saveDisplayDefaults, settingsVersion,
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir,
   type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
@@ -22,7 +24,6 @@ import DebugTab from "./DebugTab.vue";
 
 const can = usePermissions();
 
-const TS_STORAGE_KEY = "lcnc-toolsetter-params";
 
 const themeMode = inject<Ref<ThemeMode>>("themeMode", ref("auto") as Ref<ThemeMode>);
 const setTheme = inject<(mode: ThemeMode) => void>("setTheme", () => {});
@@ -280,16 +281,7 @@ const tsParams = ref({
 const OFFSET_DIR_LABELS: Record<number, string> = { 0: "X-", 1: "X+", 2: "Y-", 3: "Y+" };
 const BRAKE_LABELS: Record<number, string> = { 0: "None", 1: "M00", 2: "M01" };
 
-const probeTool = computed(() => {
-  try {
-    const raw = localStorage.getItem("lcnc-probe-params");
-    if (raw) {
-      const saved = JSON.parse(raw);
-      if (saved.probeTool != null) return saved.probeTool;
-    }
-  } catch { /* ignore */ }
-  return 99;
-});
+const probeTool = computed(() => loadProbeDefaults().probeTool);
 
 function buildVarMap(): Record<string, number> {
   const p = tsParams.value;
@@ -307,18 +299,11 @@ function buildVarMap(): Record<string, number> {
 }
 
 function loadTsParams() {
-  try {
-    const raw = localStorage.getItem(TS_STORAGE_KEY);
-    if (raw) {
-      const saved = JSON.parse(raw);
-      delete saved.toolNumber; // toolNumber now lives in App.vue sidebar
-      Object.assign(tsParams.value, saved);
-    }
-  } catch { /* ignore */ }
+  Object.assign(tsParams.value, loadToolsetterDefaults());
 }
 
 function saveTsParams() {
-  localStorage.setItem(TS_STORAGE_KEY, JSON.stringify(tsParams.value));
+  saveToolsetterDefaults({ ...tsParams.value });
   emit("setProbeVars", buildVarMap());
 }
 
@@ -356,6 +341,13 @@ onMounted(() => {
   loadTsParams();
   emit("setProbeVars", buildVarMap());
   loadG30();
+});
+
+// Re-read when another client changes settings
+watch(settingsVersion, () => {
+  loadTsParams();
+  macros.value = loadMacrosDefaults().macros;
+  Object.assign(cam, loadCameraDefaults());
 });
 
 // ─── Camera overlay ──────────────────────────────────────────
