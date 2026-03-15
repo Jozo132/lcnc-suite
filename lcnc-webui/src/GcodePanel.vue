@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
 import { loadMachineDefaults, STEP_RPM } from "./defaults";
+import { GCODE_LOOKUP, GCODE_REFERENCE } from "./gcodeReference";
 import { Play, SkipForward, Pause, Square } from "lucide-vue-next";
 export interface GcodeStats {
   feedMoves: number;
@@ -48,10 +49,44 @@ const emit = defineEmits<{
   (e: "toggleOptionalStop"): void;
   (e: "toggleBlockDelete"): void;
   (e: "runFromLine", line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number): void;
+  (e: "openGcodeRef", code: string): void;
 }>();
 
 const codeViewerRef = ref<HTMLDivElement | null>(null);
 const showStats = ref(false);
+
+// G-code context help — disabled during program execution for performance
+const interactive = computed(() => !props.currentLine);
+const tooltip = ref<{ code: string; name: string; desc: string; x: number; y: number } | null>(null);
+
+function onTokenMouseEnter(ev: MouseEvent, token: Token) {
+  if (token.type !== 'gcode' && token.type !== 'mcode') return;
+  const code = token.text.toUpperCase();
+  const entry = GCODE_LOOKUP.get(code);
+  const rect = (ev.target as HTMLElement).getBoundingClientRect();
+  if (entry) {
+    tooltip.value = { code: entry.code, name: entry.name, desc: entry.desc, x: rect.left + rect.width / 2, y: rect.top };
+  } else {
+    // Prefix match for compound codes (G10 → G10 L2, G10 L20, etc.)
+    const matches = GCODE_REFERENCE.filter(e => e.code.toUpperCase().startsWith(code + " ") || e.code.toUpperCase().startsWith(code + "."));
+    if (matches.length === 1) {
+      tooltip.value = { code: matches[0]!.code, name: matches[0]!.name, desc: matches[0]!.desc, x: rect.left + rect.width / 2, y: rect.top };
+    } else if (matches.length > 1) {
+      tooltip.value = { code, name: `${matches.length} forms`, desc: "Click for details", x: rect.left + rect.width / 2, y: rect.top };
+    }
+  }
+}
+
+function onTokenMouseLeave() { tooltip.value = null; }
+
+function onTokenClick(ev: MouseEvent, token: Token) {
+  if (token.type !== 'gcode' && token.type !== 'mcode') return;
+  ev.stopPropagation();
+  tooltip.value = null;
+  emit("openGcodeRef", token.text.toUpperCase());
+}
+
+function dismissTooltip() { tooltip.value = null; }
 
 function fmtTime(secs: number): string {
   if (secs < 60) return `${Math.round(secs)}s`;
@@ -206,6 +241,7 @@ const offsetY = computed(() => visibleRange.value.start * LINE_HEIGHT);
 
 function onCodeScroll(ev: Event) {
   scrollTop.value = (ev.target as HTMLElement).scrollTop;
+  tooltip.value = null;
 }
 
 // Scroll to current line (mathematical — no DOM search)
@@ -325,10 +361,14 @@ onMounted(() => {
   dialogSpindleDir.value = mach.rflSpindleDir;
   dialogSpindleSpeed.value = mach.rflSpindleRpm;
   document.addEventListener("click", dismissStats);
+  window.addEventListener("blur", dismissTooltip);
+  window.addEventListener("resize", dismissTooltip);
 });
 
 onUnmounted(() => {
   document.removeEventListener("click", dismissStats);
+  window.removeEventListener("blur", dismissTooltip);
+  window.removeEventListener("resize", dismissTooltip);
 });
 
 function onLineClick(lineNum: number) {
@@ -587,7 +627,12 @@ async function saveEdit() {
                 <span
                   v-for="(token, ti) in item.tokens"
                   :key="ti"
-                  :class="'token-' + token.type"
+                  :class="['token-' + token.type, {
+                    'token-interactive': interactive && (token.type === 'gcode' || token.type === 'mcode')
+                  }]"
+                  @mouseenter="interactive && onTokenMouseEnter($event, token)"
+                  @mouseleave="interactive && onTokenMouseLeave()"
+                  @click.stop="interactive && onTokenClick($event, token)"
                 >{{ token.text }}</span>
               </span>
             </div>
@@ -639,6 +684,13 @@ async function saveEdit() {
                   :disabled="!can.ready">Run from Line {{ selectedLine }}</button>
         </div>
       </div>
+    </div>
+
+    <!-- G-code tooltip (fixed position, pointer-events: none) -->
+    <div v-if="tooltip" class="gcodeTooltip"
+         :style="{ left: tooltip.x + 'px', top: tooltip.y + 'px' }">
+      <div class="gcodeTooltipCode">{{ tooltip.code }} — {{ tooltip.name }}</div>
+      <div class="gcodeTooltipDesc">{{ tooltip.desc }}</div>
     </div>
   </div>
 </template>
@@ -1182,5 +1234,41 @@ async function saveEdit() {
   width: 100px;
 }
 
+/* G-code context help */
+.token-interactive {
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s;
+}
+
+.token-interactive:hover {
+  background: var(--hl-hover);
+}
+
+.gcodeTooltip {
+  position: fixed;
+  transform: translate(-50%, -100%) translateY(-6px);
+  z-index: 1000;
+  max-width: 320px;
+  padding: 6px 10px;
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  pointer-events: none;
+  font-family: var(--font-sans);
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+}
+
+.gcodeTooltipCode {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.gcodeTooltipDesc {
+  opacity: 0.8;
+}
 
 </style>

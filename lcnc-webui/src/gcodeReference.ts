@@ -169,3 +169,7 @@ export const GCODE_REFERENCE: GcodeEntry[] = [
   { code: "(DEBUG,..)", name: "Debug Message", desc: "Print debug output. Can interpolate variables with #<name>.", syntax: "(DEBUG, var=#<_x>)", group: "Other" },
   { code: "(PRINT,..)", name: "Print to File", desc: "Print text to stderr (log file). Same syntax as DEBUG.", syntax: "(PRINT, text)", group: "Other" },
 ];
+
+export const GCODE_LOOKUP: Map<string, GcodeEntry> = new Map(
+  GCODE_REFERENCE.map(e => [e.code.toUpperCase(), e])
+);

@@ -635,6 +635,7 @@ function toggleBlockDelete() {
 const toolDialogOpen = ref(false);
 const settingsDialogOpen = ref(false);
 const gcodeRefOpen = ref(false);
+const gcodeRefInitialSearch = ref("");
 
 function openDialog(name: "tool" | "settings" | "gcodeRef") {
   toolDialogOpen.value = false;
@@ -643,6 +644,11 @@ function openDialog(name: "tool" | "settings" | "gcodeRef") {
   if (name === "tool") toolDialogOpen.value = true;
   else if (name === "settings") settingsDialogOpen.value = true;
   else if (name === "gcodeRef") gcodeRefOpen.value = true;
+}
+
+function openGcodeRef(code?: string) {
+  gcodeRefInitialSearch.value = code ?? "";
+  openDialog("gcodeRef");
 }
 const showShutdownConfirm = ref(false);
 
@@ -1580,7 +1586,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </div>
 
         <div class="controlGroup">
-        <button class="btn controlBtn" @click.stop="openDialog('gcodeRef')" title="G-code Reference">
+        <button class="btn controlBtn" @click.stop="openGcodeRef()" title="G-code Reference">
           <BookOpen class="controlIcon" />
         </button>
         </div>
@@ -1729,6 +1735,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               @abort="fire({ cmd: 'abort' })"
               @toggleOptionalStop="toggleOptionalStop"
               @toggleBlockDelete="toggleBlockDelete"
+              @openGcodeRef="openGcodeRef"
             />
           </template>
 
@@ -1841,7 +1848,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     </div>
 
     <!-- G-code reference dialog -->
-    <GcodeReferenceDialog :open="gcodeRefOpen" @close="gcodeRefOpen = false" />
+    <GcodeReferenceDialog :open="gcodeRefOpen" :initialSearch="gcodeRefInitialSearch" @close="gcodeRefOpen = false" />
 
     <!-- Safety confirmation dialogs — z-index 1010 to always appear above other dialogs -->
     <div v-if="toolChangeRequested" class="dialogOverlay safetyDialog">

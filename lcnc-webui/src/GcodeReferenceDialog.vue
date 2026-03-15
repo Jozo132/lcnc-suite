@@ -1,14 +1,21 @@
 <script setup lang="ts">
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import { GCODE_REFERENCE, GCODE_GROUPS, type GcodeEntry } from "./gcodeReference";
 import { usePermissions } from "./permissions";
 
-defineProps<{ open: boolean }>();
+const props = defineProps<{ open: boolean; initialSearch?: string }>();
 const emit = defineEmits<{ (e: "close"): void }>();
 const can = usePermissions();
 
 const search = ref("");
 const filterGroup = ref("");
+
+watch(() => props.open, (isOpen) => {
+  if (isOpen && props.initialSearch) {
+    search.value = props.initialSearch;
+    filterGroup.value = "";
+  }
+});
 const sortKey = ref<"code" | "name">("code");
 const sortAsc = ref(true);
 
