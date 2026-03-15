@@ -10,7 +10,7 @@ import {
   loadProbeDefaults,
   saveDisplayDefaults, settingsVersion,
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
-  type TrackMode, type Projection, type ToolChangeMode, type SpindleDir,
+  type TrackMode, type Projection, type ToolChangeMode, type SpindleDir, type SpindleFeedbackUnit,
   type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
   type GamepadMapping, GAMEPAD_ACTIONS, DEFAULT_MAPPING, GAMEPAD_FALLBACK,
   STEP_DEFAULT, STEP_FEED, STEP_RPM,
@@ -149,6 +149,7 @@ function resetMachine() {
   saveMachineDefaults({
     toolChangeMode: "m6g43", runFromLine: false,
     rflSpindleDir: "forward", rflSpindleRpm: 10000, keyboardJog: false,
+    spindleFeedbackUnit: "rps",
   });
   const md = loadMachineDefaults();
   toolChangeMode.value = md.toolChangeMode;
@@ -156,6 +157,7 @@ function resetMachine() {
   rflSpindleDir.value = md.rflSpindleDir;
   rflSpindleRpm.value = md.rflSpindleRpm;
   keyboardJog.value = md.keyboardJog;
+  spindleFeedbackUnit.value = md.spindleFeedbackUnit;
   emit("setKeyboardJog", md.keyboardJog);
   emit("setRunFromLine", md.runFromLine);
 }
@@ -240,6 +242,7 @@ const runFromLine = ref(machSaved.runFromLine);
 const rflSpindleDir = ref<SpindleDir>(machSaved.rflSpindleDir);
 const rflSpindleRpm = ref(machSaved.rflSpindleRpm);
 const keyboardJog = ref(machSaved.keyboardJog);
+const spindleFeedbackUnit = ref<SpindleFeedbackUnit>(machSaved.spindleFeedbackUnit);
 
 function saveMachine() {
   saveMachineDefaults({
@@ -248,6 +251,7 @@ function saveMachine() {
     rflSpindleDir: rflSpindleDir.value,
     rflSpindleRpm: rflSpindleRpm.value,
     keyboardJog: keyboardJog.value,
+    spindleFeedbackUnit: spindleFeedbackUnit.value,
   });
 }
 
@@ -348,6 +352,15 @@ watch(settingsVersion, () => {
   loadTsParams();
   macros.value = loadMacrosDefaults().macros;
   Object.assign(cam, loadCameraDefaults());
+  const md = loadMachineDefaults();
+  toolChangeMode.value = md.toolChangeMode;
+  runFromLine.value = md.runFromLine;
+  rflSpindleDir.value = md.rflSpindleDir;
+  rflSpindleRpm.value = md.rflSpindleRpm;
+  keyboardJog.value = md.keyboardJog;
+  spindleFeedbackUnit.value = md.spindleFeedbackUnit;
+  emit("setKeyboardJog", md.keyboardJog);
+  emit("setRunFromLine", md.runFromLine);
 });
 
 // ─── Camera overlay ──────────────────────────────────────────
@@ -805,6 +818,28 @@ const halStats = computed(() => ({
               >
                 <span class="modeName">Enabled</span>
                 <span class="modeDesc">Arrow/Page/bracket keys jog the machine</span>
+              </button>
+            </div>
+          </div>
+          <div>
+            <div class="sub">Spindle Feedback Unit</div>
+            <div class="settingDesc">What unit does your spindle encoder / VFD driver output on the speed-in HAL pin? Simulators use RPS; most real VFDs output RPM directly.</div>
+            <div class="btnGroup modeGroup">
+              <button
+                class="optBtn modeBtn"
+                :class="{ active: spindleFeedbackUnit === 'rps' }"
+                @click="spindleFeedbackUnit = 'rps'; saveMachine()"
+              >
+                <span class="modeName">RPS (default)</span>
+                <span class="modeDesc">Pin outputs revolutions per second (×60 for display)</span>
+              </button>
+              <button
+                class="optBtn modeBtn"
+                :class="{ active: spindleFeedbackUnit === 'rpm' }"
+                @click="spindleFeedbackUnit = 'rpm'; saveMachine()"
+              >
+                <span class="modeName">RPM</span>
+                <span class="modeDesc">Pin outputs RPM directly (most VFDs)</span>
               </button>
             </div>
           </div>

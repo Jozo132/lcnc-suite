@@ -1639,7 +1639,7 @@ def poll_status() -> StatusPayload:
         max_jog_velocity=get_max_jog_velocity(),
         current_vel=current_vel,
         spindle_speed=spindle_speed,
-        spindle_speed_actual=_hal_fast('spindle-speed-in', 0) * 60,
+        spindle_speed_actual=_hal_fast('spindle-speed-in', 0) * _fb_scale,
         spindle_direction=spindle_direction,
         active_file=safe_get("file", None),
         motion_line=safe_get("motion_line", None),
@@ -3323,6 +3323,10 @@ async def ws_endpoint(ws: WebSocket):
         loop = asyncio.get_event_loop()
         _last_settings_ver = _settings_version
         _last_gen = 0  # tracks which _status_gen we last processed
+        # Spindle feedback scale: 60 if pin outputs RPS (default), 1 if RPM
+        _ss_init = load_settings()
+        _machine_s = _ss_init.get("machine", {})
+        _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
         _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
         while True:
             try:
@@ -3436,6 +3440,8 @@ async def ws_endpoint(ws: WebSocket):
                     _last_settings_ver = _settings_version
                     try:
                         _ss = await loop.run_in_executor(None, load_settings)
+                        _machine_s = _ss.get("machine", {})
+                        _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
                         await ws_send_json(ws, {
                             "type": "settings_changed",
                             "settings": _ss,
