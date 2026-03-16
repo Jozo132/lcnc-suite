@@ -2199,6 +2199,7 @@ defineExpose({
       <div class="hudSection">
         <div class="label">Spindle</div>
         <div class="hudValue">{{ formatCoord(vst?.spindle_speed_actual) }} RPM</div>
+        <div v-if="vst?.spindle_load != null" class="hudValue">Load {{ Math.round(vst.spindle_load) }}%</div>
       </div>
 
       <div v-if="vst?.eoffset_enabled" class="hudSection hudWarn">
