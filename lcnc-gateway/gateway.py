@@ -903,6 +903,7 @@ SETTINGS_PATH = BASE_DIR / "settings.json"
 _settings_version = 0
 _settings_cache: Optional[dict] = None
 _fb_scale = 60  # spindle feedback scale: 60 (RPS→RPM) or 1 (already RPM)
+_spindle_load_pin = ""  # HAL pin for spindle load %, empty = disabled
 _VALID_SETTINGS_SECTIONS = {"macros", "machine", "viewer", "camera", "mdi", "gamepad", "probe", "toolsetter"}
 
 
@@ -1064,6 +1065,7 @@ class StatusPayload:
     current_vel: Optional[float]
     spindle_speed: Optional[float]       # commanded (S word)
     spindle_speed_actual: Optional[float] # after override
+    spindle_load: Optional[float]        # load % from configurable HAL pin
     spindle_direction: Optional[int]
     active_file: Optional[str]
     motion_line: Optional[int]
@@ -1641,6 +1643,7 @@ def poll_status() -> StatusPayload:
         current_vel=current_vel,
         spindle_speed=spindle_speed,
         spindle_speed_actual=_hal_fast('spindle-speed-in', 0) * _fb_scale,
+        spindle_load=hal_get(_spindle_load_pin) if _spindle_load_pin else None,
         spindle_direction=spindle_direction,
         active_file=safe_get("file", None),
         motion_line=safe_get("motion_line", None),
@@ -3320,7 +3323,7 @@ async def ws_endpoint(ws: WebSocket):
 
     async def status_loop():
         nonlocal last_file, armed, viewer_init_sent, _probe_results, _prev_tc_req, _prev_tool_num
-        global _tool_meta_dirty, _fb_scale
+        global _tool_meta_dirty, _fb_scale, _spindle_load_pin
         loop = asyncio.get_event_loop()
         _last_settings_ver = _settings_version
         _last_gen = 0  # tracks which _status_gen we last processed
@@ -3328,6 +3331,7 @@ async def ws_endpoint(ws: WebSocket):
         _ss_init = load_settings()
         _machine_s = _ss_init.get("machine", {})
         _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
+        _spindle_load_pin = _machine_s.get("spindleLoadPin", "")
         _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
         while True:
             try:
@@ -3443,6 +3447,7 @@ async def ws_endpoint(ws: WebSocket):
                         _ss = await loop.run_in_executor(None, load_settings)
                         _machine_s = _ss.get("machine", {})
                         _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
+                        _spindle_load_pin = _machine_s.get("spindleLoadPin", "")
                         await ws_send_json(ws, {
                             "type": "settings_changed",
                             "settings": _ss,

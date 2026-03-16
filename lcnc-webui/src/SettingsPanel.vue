@@ -149,7 +149,7 @@ function resetMachine() {
   saveMachineDefaults({
     toolChangeMode: "m6g43", runFromLine: false,
     rflSpindleDir: "forward", rflSpindleRpm: 10000, keyboardJog: false,
-    spindleFeedbackUnit: "rps",
+    spindleFeedbackUnit: "rps", spindleLoadPin: "",
   });
   const md = loadMachineDefaults();
   toolChangeMode.value = md.toolChangeMode;
@@ -158,6 +158,7 @@ function resetMachine() {
   rflSpindleRpm.value = md.rflSpindleRpm;
   keyboardJog.value = md.keyboardJog;
   spindleFeedbackUnit.value = md.spindleFeedbackUnit;
+  spindleLoadPin.value = md.spindleLoadPin;
   emit("setKeyboardJog", md.keyboardJog);
   emit("setRunFromLine", md.runFromLine);
 }
@@ -243,6 +244,7 @@ const rflSpindleDir = ref<SpindleDir>(machSaved.rflSpindleDir);
 const rflSpindleRpm = ref(machSaved.rflSpindleRpm);
 const keyboardJog = ref(machSaved.keyboardJog);
 const spindleFeedbackUnit = ref<SpindleFeedbackUnit>(machSaved.spindleFeedbackUnit);
+const spindleLoadPin = ref(machSaved.spindleLoadPin);
 
 function saveMachine() {
   saveMachineDefaults({
@@ -252,6 +254,7 @@ function saveMachine() {
     rflSpindleRpm: rflSpindleRpm.value,
     keyboardJog: keyboardJog.value,
     spindleFeedbackUnit: spindleFeedbackUnit.value,
+    spindleLoadPin: spindleLoadPin.value,
   });
 }
 
@@ -359,6 +362,7 @@ watch(settingsVersion, () => {
   rflSpindleRpm.value = md.rflSpindleRpm;
   keyboardJog.value = md.keyboardJog;
   spindleFeedbackUnit.value = md.spindleFeedbackUnit;
+  spindleLoadPin.value = md.spindleLoadPin;
   emit("setKeyboardJog", md.keyboardJog);
   emit("setRunFromLine", md.runFromLine);
 });
@@ -842,6 +846,17 @@ const halStats = computed(() => ({
                 <span class="modeDesc">Pin outputs RPM directly (most VFDs)</span>
               </button>
             </div>
+          </div>
+          <div>
+            <div class="sub">Spindle Load HAL Pin</div>
+            <div class="settingDesc">HAL pin that outputs spindle load percentage (e.g. <code>spindle-load-conv.load-percentage</code>). Leave empty to disable.</div>
+            <input
+              type="text"
+              v-model="spindleLoadPin"
+              @change="saveMachine()"
+              placeholder="e.g. spindle-load-conv.load-percentage"
+              style="width: 100%"
+            />
           </div>
           <div class="resetRow">
             <button class="danger" :disabled="!can.idle" @click="resetTarget = 'machine'">Reset Machine</button>

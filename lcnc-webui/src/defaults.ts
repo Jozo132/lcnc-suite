@@ -222,6 +222,7 @@ export interface MachineDefaults {
   rflSpindleRpm: number;
   keyboardJog: boolean;
   spindleFeedbackUnit: SpindleFeedbackUnit;
+  spindleLoadPin: string;
 }
 
 const MACHINE_FALLBACK: MachineDefaults = {
@@ -231,6 +232,7 @@ const MACHINE_FALLBACK: MachineDefaults = {
   rflSpindleRpm: 10000,
   keyboardJog: false,
   spindleFeedbackUnit: "rps",
+  spindleLoadPin: "",
 };
 
 registerSection<MachineDefaults>("machine", MACHINE_FALLBACK, (saved, fb) => {
@@ -243,6 +245,7 @@ registerSection<MachineDefaults>("machine", MACHINE_FALLBACK, (saved, fb) => {
     rflSpindleRpm: typeof saved.rflSpindleRpm === "number" ? saved.rflSpindleRpm : fb.rflSpindleRpm,
     keyboardJog: saved.keyboardJog ?? fb.keyboardJog,
     spindleFeedbackUnit: (saved.spindleFeedbackUnit === "rpm" ? "rpm" : "rps") as SpindleFeedbackUnit,
+    spindleLoadPin: typeof saved.spindleLoadPin === "string" ? saved.spindleLoadPin : fb.spindleLoadPin,
   };
 });
 

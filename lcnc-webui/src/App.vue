@@ -586,6 +586,7 @@ const maxFeedOverride = computed(() => {
 // Spindle state
 const spindleSpeed = computed(() => st.value.spindle_speed ?? null);
 const spindleActual = computed(() => st.value.spindle_speed_actual ?? null);
+const spindleLoad = computed(() => st.value.spindle_load ?? null);
 const spindleDirection = computed(() => st.value.spindle_direction ?? null);
 
 // Spindle popover state
@@ -1528,6 +1529,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
               <span class="spDirValue" :class="{ okText: isSpinning }">
                 {{ isForward ? "FWD (CW)" : isReverse ? "REV (CCW)" : "STOPPED" }}
               </span>
+            </div>
+            <div v-if="spindleLoad != null" class="spActualRow">
+              <span class="spFieldLabel">Load</span>
+              <span class="spActualValue">{{ Math.round(spindleLoad) }} <span class="spUnit">%</span></span>
             </div>
           </div>
 
