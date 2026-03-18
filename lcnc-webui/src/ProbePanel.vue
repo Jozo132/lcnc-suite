@@ -1044,9 +1044,9 @@ function fmtR(key: string): string {
       <div class="section">
         <div class="calParamTitle">Calibrate on:</div>
         <div class="calAxisRow">
-          <Btn class="calAxisBtn" :active="calAxis === 0" :disabled="!can.ready" @click="calAxis = 0">Avg XY</Btn>
-          <Btn class="calAxisBtn" :active="calAxis === 1" :disabled="!can.ready" @click="calAxis = 1">X Error</Btn>
-          <Btn class="calAxisBtn" :active="calAxis === 2" :disabled="!can.ready" @click="calAxis = 2">Y Error</Btn>
+          <Btn class="calAxisBtn" muted :selected="calAxis === 0" :disabled="!can.ready" @click="calAxis = 0">Avg XY</Btn>
+          <Btn class="calAxisBtn" muted :selected="calAxis === 1" :disabled="!can.ready" @click="calAxis = 1">X Error</Btn>
+          <Btn class="calAxisBtn" muted :selected="calAxis === 2" :disabled="!can.ready" @click="calAxis = 2">Y Error</Btn>
         </div>
       </div>
       </div>
@@ -1172,7 +1172,7 @@ function fmtR(key: string): string {
         <span class="compMethod">
           Method:
           <Btn v-for="(label, id) in METHOD_LABELS" :key="id"
-            class="methodBtn" :active="compMethod === Number(id)"
+            class="methodBtn" muted :selected="compMethod === Number(id)"
             :disabled="!can.ready"
             @click="setMethod(Number(id))">{{ label }}</Btn>
         </span>
@@ -1613,18 +1613,7 @@ function fmtR(key: string): string {
   gap: var(--gap-tight);
 }
 .methodBtn {
-  padding: 1px 6px;
   font-size: var(--fs-sm);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  background: var(--bg);
-  color: var(--fg);
-  cursor: pointer;
-}
-.methodBtn.active {
-  background: var(--accent);
-  color: var(--fg-on-accent);
-  border-color: var(--accent);
 }
 .surface3d {
   flex: 1;

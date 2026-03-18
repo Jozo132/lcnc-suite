@@ -319,7 +319,9 @@ const g5xLabel = computed(() => {
 
 const hasRotation = computed(() => {
   const rot = st.value.rotation_xy;
-  return rot != null && rot !== 0;
+  if (rot != null && rot !== 0) return true;
+  const activeRow = wcsTable.value.find(r => r.name === g5xLabel.value);
+  return activeRow != null && activeRow.r !== 0;
 });
 
 const hasOffsetWarning = computed(() => hasRotation.value || !!st.value.eoffset_enabled);
@@ -1287,8 +1289,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <div class="controlGroup">
         <Btn
           size="lg" class="controlBtn"
-          :class="{ warn: spindleMismatch }"
           :active="isSpinning"
+          :warning="spindleMismatch"
           @click.stop="toggleChip('spindle')"
           title="Spindle"
           block
@@ -1447,8 +1449,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <div class="controlGroup">
         <Btn
           size="lg" class="controlBtn"
-          :class="{ warn: overridesDisabled }"
-          :active="overridesActive"
+          :warning="overridesActive || overridesDisabled"
           @click.stop="toggleChip('overrides')"
           title="Overrides"
           block
@@ -1490,7 +1491,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <div class="controlGroup">
         <Btn
           size="lg" class="controlBtn"
-          :class="{ warn: hasOffsetWarning }"
+          :warning="hasOffsetWarning"
           @click.stop="openOffsetsPopover()"
           title="Offsets"
           block
@@ -1546,7 +1547,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <div class="controlGroup">
         <Btn
           size="lg" class="controlBtn"
-          :active="unreadCount > 0"
+          :warning="unreadCount > 0"
           @click.stop="toggleChip('messages')"
           title="Messages"
           block
@@ -2290,15 +2291,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.controlBtn.warn {
-  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
-  background: color-mix(in oklab, var(--danger) 20%, var(--button-bg));
-  animation: pulse-warn 1s ease-in-out infinite;
-}
-@keyframes pulse-warn {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
 }
 
 .controlIcon { width: var(--fs-2xl); height: var(--fs-2xl); }

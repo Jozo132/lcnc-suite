@@ -8,6 +8,7 @@ defineProps<{
   active?: boolean;
   selected?: boolean;
   flashing?: boolean;
+  warning?: boolean;
   muted?: boolean;
   mono?: boolean;
 }>();
@@ -19,7 +20,7 @@ defineProps<{
       icon ? 'b-icon' : inline ? 'b-inline' : 'b',
       !icon && !inline && (size ?? 'md'),
       !icon && !inline && (variant ?? 'default'),
-      { active, selected, flashing, block, muted, mono },
+      { active, selected, flashing, warning, block, muted, mono },
     ]"
   >
     <slot />
@@ -99,6 +100,17 @@ defineProps<{
 @keyframes flash-estop {
   0%, 100% { background: color-mix(in oklab, var(--danger) 40%, var(--button-bg)); }
   50% { background: var(--button-bg); }
+}
+
+/* ---- Warning (yellow/amber pulse) ---- */
+.b.warning {
+  border-color: color-mix(in srgb, var(--warn) 50%, transparent);
+  background: color-mix(in oklab, var(--warn) 20%, var(--button-bg));
+  animation: pulse-warn 1s ease-in-out infinite;
+}
+@keyframes pulse-warn {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 /* ---- Muted (dimmed until active/selected/hover) ---- */
