@@ -101,11 +101,7 @@ function fmt(n: any, letter?: string) {
   grid-template-columns: 1fr 90px minmax(70px, 110px) minmax(70px, 110px);
   column-gap: var(--gap-section);
   row-gap: var(--gap-section);
-  align-items: center;
-}
-
-.spanBtn {
-  align-self: stretch;
+  align-items: stretch;
 }
 
 .axis {
@@ -116,9 +112,8 @@ function fmt(n: any, letter?: string) {
 }
 
 .axis span {
-  font-size: var(--fs-base);
+  font-size: var(--fs-3xl);
   opacity: var(--opacity-muted);
-  width: 14px;
 }
 
 .zeroBtn {

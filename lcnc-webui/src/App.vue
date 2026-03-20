@@ -12,7 +12,7 @@ import ToolTablePanel from "./ToolTablePanel.vue";
 import ProbePanel from "./ProbePanel.vue";
 import CameraViewer from "./CameraViewer.vue";
 import Btn from "./Btn.vue";
-import { LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2, BookOpen, ClipboardCopy, Hash } from "lucide-vue-next";
+import { LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2, BookOpen, ClipboardCopy } from "lucide-vue-next";
 import GcodeReferenceDialog from "./GcodeReferenceDialog.vue";
 import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, loadGamepadDefaults, saveGamepadDefaults, settingsVersion, type ThemeMode, type MacroDef, type GamepadDefaults, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 import { useGamepad } from "./useGamepad";
@@ -1201,11 +1201,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
           {{ connected ? "WS connected" : "WS disconnected" }}
         </div>
 
-        <div v-if="connected && networkLatency != null" class="pill">
+        <div v-if="connected && networkLatency != null" class="pill"
+             title="Network latency: WebSocket ping/pong transit time between browser and gateway">
           Net {{ networkLatency }}ms
         </div>
-        <div v-if="connected && latency != null" class="pill">
-          RT {{ latency }}ms
+        <div v-if="connected && latency != null" class="pill"
+             title="Round-trip latency: full cycle from browser → gateway status poll → browser, includes network + server processing">
+          Ping {{ latency }}ms
         </div>
 
         <div class="pill" :class="lcncError ? 'bad' : (configName ? 'ok' : '')">
@@ -1280,6 +1282,17 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <div class="statusRow"><div class="k">Mode</div><div class="v">{{ taskModeLabel }}</div></div>
         <div class="statusRow"><div class="k">Interp</div><div class="v">{{ interpStateLabel }}</div></div>
         <div class="statusRow"><div class="k">Elapsed</div><div class="v mono">{{ elapsedDisplay }}</div></div>
+        <div class="statusRow codesRow">
+          <div class="k">Codes</div>
+          <div class="v mono codesShort">{{ activeGcodes }}</div>
+          <div class="popover codesPopover">
+            <div class="label">G-codes</div>
+            <div class="codesValue">{{ activeGcodes }}</div>
+            <div class="sep"></div>
+            <div class="label">M-codes</div>
+            <div class="codesValue">{{ activeMcodes }}</div>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -1590,28 +1603,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
           <SlidersHorizontal class="controlIcon" />
         </Btn>
         </div>
-        <div class="controlGroup simtripGroup">
+        <div v-if="st.debug" class="controlGroup simtripGroup">
         <Btn class="controlBtn simtrip" :disabled="!st.probing" @click.stop="send({ cmd: 'simulate_probe_trip' })" title="Simulate probe contact (sim/debug)" block>Sim Trip</Btn>
         </div>
 
-        <!-- Active G/M Codes -->
-        <div class="controlGroup controlGroup--wide">
-        <Btn
-          size="lg" class="controlBtn"
-          @click.stop="toggleChip('codes')"
-          title="Active Codes"
-          block
-        >
-          <Hash class="controlIcon" />
-        </Btn>
-        <div class="popover codesPopover" :class="{ open: openChip === 'codes' }" @click.stop>
-          <div class="label">G-codes</div>
-          <div class="codesValue">{{ activeGcodes }}</div>
-          <div class="sep"></div>
-          <div class="label">M-codes</div>
-          <div class="codesValue">{{ activeMcodes }}</div>
-        </div>
-        </div>
       </div>
     </section>
     </div>
@@ -1660,10 +1655,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
                 :jogIncrement="jogIncrement"
                 :minJogVel="minJogVel"
                 :iniIncrements="iniIncrements"
-                :gcodeContent="gcodeContent"
-                :currentLine="currentLine"
-                :isPaused="isPaused"
-                :elapsed="elapsedDisplay"
                 :activeFile="activeFile"
                 :spindleSpeed="spindleSpeed"
                 :spindleActual="spindleActual"
@@ -1671,25 +1662,15 @@ watch(isHomed, (nowHomed, wasHomed) => {
                 :surfacePoints="surfaceLoadedToViewer ? surfacePoints : null"
                 :axes="axes"
                 :touchoff="touchoff"
-                :optionalStop="optionalStopOn"
-                :blockDelete="blockDeleteOn"
                 @update:touchoff="touchoff = $event"
                 @update:jogVel="jogVel = $event"
                 @update:angularJogVel="angularJogVel = $event"
                 @update:jogIncrement="jogIncrement = $event"
-                @cycleStart="cycleStart"
-                @runFromLine="runFromLine"
-                @cycleStep="cycleStep"
-                @cyclePause="cyclePause"
-                @cycleResume="cycleResume"
-                @abort="fire({ cmd: 'abort' })"
                 @toggleTeleop="toggleTeleop"
                 @homeAll="homeAll"
                 @unhomeAll="unhomeAll"
                 @setAxis="setAxis"
                 @setAll="setAll"
-                @toggleOptionalStop="toggleOptionalStop"
-                @toggleBlockDelete="toggleBlockDelete"
                 @goToG30="fire({ cmd: 'mdi', text: 'O<go_to_g30> CALL' })"
                 @goToHome="fire({ cmd: 'mdi', text: 'O<go_to_home> CALL' })"
                 @goToZero="fire({ cmd: 'mdi', text: 'O<go_to_zero> CALL' })"
@@ -1962,8 +1943,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
 .hdrRight {
   display: flex;
-  gap: var(--gap-controls);
+  flex-wrap: wrap;
+  gap: var(--gap-tight);
   align-items: center;
+  justify-content: flex-end;
 }
 
 .title {
@@ -2269,13 +2252,21 @@ watch(isHomed, (nowHomed, wasHomed) => {
 .controlGroup { position: relative; }
 .controlGroup--wide { grid-column: 1 / -1; }
 
-.codesPopover {
-  bottom: 0;
-  left: 100%;
-  margin-left: 6px;
+.codesRow {
+  position: relative;
+}
+.codesShort {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.codesRow .codesPopover {
+  top: 100%;
+  left: 0;
+  margin-top: var(--gap-tight);
   min-width: 240px;
 }
-.codesPopover.open {
+.codesRow:hover .codesPopover {
   display: flex !important;
   flex-direction: column;
   gap: var(--gap-controls);

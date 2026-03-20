@@ -653,6 +653,10 @@ def get_ini_config() -> dict:
         # Feed override [DISPLAY]
         config["max_feed_override"] = _ini_float(ini, "DISPLAY", "MAX_FEED_OVERRIDE")
 
+        # Debug mode [DISPLAY] — shows sim trip and other debug features in UI
+        debug_raw = ini.find("DISPLAY", "DEBUG")
+        config["debug"] = bool(int(debug_raw)) if debug_raw else False
+
         # Spindle speed limits — try SPINDLE_0 through SPINDLE_9
         for i in range(10):
             section = f"SPINDLE_{i}"
@@ -1114,6 +1118,7 @@ class StatusPayload:
     max_feed_override: Optional[float] = None
     max_spindle_speed: Optional[float] = None
     min_spindle_speed: Optional[float] = None
+    debug: Optional[bool] = None
 
 
 
@@ -1678,6 +1683,7 @@ def poll_status() -> StatusPayload:
         max_feed_override=ini_cfg.get("max_feed_override"),
         max_spindle_speed=ini_cfg.get("max_spindle_speed"),
         min_spindle_speed=ini_cfg.get("min_spindle_speed"),
+        debug=ini_cfg.get("debug", False),
     )
 
 

@@ -113,7 +113,7 @@ import { Text } from "troika-three-text";
 import { viewerInit, viewerGcode, status } from "./lcncWs";
 import { loadViewerDefaults, ALL_LAYERS, type Vec3, type Layer } from "./defaults";
 import JogHUD from "./JogHUD.vue";
-import GcodeHUD from "./GcodeHUD.vue";
+
 import SetupHUD from "./SetupHUD.vue";
 import Btn from "./Btn.vue";
 
@@ -202,10 +202,6 @@ const props = defineProps<{
   jogIncrement?: number;
   minJogVel?: number;
   iniIncrements?: number[] | null;
-  gcodeContent?: string | null;
-  currentLine?: number | null;
-  isPaused?: boolean;
-  elapsed?: string;
   activeFile?: string | null;
   spindleSpeed?: number | null;
   spindleActual?: number | null;
@@ -213,8 +209,6 @@ const props = defineProps<{
   surfacePoints?: [number, number, number][] | null;
   axes?: string[];
   touchoff?: number[];
-  optionalStop?: boolean;
-  blockDelete?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -222,17 +216,10 @@ const emit = defineEmits<{
   (e: "update:angularJogVel", vel: number): void;
   (e: "update:jogIncrement", val: number): void;
   (e: "update:touchoff", values: number[]): void;
-  (e: "cycleStart"): void;
-  (e: "cycleStep"): void;
-  (e: "cyclePause"): void;
-  (e: "cycleResume"): void;
-  (e: "abort"): void;
   (e: "homeAll"): void;
   (e: "unhomeAll"): void;
   (e: "setAxis", axis: number, value: number): void;
   (e: "setAll", values: number[]): void;
-  (e: "toggleOptionalStop"): void;
-  (e: "toggleBlockDelete"): void;
   (e: "goToG30"): void;
   (e: "goToHome"): void;
   (e: "goToZero"): void;
@@ -245,7 +232,7 @@ const vst = computed(() => status.value?.data ?? null);
 // ---------- DOM ----------
 const host = ref<HTMLDivElement | null>(null);
 const hudVisible = ref(true);
-type HudPanel = "none" | "jog" | "gcode" | "setup";
+type HudPanel = "none" | "jog" | "setup";
 const activeHudPanel = ref<HudPanel>("none");
 function toggleHud(panel: HudPanel) { activeHudPanel.value = activeHudPanel.value === panel ? "none" : panel; }
 
@@ -2223,7 +2210,6 @@ defineExpose({
     <div class="hudOverlay">
       <div class="row-tight hudBtnRow">
         <Btn size="sm" muted :selected="activeHudPanel === 'jog'" @click="toggleHud('jog')">Jog</Btn>
-        <Btn size="sm" muted :selected="activeHudPanel === 'gcode'" @click="toggleHud('gcode')">Program</Btn>
         <Btn size="sm" muted :selected="activeHudPanel === 'setup'" @click="toggleHud('setup')">Setup</Btn>
       </div>
 
@@ -2245,24 +2231,6 @@ defineExpose({
           @update:angularJogVel="emit('update:angularJogVel', $event)"
           @update:jogIncrement="emit('update:jogIncrement', $event)"
           @toggleTeleop="emit('toggleTeleop')"
-        />
-      </div>
-
-      <div v-show="activeHudPanel === 'gcode'">
-        <GcodeHUD
-          :gcodeContent="props.gcodeContent ?? null"
-          :currentLine="props.currentLine ?? null"
-          :isPaused="props.isPaused ?? false"
-          :elapsed="props.elapsed ?? '00:00'"
-          :optionalStop="props.optionalStop ?? false"
-          :blockDelete="props.blockDelete ?? false"
-          @cycleStart="emit('cycleStart')"
-          @cycleStep="emit('cycleStep')"
-          @cyclePause="emit('cyclePause')"
-          @cycleResume="emit('cycleResume')"
-          @abort="emit('abort')"
-          @toggleOptionalStop="emit('toggleOptionalStop')"
-          @toggleBlockDelete="emit('toggleBlockDelete')"
         />
       </div>
 

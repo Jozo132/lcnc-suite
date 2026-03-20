@@ -442,10 +442,10 @@ async function saveEdit() {
         <Btn class="actionBtn" size="sm" @click="toggleBrowser" :disabled="loading || !can.idle">
           {{ showBrowser ? 'Hide Files' : 'Browse' }}
         </Btn>
-        <label class="actionBtn uploadBtn" :class="{ disabled: !can.idle }">
+        <Btn class="actionBtn" size="sm" :disabled="!can.idle" @click="($refs.fileInput as HTMLInputElement).click()">
           Upload
-          <input type="file" accept=".ngc,.nc,.gcode,.tap,.txt" @change="onFileSelect" hidden :disabled="!can.idle" />
-        </label>
+        </Btn>
+        <input ref="fileInput" type="file" accept=".ngc,.nc,.gcode,.tap,.txt" @change="onFileSelect" hidden />
       </div>
       <div class="fileInfo">
         <span class="label">File:</span>
@@ -891,22 +891,6 @@ async function saveEdit() {
   white-space: nowrap;
 }
 
-.uploadBtn {
-  display: inline-block;
-  border: 1px solid var(--border);
-  background-color: var(--button-bg);
-  color: var(--fg);
-  font-weight: var(--fw-medium);
-  font-family: inherit;
-  cursor: pointer;
-  transition: background 0.12s, border-color 0.12s, opacity 0.15s;
-}
-
-.uploadBtn.disabled {
-  opacity: var(--opacity-disabled);
-  cursor: not-allowed;
-  pointer-events: none;
-}
 
 /* Error banner */
 .errorBanner {
