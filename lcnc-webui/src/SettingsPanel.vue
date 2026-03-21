@@ -152,7 +152,7 @@ function resetViewer() {
 function resetMachine() {
   saveMachineDefaults({
     toolChangeMode: "m6g43", runFromLine: false,
-    rflSpindleDir: "forward", rflSpindleRpm: 10000, keyboardJog: false,
+    rflSpindleDir: "forward", rflSpindleRpm: 10000,
     spindleFeedbackUnit: "rps", spindleLoadPin: "",
   });
   const md = loadMachineDefaults();
@@ -258,7 +258,6 @@ function saveMachine() {
     runFromLine: runFromLine.value,
     rflSpindleDir: rflSpindleDir.value,
     rflSpindleRpm: rflSpindleRpm.value,
-    keyboardJog: loadMachineDefaults().keyboardJog,
     spindleFeedbackUnit: spindleFeedbackUnit.value,
     spindleLoadPin: spindleLoadPin.value,
   });

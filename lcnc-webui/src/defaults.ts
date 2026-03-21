@@ -220,7 +220,6 @@ export interface MachineDefaults {
   runFromLine: boolean;
   rflSpindleDir: SpindleDir;
   rflSpindleRpm: number;
-  keyboardJog: boolean;
   spindleFeedbackUnit: SpindleFeedbackUnit;
   spindleLoadPin: string;
 }
@@ -230,7 +229,6 @@ const MACHINE_FALLBACK: MachineDefaults = {
   runFromLine: false,
   rflSpindleDir: "forward",
   rflSpindleRpm: 10000,
-  keyboardJog: false,
   spindleFeedbackUnit: "rps",
   spindleLoadPin: "",
 };
@@ -243,7 +241,6 @@ registerSection<MachineDefaults>("machine", MACHINE_FALLBACK, (saved, fb) => {
     runFromLine: saved.runFromLine ?? fb.runFromLine,
     rflSpindleDir: (dir === "off" || dir === "forward" || dir === "reverse" ? dir : fb.rflSpindleDir) as SpindleDir,
     rflSpindleRpm: typeof saved.rflSpindleRpm === "number" ? saved.rflSpindleRpm : fb.rflSpindleRpm,
-    keyboardJog: saved.keyboardJog ?? fb.keyboardJog,
     spindleFeedbackUnit: (saved.spindleFeedbackUnit === "rpm" ? "rpm" : "rps") as SpindleFeedbackUnit,
     spindleLoadPin: typeof saved.spindleLoadPin === "string" ? saved.spindleLoadPin : fb.spindleLoadPin,
   };
@@ -643,7 +640,12 @@ export function formatKeyName(key: string): string {
 }
 
 registerSection<KeyboardDefaults>("keyboard", KEYBOARD_FALLBACK, (saved, fb) => {
-  if (!saved) return { ...fb, mapping: { ...fb.mapping } };
+  if (!saved) {
+    // Cross-section migration: read keyboardJog from machine section
+    const machRaw = loadSection<any>("machine");
+    const jogEnabled = machRaw?.keyboardJog ?? fb.jogEnabled;
+    return { ...fb, jogEnabled, mapping: { ...fb.mapping } };
+  }
   const mapping = { ...fb.mapping };
   if (saved.mapping && typeof saved.mapping === "object") {
     for (const action of ALL_KB_ACTIONS) {
