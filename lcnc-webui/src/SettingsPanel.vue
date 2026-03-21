@@ -394,6 +394,9 @@ const COMMAND_ACTIONS: KeyboardAction[] = ["estop", "cycle", "abort"];
 const LINEAR_JOG_ACTIONS: KeyboardAction[] = ["jog_x+", "jog_x-", "jog_y+", "jog_y-", "jog_z+", "jog_z-"];
 const ROTARY_JOG_ACTIONS: KeyboardAction[] = ["jog_a+", "jog_a-", "jog_b+", "jog_b-"];
 
+// Show rotary rows only if machine has axes beyond XYZ (bits 3+ in axis_mask)
+const hasRotaryAxes = computed(() => ((status.value?.axis_mask ?? 7) >> 3) !== 0);
+
 // Modifier keys to reject
 const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta"]);
 
@@ -1308,6 +1311,7 @@ const halStats = computed(() => ({
                         <Btn icon v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</Btn>
                       </td>
                     </tr>
+                    <template v-if="hasRotaryAxes">
                     <tr v-for="action in ROTARY_JOG_ACTIONS" :key="action" :class="{ inactive: !kbConfig.jogEnabled }">
                       <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>
                       <td class="kbKeyCell"
@@ -1319,6 +1323,7 @@ const halStats = computed(() => ({
                         <Btn icon v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</Btn>
                       </td>
                     </tr>
+                    </template>
                     <tr class="kbSep"><td colspan="3"></td></tr>
                     <tr v-for="action in COMMAND_ACTIONS" :key="action">
                       <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>

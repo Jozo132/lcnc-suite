@@ -641,8 +641,9 @@ export function formatKeyName(key: string): string {
 
 registerSection<KeyboardDefaults>("keyboard", KEYBOARD_FALLBACK, (saved, fb) => {
   if (!saved) {
-    // Cross-section migration: read keyboardJog from machine section
-    const machRaw = loadSection<any>("machine");
+    // Cross-section migration: read keyboardJog from raw machine data
+    // (loadSection strips unknown fields, so read raw cache instead)
+    const machRaw = readAll().machine;
     const jogEnabled = machRaw?.keyboardJog ?? fb.jogEnabled;
     return { ...fb, jogEnabled, mapping: { ...fb.mapping } };
   }
