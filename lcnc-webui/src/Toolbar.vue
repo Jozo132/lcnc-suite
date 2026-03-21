@@ -216,9 +216,6 @@ function togglePill(name: string) {
   cursor: default;
 }
 
-.toolPill :deep(.b.selected) {
-  background: var(--panel);
-}
 
 /* ---- Popovers ---- */
 .pillPopover {
