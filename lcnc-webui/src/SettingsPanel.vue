@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, inject, onMounted, watch, type Ref, type ComputedRef } from "vue";
+import { ref, reactive, computed, inject, onMounted, onUnmounted, watch, type Ref, type ComputedRef } from "vue";
 import TabPanel from "./TabPanel.vue";
 import Btn from "./Btn.vue";
 import {
@@ -15,6 +15,7 @@ import {
   type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
   type GamepadMapping, GAMEPAD_ACTIONS, DEFAULT_MAPPING, GAMEPAD_FALLBACK,
   STEP_DEFAULT, STEP_FEED, STEP_RPM,
+  loadKeyboardDefaults, type KeyboardDefaults, type KeyboardAction, KEYBOARD_ACTION_LABELS, DEFAULT_KB_MAPPING, formatKeyName,
 } from "./defaults";
 import { fetchHal, fetchG30, type HalPin, type HalSignal, type HalParam } from "./lcncApi";
 import { status } from "./lcncWs";
@@ -100,6 +101,7 @@ const props = defineProps<{
   gamepadConnected?: boolean;
   gamepadName?: string;
   gamepadConfig?: GamepadDefaults;
+  keyboardConfig?: KeyboardDefaults;
 }>();
 
 const emit = defineEmits<{
@@ -107,9 +109,9 @@ const emit = defineEmits<{
   (e: "mdi", text: string): void;
   (e: "setPathOnTop", on: boolean): void;
   (e: "setProjection", proj: Projection): void;
-  (e: "setKeyboardJog", on: boolean): void;
   (e: "setRunFromLine", on: boolean): void;
   (e: "setGamepadConfig", cfg: GamepadDefaults): void;
+  (e: "setKeyboardConfig", cfg: KeyboardDefaults): void;
 }>();
 
 // ─── Per-tab reset ──────────────────────────────────────────────
@@ -117,7 +119,7 @@ const resetTarget = ref<string | null>(null);
 
 const resetLabels: Record<string, string> = {
   viewer: "3D Viewer", machine: "Machine", toolsetter: "Toolsetter",
-  display: "Display", camera: "Camera", gamepad: "Gamepad",
+  display: "Display", camera: "Camera", gamepad: "Gamepad", keyboard: "Keyboard",
 };
 
 function resetViewer() {
@@ -158,10 +160,8 @@ function resetMachine() {
   runFromLine.value = md.runFromLine;
   rflSpindleDir.value = md.rflSpindleDir;
   rflSpindleRpm.value = md.rflSpindleRpm;
-  keyboardJog.value = md.keyboardJog;
   spindleFeedbackUnit.value = md.spindleFeedbackUnit;
   spindleLoadPin.value = md.spindleLoadPin;
-  emit("setKeyboardJog", md.keyboardJog);
   emit("setRunFromLine", md.runFromLine);
 }
 
@@ -206,7 +206,7 @@ function resetGamepad() {
 
 const resetActions: Record<string, () => void> = {
   viewer: resetViewer, machine: resetMachine, toolsetter: resetToolsetter,
-  display: resetDisplay, camera: resetCamera, gamepad: resetGamepad,
+  display: resetDisplay, camera: resetCamera, gamepad: resetGamepad, keyboard: resetKeyboard,
 };
 
 function confirmReset() {
@@ -249,7 +249,6 @@ const toolChangeMode = ref<ToolChangeMode>(machSaved.toolChangeMode);
 const runFromLine = ref(machSaved.runFromLine);
 const rflSpindleDir = ref<SpindleDir>(machSaved.rflSpindleDir);
 const rflSpindleRpm = ref(machSaved.rflSpindleRpm);
-const keyboardJog = ref(machSaved.keyboardJog);
 const spindleFeedbackUnit = ref<SpindleFeedbackUnit>(machSaved.spindleFeedbackUnit);
 const spindleLoadPin = ref(machSaved.spindleLoadPin);
 
@@ -259,7 +258,7 @@ function saveMachine() {
     runFromLine: runFromLine.value,
     rflSpindleDir: rflSpindleDir.value,
     rflSpindleRpm: rflSpindleRpm.value,
-    keyboardJog: keyboardJog.value,
+    keyboardJog: loadMachineDefaults().keyboardJog,
     spindleFeedbackUnit: spindleFeedbackUnit.value,
     spindleLoadPin: spindleLoadPin.value,
   });
@@ -367,16 +366,117 @@ watch(settingsVersion, () => {
   runFromLine.value = md.runFromLine;
   rflSpindleDir.value = md.rflSpindleDir;
   rflSpindleRpm.value = md.rflSpindleRpm;
-  keyboardJog.value = md.keyboardJog;
   spindleFeedbackUnit.value = md.spindleFeedbackUnit;
   spindleLoadPin.value = md.spindleLoadPin;
-  emit("setKeyboardJog", md.keyboardJog);
   emit("setRunFromLine", md.runFromLine);
 });
 
 // ─── Camera overlay ──────────────────────────────────────────
 const cam = reactive<CameraDefaults>(loadCameraDefaults());
 function saveCam() { saveCameraDefaults({ ...cam }); }
+
+// ── Keyboard tab state ──
+const kbConfig = ref<KeyboardDefaults>(props.keyboardConfig ?? loadKeyboardDefaults());
+const listeningAction = ref<KeyboardAction | null>(null);
+const captureError = ref("");
+let captureErrorTimer: ReturnType<typeof setTimeout> | null = null;
+
+// Sync from prop changes
+watch(() => props.keyboardConfig, (cfg) => {
+  if (cfg) kbConfig.value = cfg;
+});
+
+function saveKb() {
+  emit("setKeyboardConfig", { ...kbConfig.value, mapping: { ...kbConfig.value.mapping } });
+}
+
+// Actions to show in the key binding table
+const COMMAND_ACTIONS: KeyboardAction[] = ["estop", "cycle", "abort"];
+const LINEAR_JOG_ACTIONS: KeyboardAction[] = ["jog_x+", "jog_x-", "jog_y+", "jog_y-", "jog_z+", "jog_z-"];
+const ROTARY_JOG_ACTIONS: KeyboardAction[] = ["jog_a+", "jog_a-", "jog_b+", "jog_b-"];
+
+// Modifier keys to reject
+const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta"]);
+
+function startCapture(action: KeyboardAction) {
+  listeningAction.value = action;
+  captureError.value = "";
+  if (captureErrorTimer) clearTimeout(captureErrorTimer);
+}
+
+function handleCapture(e: KeyboardEvent) {
+  if (!listeningAction.value) return;
+  e.preventDefault();
+  e.stopPropagation();
+
+  // Reject modifier-only keys
+  if (MODIFIER_KEYS.has(e.key)) return;
+
+  // Reject Tab
+  if (e.key === "Tab") {
+    showCaptureError("Tab cannot be bound");
+    return;
+  }
+
+  // Duplicate check
+  const existing = Object.entries(kbConfig.value.mapping).find(
+    ([a, k]) => k === e.key && a !== listeningAction.value
+  );
+  if (existing) {
+    showCaptureError(`Already bound to ${KEYBOARD_ACTION_LABELS[existing[0] as KeyboardAction]}`);
+    return;
+  }
+
+  // Accept the key
+  kbConfig.value.mapping[listeningAction.value] = e.key;
+  listeningAction.value = null;
+  saveKb();
+}
+
+function showCaptureError(msg: string) {
+  captureError.value = msg;
+  if (captureErrorTimer) clearTimeout(captureErrorTimer);
+  captureErrorTimer = setTimeout(() => { captureError.value = ""; }, 2000);
+}
+
+function unbindKey(action: KeyboardAction) {
+  kbConfig.value.mapping[action] = "";
+  saveKb();
+}
+
+function cancelCapture() {
+  listeningAction.value = null;
+  captureError.value = "";
+}
+
+function resetKeyboard() {
+  kbConfig.value = {
+    enabled: true,
+    jogEnabled: false,
+    mapping: { ...DEFAULT_KB_MAPPING },
+  };
+  saveKb();
+}
+
+function onCaptureKeydown(e: KeyboardEvent) {
+  if (listeningAction.value) handleCapture(e);
+}
+
+function onClickOutside(e: MouseEvent) {
+  if (!listeningAction.value) return;
+  const target = e.target as HTMLElement;
+  if (!target.closest(".kbKeyCell")) cancelCapture();
+}
+
+onMounted(() => {
+  window.addEventListener("keydown", onCaptureKeydown, true);
+  window.addEventListener("click", onClickOutside);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", onCaptureKeydown, true);
+  window.removeEventListener("click", onClickOutside);
+});
 
 // ─── Sub-tabs ──────────────────────────────
 const subTabs = [
@@ -387,6 +487,7 @@ const subTabs = [
   { id: "camera", label: "Camera" },
   { id: "macros", label: "Macros" },
   { id: "gamepad", label: "Gamepad" },
+  { id: "keyboard", label: "Keyboard" },
   { id: "hal", label: "HAL" },
   { id: "debug", label: "Debug" },
 ];
@@ -805,15 +906,6 @@ const halStats = computed(() => ({
               </div>
             </div>
           </div>
-          <div class="sep"></div>
-          <div class="section">
-            <div class="sub">Keyboard Jogging</div>
-            <div class="settingDesc">Allow arrow keys, Page Up/Down, and bracket keys to jog axes.</div>
-            <label class="toggleRow">
-              <input type="checkbox" class="toggle" v-model="keyboardJog" @change="emit('setKeyboardJog', keyboardJog); saveMachine()" />
-              Enable keyboard jogging
-            </label>
-          </div>
           <div class="resetRow">
             <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'machine'">Reset Machine</Btn>
           </div>
@@ -1173,6 +1265,83 @@ const halStats = computed(() => ({
             <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'gamepad'">Reset Gamepad</Btn>
           </div>
         </fieldset>
+        </div>
+      </template>
+
+      <template #keyboard>
+        <div class="stack-panel scrollContent scroll-thin">
+          <fieldset :disabled="!can.idle" class="fs-reset">
+            <div class="section">
+              <div class="sub">Keyboard Shortcuts</div>
+              <div class="settingDesc">Allow keyboard keys to control the machine. When disabled, no keyboard shortcuts are active except E-Stop.</div>
+              <label class="toggleRow">
+                <input type="checkbox" class="toggle" v-model="kbConfig.enabled" @change="saveKb()" />
+                Enable keyboard shortcuts
+              </label>
+            </div>
+
+            <template v-if="kbConfig.enabled">
+              <div class="sep"></div>
+
+              <div class="section">
+                <div class="sub">Keyboard Jogging</div>
+                <div class="settingDesc">Allow jog keys to move axes.</div>
+                <label class="toggleRow">
+                  <input type="checkbox" class="toggle" v-model="kbConfig.jogEnabled" @change="saveKb()" />
+                  Enable keyboard jogging
+                </label>
+              </div>
+
+              <div class="sep"></div>
+
+              <div class="section">
+                <div class="sub">Key Bindings</div>
+                <table class="kbMapTable">
+                  <tbody>
+                    <tr v-for="action in LINEAR_JOG_ACTIONS" :key="action" :class="{ inactive: !kbConfig.jogEnabled }">
+                      <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>
+                      <td class="kbKeyCell"
+                          :class="{ listening: listeningAction === action }"
+                          @click="startCapture(action)">
+                        {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
+                      </td>
+                      <td class="kbUnbind">
+                        <Btn icon v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</Btn>
+                      </td>
+                    </tr>
+                    <tr v-for="action in ROTARY_JOG_ACTIONS" :key="action" :class="{ inactive: !kbConfig.jogEnabled }">
+                      <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>
+                      <td class="kbKeyCell"
+                          :class="{ listening: listeningAction === action }"
+                          @click="startCapture(action)">
+                        {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
+                      </td>
+                      <td class="kbUnbind">
+                        <Btn icon v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</Btn>
+                      </td>
+                    </tr>
+                    <tr class="kbSep"><td colspan="3"></td></tr>
+                    <tr v-for="action in COMMAND_ACTIONS" :key="action">
+                      <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>
+                      <td class="kbKeyCell"
+                          :class="{ listening: listeningAction === action }"
+                          @click="startCapture(action)">
+                        {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
+                      </td>
+                      <td class="kbUnbind">
+                        <Btn icon v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</Btn>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div v-if="captureError" class="kbCaptureError">{{ captureError }}</div>
+              </div>
+            </template>
+
+            <div class="resetRow">
+              <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'keyboard'">Reset Keyboard</Btn>
+            </div>
+          </fieldset>
         </div>
       </template>
 
@@ -1833,5 +2002,55 @@ const halStats = computed(() => ({
 
 .gpActionSelect {
   width: 100%;
+}
+
+/* ── Keyboard settings ───────────────────────────────────────── */
+.kbMapTable {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.kbMapTable td {
+  padding: 4px 8px;
+  font-size: var(--fs-sm);
+  border-bottom: 1px solid var(--border);
+}
+
+.kbMapAction {
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  width: 1%;
+}
+
+.kbKeyCell {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+
+.kbKeyCell:hover {
+  background: color-mix(in oklab, var(--fg) var(--hl-hover), var(--bg));
+}
+
+.kbKeyCell.listening {
+  background: color-mix(in oklab, var(--info) var(--hl-selected), var(--bg));
+  outline: 1px solid var(--info);
+}
+
+.kbUnbind {
+  width: 1%;
+}
+
+.kbSep td {
+  padding: 0;
+  height: var(--gap-section);
+  border-bottom: none;
+}
+
+.kbCaptureError {
+  font-size: var(--fs-sm);
+  color: var(--danger);
+  margin-top: var(--gap-controls);
 }
 </style>
