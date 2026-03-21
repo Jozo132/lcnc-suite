@@ -23,9 +23,9 @@
             <Btn size="sm" class="wide" @click="$emit('setView', 'reset')">Reset</Btn>
           </div>
           <div class="sep"></div>
-          <div class="projRow">
-            <Btn size="sm" :selected="!isOrtho" @click="isOrtho && toggleProjection()">Perspective</Btn>
-            <Btn size="sm" :selected="isOrtho" @click="!isOrtho && toggleProjection()">Parallel</Btn>
+          <div class="radioGroup inline">
+            <label><input type="radio" :checked="!isOrtho" @change="isOrtho && toggleProjection()" /> Perspective</label>
+            <label><input type="radio" :checked="isOrtho" @change="!isOrtho && toggleProjection()" /> Parallel</label>
           </div>
         </div>
       </div>
@@ -53,7 +53,7 @@
           <div class="popHeader"><span class="popTitle">Toolpath</span><Btn icon @click="openPill = null">&times;</Btn></div>
           <Btn size="sm" @click="$emit('resetBackplot')">Clear Backplot</Btn>
           <div class="sep"></div>
-          <label><input type="checkbox" v-model="pathOnTop" @change="$emit('setPathOnTop', pathOnTop)" /> Always on top</label>
+          <label class="toggleRow"><input type="checkbox" class="toggle" v-model="pathOnTop" @change="$emit('setPathOnTop', pathOnTop)" /> Always on top</label>
         </div>
       </div>
 
@@ -62,9 +62,9 @@
         <Btn size="sm" muted :selected="openPill === 'tracking'" @click.stop="togglePill('tracking')">Tracking</Btn>
         <div class="popover pillPopover" :class="{ open: openPill === 'tracking' }" @click.stop>
           <div class="popHeader"><span class="popTitle">Tracking</span><Btn icon @click="openPill = null">&times;</Btn></div>
-          <Btn size="sm" :selected="trackMode === 'none'" @click="setTrack('none')">None</Btn>
-          <Btn size="sm" :selected="trackMode === 'tool'" @click="setTrack('tool')">Tool</Btn>
-          <Btn size="sm" :selected="trackMode === 'workpiece'" @click="setTrack('workpiece')">Workpiece</Btn>
+          <label><input type="radio" :checked="trackMode === 'none'" @change="setTrack('none')" /> None</label>
+          <label><input type="radio" :checked="trackMode === 'tool'" @change="setTrack('tool')" /> Tool</label>
+          <label><input type="radio" :checked="trackMode === 'workpiece'" @change="setTrack('workpiece')" /> Workpiece</label>
         </div>
       </div>
 
@@ -240,12 +240,6 @@ function togglePill(name: string) {
 
 .wide {
   grid-column: 1 / -1;
-}
-
-.projRow {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--gap-tight);
 }
 
 /* ---- Layer checkboxes ---- */

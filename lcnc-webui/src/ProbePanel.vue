@@ -556,12 +556,12 @@ function fmtR(key: string): string {
 
     <!-- Control bar -->
     <div class="controlBar" :class="{ inactive: !can.ready }">
-      <label class="checkRow">
-        <input type="checkbox" v-model="autoZero" :disabled="!can.ready" @change="saveParams" />
+      <label class="toggleRow">
+        <input type="checkbox" class="toggle" v-model="autoZero" :disabled="!can.ready" @change="saveParams" />
         Auto Zero
       </label>
-      <label class="checkRow">
-        <input type="checkbox" :checked="params.wcoRotation === 1" :disabled="!can.ready" @change="params.wcoRotation = ($event.target as HTMLInputElement).checked ? 1 : 0; saveParams()" />
+      <label class="toggleRow">
+        <input type="checkbox" class="toggle" :checked="params.wcoRotation === 1" :disabled="!can.ready" @change="params.wcoRotation = ($event.target as HTMLInputElement).checked ? 1 : 0; saveParams()" />
         Set Rotation
       </label>
       <div class="controlBarRight">

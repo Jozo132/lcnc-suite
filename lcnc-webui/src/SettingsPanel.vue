@@ -694,8 +694,8 @@ const halStats = computed(() => ({
                 <Btn v-if="machineColors[part.id]" icon @click="resetMachineColor(part.id)">&times;</Btn>
               </div>
             </div>
-            <label class="checkRow">
-              <input type="checkbox" v-model="machineEdgesOn" @change="setMachineEdges(machineEdgesOn); save()" />
+            <label class="toggleRow">
+              <input type="checkbox" class="toggle" v-model="machineEdgesOn" @change="setMachineEdges(machineEdgesOn); save()" />
               Edge outline
             </label>
           </div>
@@ -708,32 +708,24 @@ const halStats = computed(() => ({
           <div class="stack-controls fieldGroup">
             <div class="inputRow">
               <label class="inputLabel">Tracking</label>
-              <div class="btnGroup">
-                <Btn
-                  v-for="m in (['none', 'tool', 'workpiece'] as TrackMode[])"
-                  :key="m"
-                  size="sm"
-                  :selected="trackingMode === m"
-                  class="optBtn"
-                  @click="trackingMode = m; save()"
-                >{{ m.charAt(0).toUpperCase() + m.slice(1) }}</Btn>
+              <div class="radioGroup inline">
+                <label v-for="m in (['none', 'tool', 'workpiece'] as TrackMode[])" :key="m">
+                  <input type="radio" v-model="trackingMode" :value="m" @change="save()" />
+                  {{ m.charAt(0).toUpperCase() + m.slice(1) }}
+                </label>
               </div>
             </div>
-            <label class="checkRow">
-              <input type="checkbox" v-model="pathOnTop" @change="emit('setPathOnTop', pathOnTop); save()" />
+            <label class="toggleRow">
+              <input type="checkbox" class="toggle" v-model="pathOnTop" @change="emit('setPathOnTop', pathOnTop); save()" />
               Toolpath always on top
             </label>
             <div class="inputRow">
               <label class="inputLabel">Projection</label>
-              <div class="btnGroup">
-                <Btn
-                  v-for="p in (['perspective', 'parallel'] as Projection[])"
-                  :key="p"
-                  size="sm"
-                  :selected="projection === p"
-                  class="optBtn"
-                  @click="projection = p; emit('setProjection', p); save()"
-                >{{ p.charAt(0).toUpperCase() + p.slice(1) }}</Btn>
+              <div class="radioGroup inline">
+                <label v-for="p in (['perspective', 'parallel'] as Projection[])" :key="p">
+                  <input type="radio" v-model="projection" :value="p" @change="emit('setProjection', projection); save()" />
+                  {{ p.charAt(0).toUpperCase() + p.slice(1) }}
+                </label>
               </div>
             </div>
           </div>
@@ -752,61 +744,32 @@ const halStats = computed(() => ({
           <div class="section">
             <div class="sub">Tool Load Behavior</div>
             <div class="settingDesc">Controls what happens when you load a tool from the Tool Table.</div>
-            <div class="btnGroup modeGroup">
-              <Btn
-                size="sm"
-                :selected="toolChangeMode === 'm6g43'"
-                class="optBtn modeBtn"
-                @click="toolChangeMode = 'm6g43'; saveMachine()"
-              >
-                <span class="modeName">M6 G43</span>
-                <span class="modeDesc">Load tool, activate length offset</span>
-              </Btn>
-              <Btn
-                size="sm"
-                :selected="toolChangeMode === 'm600'"
-                class="optBtn modeBtn"
-                @click="toolChangeMode = 'm600'; saveMachine()"
-              >
-                <span class="modeName">M600</span>
-                <span class="modeDesc">Load tool, measure with toolsetter, save offset</span>
-              </Btn>
+            <div class="radioGroup">
+              <label>
+                <input type="radio" v-model="toolChangeMode" value="m6g43" @change="saveMachine()" />
+                <span><span class="radioLabel">M6 G43</span><br><span class="radioDesc">Load tool, activate length offset</span></span>
+              </label>
+              <label>
+                <input type="radio" v-model="toolChangeMode" value="m600" @change="saveMachine()" />
+                <span><span class="radioLabel">M600</span><br><span class="radioDesc">Load tool, measure with toolsetter, save offset</span></span>
+              </label>
             </div>
           </div>
           <div class="sep"></div>
           <div class="section">
             <div class="sub">Run from Line</div>
             <div class="settingDesc">Allow starting program execution from a selected line in the code viewer.</div>
-            <div class="btnGroup modeGroup">
-              <Btn
-                size="sm"
-                :selected="!runFromLine"
-                class="optBtn modeBtn"
-                @click="runFromLine = false; emit('setRunFromLine', false); saveMachine()"
-              >
-                <span class="modeName">Disabled</span>
-                <span class="modeDesc">Always start from beginning</span>
-              </Btn>
-              <Btn
-                size="sm"
-                :selected="runFromLine"
-                class="optBtn modeBtn"
-                @click="runFromLine = true; emit('setRunFromLine', true); saveMachine()"
-              >
-                <span class="modeName">Enabled</span>
-                <span class="modeDesc">Click a line in code viewer to start from it</span>
-              </Btn>
-            </div>
+            <label class="toggleRow">
+              <input type="checkbox" class="toggle" v-model="runFromLine" @change="emit('setRunFromLine', runFromLine); saveMachine()" />
+              Enable run from line
+            </label>
             <div v-if="runFromLine" class="rflDefaults">
               <div class="settingDesc">Default spindle preset for run-from-line dialog.</div>
               <div class="rflRow">
-                <div class="btnGroup">
-                  <Btn size="sm" :selected="rflSpindleDir === 'off'" class="optBtn"
-                          @click="rflSpindleDir = 'off'; saveMachine()">Off</Btn>
-                  <Btn size="sm" :selected="rflSpindleDir === 'forward'" class="optBtn"
-                          @click="rflSpindleDir = 'forward'; saveMachine()">FWD</Btn>
-                  <Btn size="sm" :selected="rflSpindleDir === 'reverse'" class="optBtn"
-                          @click="rflSpindleDir = 'reverse'; saveMachine()">REV</Btn>
+                <div class="radioGroup inline">
+                  <label><input type="radio" v-model="rflSpindleDir" value="off" @change="saveMachine()" /> Off</label>
+                  <label><input type="radio" v-model="rflSpindleDir" value="forward" @change="saveMachine()" /> FWD</label>
+                  <label><input type="radio" v-model="rflSpindleDir" value="reverse" @change="saveMachine()" /> REV</label>
                 </div>
                 <div v-if="rflSpindleDir !== 'off'" class="rflRpm">
                   <label>RPM</label>
@@ -819,49 +782,23 @@ const halStats = computed(() => ({
           <div class="section">
             <div class="sub">Keyboard Jogging</div>
             <div class="settingDesc">Allow arrow keys, Page Up/Down, and bracket keys to jog axes.</div>
-            <div class="btnGroup modeGroup">
-              <Btn
-                size="sm"
-                :selected="!keyboardJog"
-                class="optBtn modeBtn"
-                @click="keyboardJog = false; emit('setKeyboardJog', false); saveMachine()"
-              >
-                <span class="modeName">Disabled</span>
-                <span class="modeDesc">Keyboard jog keys are ignored</span>
-              </Btn>
-              <Btn
-                size="sm"
-                :selected="keyboardJog"
-                class="optBtn modeBtn"
-                @click="keyboardJog = true; emit('setKeyboardJog', true); saveMachine()"
-              >
-                <span class="modeName">Enabled</span>
-                <span class="modeDesc">Arrow/Page/bracket keys jog the machine</span>
-              </Btn>
-            </div>
+            <label class="toggleRow">
+              <input type="checkbox" class="toggle" v-model="keyboardJog" @change="emit('setKeyboardJog', keyboardJog); saveMachine()" />
+              Enable keyboard jogging
+            </label>
           </div>
           <div>
             <div class="sub">Spindle Feedback Unit</div>
             <div class="settingDesc">What unit does your spindle encoder / VFD driver output on the speed-in HAL pin? Simulators use RPS; most real VFDs output RPM directly.</div>
-            <div class="btnGroup modeGroup">
-              <Btn
-                size="sm"
-                :selected="spindleFeedbackUnit === 'rps'"
-                class="optBtn modeBtn"
-                @click="spindleFeedbackUnit = 'rps'; saveMachine()"
-              >
-                <span class="modeName">RPS (default)</span>
-                <span class="modeDesc">Pin outputs revolutions per second (×60 for display)</span>
-              </Btn>
-              <Btn
-                size="sm"
-                :selected="spindleFeedbackUnit === 'rpm'"
-                class="optBtn modeBtn"
-                @click="spindleFeedbackUnit = 'rpm'; saveMachine()"
-              >
-                <span class="modeName">RPM</span>
-                <span class="modeDesc">Pin outputs RPM directly (most VFDs)</span>
-              </Btn>
+            <div class="radioGroup">
+              <label>
+                <input type="radio" v-model="spindleFeedbackUnit" value="rps" @change="saveMachine()" />
+                <span><span class="radioLabel">RPS (default)</span><br><span class="radioDesc">Pin outputs revolutions per second (×60 for display)</span></span>
+              </label>
+              <label>
+                <input type="radio" v-model="spindleFeedbackUnit" value="rpm" @change="saveMachine()" />
+                <span><span class="radioLabel">RPM</span><br><span class="radioDesc">Pin outputs RPM directly (most VFDs)</span></span>
+              </label>
             </div>
           </div>
           <div>
@@ -939,21 +876,21 @@ const halStats = computed(() => ({
 
           <div class="section">
             <div class="sub">Options</div>
-            <div class="tsCheckGrid">
-              <label class="checkRow" title="When enabled, uses the tool table length to calculate a closer probe start height — faster for known tools. Disable during initial setup or if tool table data is unreliable. (#3103)">
-                <input type="checkbox" :checked="tsParams.useToolTable === 1" @change="tsParams.useToolTable = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
+            <div class="tsToggleGrid">
+              <label class="toggleRow" title="When enabled, uses the tool table length to calculate a closer probe start height — faster for known tools. Disable during initial setup or if tool table data is unreliable. (#3103)">
+                <input type="checkbox" class="toggle" :checked="tsParams.useToolTable === 1" @change="tsParams.useToolTable = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
                 Use Tool Table
               </label>
-              <label class="checkRow" title="After measurement, return to the XYZ position where M600 was called. Disable only if the tool change is at the end of a program. (#3106)">
-                <input type="checkbox" :checked="tsParams.goBackToStart === 1" @change="tsParams.goBackToStart = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
+              <label class="toggleRow" title="After measurement, return to the XYZ position where M600 was called. Disable only if the tool change is at the end of a program. (#3106)">
+                <input type="checkbox" class="toggle" :checked="tsParams.goBackToStart === 1" @change="tsParams.goBackToStart = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
                 Return to Start
               </label>
-              <label class="checkRow" title="Skip the G30 pre-positioning move before traveling to the touch plate. Faster, but risks collision with clamps or fixtures on uncluttered machines only. (#3108)">
-                <input type="checkbox" :checked="tsParams.disablePrePos === 1" @change="tsParams.disablePrePos = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
+              <label class="toggleRow" title="Skip the G30 pre-positioning move before traveling to the touch plate. Faster, but risks collision with clamps or fixtures on uncluttered machines only. (#3108)">
+                <input type="checkbox" class="toggle" :checked="tsParams.disablePrePos === 1" @change="tsParams.disablePrePos = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
                 Skip G30 Pre-Pos
               </label>
-              <label class="checkRow" title="On the final retry attempt, ignore tool table offsets and use spindle zero height instead. Provides a fallback for tools with incorrect table entries. (#3110)">
-                <input type="checkbox" :checked="tsParams.lastTry === 1" @change="tsParams.lastTry = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
+              <label class="toggleRow" title="On the final retry attempt, ignore tool table offsets and use spindle zero height instead. Provides a fallback for tools with incorrect table entries. (#3110)">
+                <input type="checkbox" class="toggle" :checked="tsParams.lastTry === 1" @change="tsParams.lastTry = ($event.target as HTMLInputElement).checked ? 1 : 0; saveTsParams()" />
                 Last Try w/o Table
               </label>
             </div>
@@ -964,19 +901,19 @@ const halStats = computed(() => ({
               <input type="number" v-model.number="tsParams.addReps" min="0" :step="STEP_DEFAULT" @change="saveTsParams" />
 
               <label title="Pause after tool measurement: None = continue immediately, M00 = mandatory stop (press Cycle Start to resume), M01 = optional stop (active only when block delete is off). (#3105)">Brake After</label>
-              <div class="tsBtnRow">
-                <Btn v-for="b in [0, 1, 2]" :key="b" size="sm" :selected="tsParams.brakeAfter === b" class="optBtn tsToggle" @click="tsParams.brakeAfter = b; saveTsParams()">{{ BRAKE_LABELS[b] }}</Btn>
+              <div class="radioGroup inline">
+                <label v-for="b in [0, 1, 2]" :key="b"><input type="radio" :value="b" v-model.number="tsParams.brakeAfter" @change="saveTsParams()" /> {{ BRAKE_LABELS[b] }}</label>
               </div>
 
               <label title="M-code sent to stop the spindle before probing. M5 = standard stop. M500 = stop and wait for spindle to fully decelerate (for VFD-controlled spindles). (#3107)">Spindle Stop</label>
-              <div class="tsBtnRow">
-                <Btn size="sm" :selected="tsParams.spindleStopM === 5" class="optBtn tsToggle" @click="tsParams.spindleStopM = 5; saveTsParams()">M5</Btn>
-                <Btn size="sm" :selected="tsParams.spindleStopM === 500" class="optBtn tsToggle" @click="tsParams.spindleStopM = 500; saveTsParams()">M500</Btn>
+              <div class="radioGroup inline">
+                <label><input type="radio" :value="5" v-model.number="tsParams.spindleStopM" @change="saveTsParams()" /> M5</label>
+                <label><input type="radio" :value="500" v-model.number="tsParams.spindleStopM" @change="saveTsParams()" /> M500</label>
               </div>
 
               <label title="Axis direction to offset the probe position for large tools: X−, X+, Y−, or Y+. Choose based on your machine layout to avoid clamp or fixture collisions. (#3013)">Offset Dir</label>
-              <div class="tsBtnRow">
-                <Btn v-for="d in [0, 1, 2, 3]" :key="d" size="sm" :selected="tsParams.offsetDirection === d" class="optBtn tsToggle" @click="tsParams.offsetDirection = d; saveTsParams()">{{ OFFSET_DIR_LABELS[d] }}</Btn>
+              <div class="radioGroup inline">
+                <label v-for="d in [0, 1, 2, 3]" :key="d"><input type="radio" :value="d" v-model.number="tsParams.offsetDirection" @change="saveTsParams()" /> {{ OFFSET_DIR_LABELS[d] }}</label>
               </div>
             </div>
           </div>
@@ -1021,20 +958,18 @@ const halStats = computed(() => ({
           <fieldset :disabled="!can.idle" class="fs-reset">
           <div class="section">
             <div class="sub">Theme</div>
-            <div class="btnGroup">
-              <Btn size="sm" :selected="themeMode === 'auto'" class="optBtn" @click="setTheme('auto')">Auto</Btn>
-              <Btn size="sm" :selected="themeMode === 'light'" class="optBtn" @click="setTheme('light')">Light</Btn>
-              <Btn size="sm" :selected="themeMode === 'dark'" class="optBtn" @click="setTheme('dark')">Dark</Btn>
-            </div>
-            <div class="btnGroup" style="margin-top: var(--gap-controls);">
-              <Btn size="sm" :selected="themeMode === 'hc-light'" class="optBtn" @click="setTheme('hc-light')">HC Light</Btn>
-              <Btn size="sm" :selected="themeMode === 'hc-dark'" class="optBtn" @click="setTheme('hc-dark')">HC Dark</Btn>
+            <div class="radioGroup">
+              <label><input type="radio" name="theme" :checked="themeMode === 'auto'" @change="setTheme('auto')" /> Auto</label>
+              <label><input type="radio" name="theme" :checked="themeMode === 'light'" @change="setTheme('light')" /> Light</label>
+              <label><input type="radio" name="theme" :checked="themeMode === 'dark'" @change="setTheme('dark')" /> Dark</label>
+              <label><input type="radio" name="theme" :checked="themeMode === 'hc-light'" @change="setTheme('hc-light')" /> High Contrast Light</label>
+              <label><input type="radio" name="theme" :checked="themeMode === 'hc-dark'" @change="setTheme('hc-dark')" /> High Contrast Dark</label>
             </div>
           </div>
           <div class="section">
             <div class="sub">Fullscreen</div>
-            <label class="checkLabel">
-              <input type="checkbox" v-model="startFullscreen" @change="saveStartFullscreen" />
+            <label class="toggleRow">
+              <input type="checkbox" class="toggle" v-model="startFullscreen" @change="saveStartFullscreen" />
               Start in fullscreen mode
             </label>
           </div>
@@ -1050,10 +985,10 @@ const halStats = computed(() => ({
           <fieldset :disabled="!can.idle" class="fs-reset">
           <div class="section">
             <div class="sub">Overlay Toggles</div>
-            <div class="layerGrid">
-              <label><input type="checkbox" v-model="cam.showCrosshair" @change="saveCam" /> Crosshair</label>
-              <label><input type="checkbox" v-model="cam.showCircle" @change="saveCam" /> Circle</label>
-              <label><input type="checkbox" v-model="cam.showGrid" @change="saveCam" /> Grid</label>
+            <div class="stack-controls">
+              <label class="toggleRow"><input type="checkbox" class="toggle" v-model="cam.showCrosshair" @change="saveCam" /> Crosshair</label>
+              <label class="toggleRow"><input type="checkbox" class="toggle" v-model="cam.showCircle" @change="saveCam" /> Circle</label>
+              <label class="toggleRow"><input type="checkbox" class="toggle" v-model="cam.showGrid" @change="saveCam" /> Grid</label>
             </div>
           </div>
 
@@ -1162,26 +1097,10 @@ const halStats = computed(() => ({
           <div class="section">
             <div class="sub">Gamepad Jogging</div>
             <div class="settingDesc">Use an Xbox, PlayStation, or standard gamepad to jog the machine.</div>
-            <div class="btnGroup modeGroup">
-              <Btn
-                size="sm"
-                :selected="!props.gamepadConfig?.enabled"
-                class="optBtn modeBtn"
-                @click="emit('setGamepadConfig', { ...props.gamepadConfig!, enabled: false })"
-              >
-                <span class="modeName">Disabled</span>
-                <span class="modeDesc">Gamepad input is ignored</span>
-              </Btn>
-              <Btn
-                size="sm"
-                :selected="props.gamepadConfig?.enabled"
-                class="optBtn modeBtn"
-                @click="emit('setGamepadConfig', { ...props.gamepadConfig!, enabled: true })"
-              >
-                <span class="modeName">Enabled</span>
-                <span class="modeDesc">Sticks and D-pad jog the machine</span>
-              </Btn>
-            </div>
+            <label class="toggleRow">
+              <input type="checkbox" class="toggle" :checked="props.gamepadConfig?.enabled" @change="emit('setGamepadConfig', { ...props.gamepadConfig!, enabled: ($event.target as HTMLInputElement).checked })" />
+              Enable gamepad jogging
+            </label>
           </div>
 
           <div class="section">
@@ -1207,9 +1126,9 @@ const halStats = computed(() => ({
           <div v-if="props.gamepadConfig?.enabled" class="section">
             <div class="sub">Axis Inversion</div>
             <div class="settingDesc">Flip axis direction if your gamepad moves the wrong way.</div>
-            <label class="checkRow"><input type="checkbox" :checked="props.gamepadConfig?.invertX" @change="emit('setGamepadConfig', { ...props.gamepadConfig!, invertX: ($event.target as HTMLInputElement).checked })" /> Invert X</label>
-            <label class="checkRow"><input type="checkbox" :checked="props.gamepadConfig?.invertY" @change="emit('setGamepadConfig', { ...props.gamepadConfig!, invertY: ($event.target as HTMLInputElement).checked })" /> Invert Y</label>
-            <label class="checkRow"><input type="checkbox" :checked="props.gamepadConfig?.invertZ" @change="emit('setGamepadConfig', { ...props.gamepadConfig!, invertZ: ($event.target as HTMLInputElement).checked })" /> Invert Z</label>
+            <label class="toggleRow"><input type="checkbox" class="toggle" :checked="props.gamepadConfig?.invertX" @change="emit('setGamepadConfig', { ...props.gamepadConfig!, invertX: ($event.target as HTMLInputElement).checked })" /> Invert X</label>
+            <label class="toggleRow"><input type="checkbox" class="toggle" :checked="props.gamepadConfig?.invertY" @change="emit('setGamepadConfig', { ...props.gamepadConfig!, invertY: ($event.target as HTMLInputElement).checked })" /> Invert Y</label>
+            <label class="toggleRow"><input type="checkbox" class="toggle" :checked="props.gamepadConfig?.invertZ" @change="emit('setGamepadConfig', { ...props.gamepadConfig!, invertZ: ($event.target as HTMLInputElement).checked })" /> Invert Z</label>
           </div>
 
           <div v-if="props.gamepadConfig?.enabled && props.gamepadConnected" class="section">
@@ -1556,44 +1475,12 @@ const halStats = computed(() => ({
   gap: var(--gap-tight);
 }
 
-.checkRow {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-tight);
-  font-size: var(--fs-md);
-  cursor: pointer;
-  user-select: none;
-}
-
 .settingDesc {
   font-size: var(--fs-base);
   opacity: var(--opacity-muted);
   margin-bottom: var(--gap-section);
 }
 
-.modeGroup {
-  flex-direction: column;
-  gap: var(--gap-controls);
-}
-
-.modeBtn {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--gap-micro);
-  padding: 10px 14px;
-  text-align: left;
-}
-
-.modeName {
-  font-size: var(--fs-md);
-  font-weight: var(--fw-semibold);
-}
-
-.modeDesc {
-  font-size: var(--fs-sm);
-  opacity: var(--opacity-muted);
-}
 
 .rflDefaults {
   margin-top: var(--gap-controls);
@@ -1643,10 +1530,10 @@ const halStats = computed(() => ({
   opacity: var(--opacity-muted);
 }
 
-.tsCheckGrid {
+.tsToggleGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--gap-tight) var(--gap-controls);
+  gap: var(--gap-controls);
 }
 
 .tsBtnRow {
@@ -1654,13 +1541,6 @@ const halStats = computed(() => ({
   gap: var(--gap-micro);
 }
 
-.tsToggle {
-  opacity: var(--opacity-muted);
-}
-
-.tsToggle.active {
-  opacity: 1;
-}
 
 /* ─── HAL viewer ───── */
 .halPane {
@@ -1924,13 +1804,6 @@ const halStats = computed(() => ({
 }
 
 /* ── Gamepad settings ─────────────────────────────────────────── */
-.checkRow {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-controls);
-  padding: 4px 0;
-  cursor: pointer;
-}
 
 .gpMapTable {
   width: 100%;
