@@ -21,7 +21,7 @@ const props = defineProps<{
   maxJogVel: number;
   maxAngularJogVel: number;
   minAngularJogVel: number;
-  activeJogKeys?: Set<string>;
+  activeJogActions?: Set<string>;
   jogIncrement: number;
   minJogVel: number;
   iniIncrements: number[] | null;
@@ -37,16 +37,13 @@ const extraAxes = computed(() => {
 const abcAxes = computed(() => extraAxes.value.filter(a => ABC.has(a.letter)));
 const uvwAxes = computed(() => extraAxes.value.filter(a => UVW.has(a.letter)));
 
-// Keyboard key pairs for rotary axes: [ ] for first, ; ' for second
-const ROTARY_KEY_PAIRS: [string, string][] = [["[", "]"], [";", "'"]];
-const rotaryKeyMap = computed(() => {
-  const map: Record<number, { neg: string; pos: string }> = {};
-  const ra = extraAxes.value;
-  for (let r = 0; r < Math.min(ra.length, ROTARY_KEY_PAIRS.length); r++) {
-    map[ra[r]!.index] = { neg: ROTARY_KEY_PAIRS[r]![0], pos: ROTARY_KEY_PAIRS[r]![1] };
-  }
-  return map;
-});
+// Map action names to wheel sector IDs for keyboard highlight
+const ACTION_SECTOR_MAP: Record<string, string> = {
+  "jog_x+": "xp",
+  "jog_x-": "xn",
+  "jog_y+": "yp",
+  "jog_y-": "yn",
+};
 
 const can = usePermissions();
 
@@ -144,19 +141,11 @@ function spread(deg: number) {
 // ---- Jog logic (mirrors JogButton.vue) ----
 const activeSectors = reactive(new Set<string>());
 
-// Map keyboard keys to wheel sector IDs
-const KEY_SECTOR_MAP: Record<string, string> = {
-  ArrowRight: "xp",
-  ArrowLeft:  "xn",
-  ArrowUp:    "yp",
-  ArrowDown:  "yn",
-};
-
 function isSectorActive(id: string): boolean {
   if (activeSectors.has(id)) return true;
-  if (!props.activeJogKeys) return false;
-  for (const [key, sectorId] of Object.entries(KEY_SECTOR_MAP)) {
-    if (sectorId === id && props.activeJogKeys.has(key)) return true;
+  if (!props.activeJogActions) return false;
+  for (const [action, sectorId] of Object.entries(ACTION_SECTOR_MAP)) {
+    if (sectorId === id && props.activeJogActions.has(action)) return true;
   }
   return false;
 }
@@ -320,8 +309,8 @@ function stopJog(s: Sector, e?: PointerEvent) {
 
         <!-- Z column -->
         <div class="zcol">
-          <JogButton :axis="2" :dir="1" label="Z+" :vel="jogVel" :disabled="!can.jog" direction="up" :active="activeJogKeys?.has('PageUp')" :jogIncrement="jogIncrement" />
-          <JogButton :axis="2" :dir="-1" label="Z-" :vel="jogVel" :disabled="!can.jog" direction="down" :active="activeJogKeys?.has('PageDown')" :jogIncrement="jogIncrement" />
+          <JogButton :axis="2" :dir="1" label="Z+" :vel="jogVel" :disabled="!can.jog" direction="up" :active="activeJogActions?.has('jog_z+')" :jogIncrement="jogIncrement" />
+          <JogButton :axis="2" :dir="-1" label="Z-" :vel="jogVel" :disabled="!can.jog" direction="down" :active="activeJogActions?.has('jog_z-')" :jogIncrement="jogIncrement" />
         </div>
       </div>
 
@@ -329,14 +318,14 @@ function stopJog(s: Sector, e?: PointerEvent) {
       <div v-if="extraAxes.length > 0" class="extraAxesRow">
         <div v-if="abcAxes.length > 0" class="rotaryCol">
           <div v-for="ra in abcAxes" :key="ra.letter" class="rotaryPair">
-            <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="angularJogVel" :disabled="!can.jog" direction="left" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.neg ?? '')" />
-            <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="angularJogVel" :disabled="!can.jog" direction="right" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.pos ?? '')" />
+            <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="angularJogVel" :disabled="!can.jog" direction="left" :jogIncrement="jogIncrement" :active="activeJogActions?.has('jog_' + ra.letter.toLowerCase() + '-')" />
+            <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="angularJogVel" :disabled="!can.jog" direction="right" :jogIncrement="jogIncrement" :active="activeJogActions?.has('jog_' + ra.letter.toLowerCase() + '+')" />
           </div>
         </div>
         <div v-if="uvwAxes.length > 0" class="rotaryCol">
           <div v-for="ra in uvwAxes" :key="ra.letter" class="rotaryPair">
-            <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="jogVel" :disabled="!can.jog" direction="left" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.neg ?? '')" />
-            <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="jogVel" :disabled="!can.jog" direction="right" :jogIncrement="jogIncrement" :active="activeJogKeys?.has(rotaryKeyMap[ra.index]?.pos ?? '')" />
+            <JogButton :axis="ra.index" :dir="-1" :label="ra.letter + '-'" :vel="jogVel" :disabled="!can.jog" direction="left" :jogIncrement="jogIncrement" :active="activeJogActions?.has('jog_' + ra.letter.toLowerCase() + '-')" />
+            <JogButton :axis="ra.index" :dir="1" :label="ra.letter + '+'" :vel="jogVel" :disabled="!can.jog" direction="right" :jogIncrement="jogIncrement" :active="activeJogActions?.has('jog_' + ra.letter.toLowerCase() + '+')" />
           </div>
         </div>
       </div>
@@ -344,7 +333,6 @@ function stopJog(s: Sector, e?: PointerEvent) {
 
     <div class="hint">
       {{ jogIncrement > 0 ? 'Click to jog one step.' : 'Press and hold to jog.' }} {{ isTeleop ? 'World mode: coordinated Cartesian movement.' : 'Joint mode: individual axis control.' }}
-      <template v-if="extraAxes.length > 0"><br/>Keys: Arrows XY, PgUp/Dn Z<template v-for="(ra, r) in extraAxes" :key="ra.letter"><template v-if="r < ROTARY_KEY_PAIRS.length">, {{ ROTARY_KEY_PAIRS[r]![0] }}/{{ ROTARY_KEY_PAIRS[r]![1] }} {{ ra.letter }}</template></template></template>
     </div>
   </div>
 </template>

@@ -30,7 +30,7 @@ const props = defineProps<{
   maxJogVel: number;
   maxAngularJogVel: number;
   minAngularJogVel: number;
-  activeJogKeys?: Set<string>;
+  activeJogActions?: Set<string>;
   jogIncrement: number;
   minJogVel: number;
   iniIncrements: number[] | null;
@@ -194,7 +194,7 @@ function onMdiKeydown(e: KeyboardEvent) {
         :maxJogVel="maxJogVel"
         :maxAngularJogVel="maxAngularJogVel"
         :minAngularJogVel="minAngularJogVel"
-        :activeJogKeys="activeJogKeys"
+        :activeJogActions="activeJogActions"
         :jogIncrement="jogIncrement"
         :minJogVel="minJogVel"
         :iniIncrements="iniIncrements"

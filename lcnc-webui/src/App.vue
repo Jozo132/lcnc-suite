@@ -14,7 +14,7 @@ import CameraViewer from "./CameraViewer.vue";
 import Btn from "./Btn.vue";
 import { LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2, BookOpen, ClipboardCopy, Expand, Shrink } from "lucide-vue-next";
 import GcodeReferenceDialog from "./GcodeReferenceDialog.vue";
-import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, loadGamepadDefaults, saveGamepadDefaults, settingsVersion, type ThemeMode, type MacroDef, type GamepadDefaults, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
+import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, loadGamepadDefaults, saveGamepadDefaults, loadKeyboardDefaults, saveKeyboardDefaults, settingsVersion, type ThemeMode, type MacroDef, type GamepadDefaults, type KeyboardDefaults, type KeyboardAction, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 import { useGamepad } from "./useGamepad";
 import {
   INTERP_IDLE, INTERP_READING, INTERP_PAUSED, INTERP_WAITING,
@@ -1020,73 +1020,72 @@ function unloadFile() {
 }
 
 /** ---------- keyboard shortcuts ---------- */
-const keyboardJogEnabled = ref(loadMachineDefaults().keyboardJog);
-const JOG_KEY_MAP: Record<string, { axis: number; dir: 1 | -1 }> = {
-  ArrowLeft:  { axis: 0, dir: -1 },
-  ArrowRight: { axis: 0, dir:  1 },
-  ArrowUp:    { axis: 1, dir:  1 },
-  ArrowDown:  { axis: 1, dir: -1 },
-  PageUp:     { axis: 2, dir:  1 },
-  PageDown:   { axis: 2, dir: -1 },
-};
+const keyboardConfig = ref<KeyboardDefaults>(loadKeyboardDefaults());
 
-// Dynamic rotary jog keys: [ ] for first rotary axis, ; ' for second
-const ROTARY_LETTERS = new Set(["A", "B", "C", "U", "V", "W"]);
-const ROTARY_KEY_PAIRS: [string, string][] = [["[", "]"], [";", "'"]];
-const rotaryJogKeys = computed(() => {
-  const rotary = axes.value.filter(l => ROTARY_LETTERS.has(l));
-  const map: Record<string, { axis: number; dir: 1 | -1 }> = {};
-  for (let r = 0; r < Math.min(rotary.length, ROTARY_KEY_PAIRS.length); r++) {
-    const letter = rotary[r];
-    const pair = ROTARY_KEY_PAIRS[r];
-    if (!letter || !pair) continue;
-    const idx = axes.value.indexOf(letter);
-    const [neg, pos] = pair;
-    map[neg] = { axis: idx, dir: -1 };
-    map[pos] = { axis: idx, dir:  1 };
+const reverseKeyMap = computed(() => {
+  const map = new Map<string, KeyboardAction>();
+  for (const [action, key] of Object.entries(keyboardConfig.value.mapping)) {
+    if (key) map.set(key, action as KeyboardAction);
   }
   return map;
 });
-const jogKeys = reactive(new Set<string>());
+
+const jogActions = reactive(new Set<string>());
+
+const ANGULAR_LETTERS = new Set(["A", "B", "C"]);
+
+function jogActionToAxis(action: string): { axis: number; dir: 1 | -1; isAngular: boolean } | null {
+  const match = action.match(/^jog_([a-z])([+-])$/);
+  if (!match) return null;
+  const letter = match[1]!.toUpperCase();
+  const dir = match[2] === "+" ? 1 : -1;
+  const idx = axes.value.indexOf(letter);
+  if (idx < 0) return null;
+  return { axis: idx, dir, isAngular: ANGULAR_LETTERS.has(letter) };
+}
 
 function isInputFocused(): boolean {
-  const tag = document.activeElement?.tagName;
-  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  const el = document.activeElement;
+  if (!el) return false;
+  const tag = el.tagName;
+  return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || !!(el as HTMLElement).isContentEditable;
 }
 
 function onKeyDown(e: KeyboardEvent) {
-  // E-stop: ALWAYS works, even in inputs
-  if (e.key === "Escape") {
+  const action = reverseKeyMap.value.get(e.key);
+  if (!action) return;
+
+  // E-Stop always fires — bypasses master toggle and input focus
+  if (action === "estop") {
     e.preventDefault();
     if (canEstop.value) send({ cmd: "estop" });
     else if (canResetEstop.value) send({ cmd: "estop_reset" });
     return;
   }
 
-  // Everything else skipped when typing in inputs
+  if (!keyboardConfig.value.enabled) return;
   if (isInputFocused()) return;
 
-  // Jog keys (hold-to-jog or increment)
-  const isRotaryKey = !!rotaryJogKeys.value[e.key];
-  const jog = JOG_KEY_MAP[e.key] ?? rotaryJogKeys.value[e.key];
-  if (jog) {
-    if (!keyboardJogEnabled.value) return;
+  // Jog actions
+  if (action.startsWith("jog_")) {
+    if (!keyboardConfig.value.jogEnabled) return;
     e.preventDefault();
-    if (e.repeat || jogKeys.has(e.key)) return;
+    if (e.repeat || jogActions.has(action)) return;
     if (!permissions.value.jog) return;
-    jogKeys.add(e.key);
-    const vel = isRotaryKey ? angularJogVel.value : jogVel.value;
-    const v = vel * jog.dir;
+    const jog = jogActionToAxis(action);
+    if (!jog) return;
+    jogActions.add(action);
+    const vel = (jog.isAngular ? angularJogVel.value : jogVel.value) * jog.dir;
     if (jogIncrement.value > 0) {
-      send({ cmd: "jog_incr", axis: jog.axis, vel: v, distance: jogIncrement.value * jog.dir });
+      send({ cmd: "jog_incr", axis: jog.axis, vel, distance: jogIncrement.value * jog.dir });
     } else {
-      send({ cmd: "jog_cont", axis: jog.axis, vel: v });
+      send({ cmd: "jog_cont", axis: jog.axis, vel });
     }
     return;
   }
 
-  // Space: cycle start / pause / resume
-  if (e.key === " ") {
+  // Cycle start / pause / resume
+  if (action === "cycle") {
     e.preventDefault();
     if (permissions.value.resume) fire({ cmd: "cycle_resume" });
     else if (permissions.value.pause) fire({ cmd: "cycle_pause" });
@@ -1094,8 +1093,8 @@ function onKeyDown(e: KeyboardEvent) {
     return;
   }
 
-  // Backtick: abort
-  if (e.key === "`") {
+  // Abort
+  if (action === "abort") {
     e.preventDefault();
     if (permissions.value.abort) fire({ cmd: "abort" });
     return;
@@ -1103,11 +1102,13 @@ function onKeyDown(e: KeyboardEvent) {
 }
 
 function onKeyUp(e: KeyboardEvent) {
-  const jog = JOG_KEY_MAP[e.key] ?? rotaryJogKeys.value[e.key];
-  if (jog && jogKeys.has(e.key)) {
-    jogKeys.delete(e.key);
+  const action = reverseKeyMap.value.get(e.key);
+  if (!action || !action.startsWith("jog_")) return;
+  if (jogActions.has(action)) {
+    jogActions.delete(action);
     if (jogIncrement.value <= 0) {
-      send({ cmd: "jog_stop", axis: jog.axis });
+      const jog = jogActionToAxis(action);
+      if (jog) send({ cmd: "jog_stop", axis: jog.axis });
     }
   }
 }
@@ -1133,6 +1134,20 @@ function setGamepadConfig(cfg: GamepadDefaults) {
   saveGamepadDefaults(cfg);
 }
 
+function setKeyboardConfig(cfg: KeyboardDefaults) {
+  keyboardConfig.value = cfg;
+  saveKeyboardDefaults(cfg);
+}
+
+watch(() => [keyboardConfig.value.enabled, keyboardConfig.value.jogEnabled], (curr, prev) => {
+  if (!prev) return;
+  const [enabled, jogEnabled] = curr;
+  const [prevEnabled, prevJogEnabled] = prev;
+  if ((!enabled && prevEnabled) || (!jogEnabled && prevJogEnabled)) {
+    stopAllJog();
+  }
+});
+
 provide("gamepadAxes", gamepad.gamepadAxesState);
 provide("gamepadButtons", gamepad.gamepadButtonsState);
 
@@ -1141,13 +1156,13 @@ watch(settingsVersion, () => {
   userMacros.value = loadMacrosDefaults().macros;
   const mach = loadMachineDefaults();
   runFromLineEnabled.value = mach.runFromLine;
-  keyboardJogEnabled.value = mach.keyboardJog;
+  keyboardConfig.value = loadKeyboardDefaults();
   gamepadConfig.value = loadGamepadDefaults();
 });
 
 /** ---------- safety: stop jog on focus loss ---------- */
 function stopAllJog() {
-  jogKeys.clear();
+  jogActions.clear();
   gamepad.stopAllJog();
   if (!permissions.value.jog) return; // no jog possible unless armed + enabled + homed
   if (isRunning.value || isPaused.value) return; // no jog during program execution
@@ -1742,7 +1757,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :isTeleop="isTeleop" :isHomed="isHomed"
               :maxJogVel="maxJogVel" :maxAngularJogVel="maxAngularJogVel"
               :minAngularJogVel="minAngularJogVel"
-              :activeJogKeys="jogKeys"
+              :activeJogActions="jogActions"
               :jogIncrement="jogIncrement"
               :minJogVel="minJogVel" :iniIncrements="iniIncrements"
               :mdiText="mdiText"
@@ -1889,7 +1904,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
             @mdi="send({ cmd: 'mdi', text: $event })"
             @setPathOnTop="setPathOnTop"
             @setProjection="setProjection"
-            @setKeyboardJog="keyboardJogEnabled = $event"
+            :keyboardConfig="keyboardConfig"
+            @setKeyboardConfig="setKeyboardConfig"
             @setRunFromLine="runFromLineEnabled = $event"
             @setGamepadConfig="setGamepadConfig" />
         </div>
