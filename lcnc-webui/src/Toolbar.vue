@@ -70,40 +70,34 @@
         <div class="popover pillPopover wpPopover" :class="{ open: openPill === 'workpiece' }" @click.stop>
           <div class="inputRow">
             <label class="inputLabel">Size X</label>
-            <input type="number" class="numInput" :value="workpieceSize[0]"
-              @input="updateSize(0, parseFloat(($event.target as HTMLInputElement).value))"
-              :step="STEP_DEFAULT" min="0" max="9999" />
+            <input type="number" class="numInput" v-model.number="localSize[0]"
+              @change="commitSize(0)" :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Size Y</label>
-            <input type="number" class="numInput" :value="workpieceSize[1]"
-              @input="updateSize(1, parseFloat(($event.target as HTMLInputElement).value))"
-              :step="STEP_DEFAULT" min="0" max="9999" />
+            <input type="number" class="numInput" v-model.number="localSize[1]"
+              @change="commitSize(1)" :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Size Z</label>
-            <input type="number" class="numInput" :value="workpieceSize[2]"
-              @input="updateSize(2, parseFloat(($event.target as HTMLInputElement).value))"
-              :step="STEP_DEFAULT" min="0" max="9999" />
+            <input type="number" class="numInput" v-model.number="localSize[2]"
+              @change="commitSize(2)" :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="sep"></div>
           <div class="inputRow">
             <label class="inputLabel">Offset X</label>
-            <input type="number" class="numInput" :value="workpieceOffset[0]"
-              @input="updateOffset(0, parseFloat(($event.target as HTMLInputElement).value))"
-              :step="STEP_DEFAULT" min="-9999" max="9999" />
+            <input type="number" class="numInput" v-model.number="localOffset[0]"
+              @change="commitOffset(0)" :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Offset Y</label>
-            <input type="number" class="numInput" :value="workpieceOffset[1]"
-              @input="updateOffset(1, parseFloat(($event.target as HTMLInputElement).value))"
-              :step="STEP_DEFAULT" min="-9999" max="9999" />
+            <input type="number" class="numInput" v-model.number="localOffset[1]"
+              @change="commitOffset(1)" :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Offset Z</label>
-            <input type="number" class="numInput" :value="workpieceOffset[2]"
-              @input="updateOffset(2, parseFloat(($event.target as HTMLInputElement).value))"
-              :step="STEP_DEFAULT" min="-9999" max="9999" />
+            <input type="number" class="numInput" v-model.number="localOffset[2]"
+              @change="commitOffset(2)" :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
         </div>
       </div>
@@ -113,7 +107,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from "vue";
+import { onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import Btn from "./Btn.vue";
 import { loadViewerDefaults, STEP_DEFAULT, type Vec3, type Layer, type TrackMode } from "./defaults";
 
@@ -158,25 +152,26 @@ function emitToggle(layer: Layer) {
   emit("toggleLayer", layer, local[layer]);
 }
 
-function updateSize(axis: number, value: number) {
-  if (isNaN(value) || value < 0) return; // Skip invalid/incomplete/negative input
-  const newSize: Vec3 = [...props.workpieceSize] as Vec3;
-  newSize[axis] = value;
-  emit("update:workpieceSize", newSize);
+// Local copies so inputs aren't overwritten mid-typing by prop updates
+const localSize = reactive([...props.workpieceSize]) as [number, number, number];
+const localOffset = reactive([...props.workpieceOffset]) as [number, number, number];
+watch(() => props.workpieceSize, s => { for (let i = 0; i < 3; i++) localSize[i] = s[i]!; });
+watch(() => props.workpieceOffset, o => { for (let i = 0; i < 3; i++) localOffset[i] = o[i]!; });
 
-  // Auto-adjust Z offset to keep zero at top of stock
-  if (axis === 2) { // Z axis
-    const newOffset: Vec3 = [...props.workpieceOffset] as Vec3;
-    newOffset[2] = -value;
-    emit("update:workpieceOffset", newOffset);
+function commitSize(axis: number) {
+  const value = localSize[axis]!;
+  if (isNaN(value) || value < 0) return;
+  emit("update:workpieceSize", [...localSize] as Vec3);
+
+  if (axis === 2) {
+    localOffset[2] = -value;
+    emit("update:workpieceOffset", [...localOffset] as Vec3);
   }
 }
 
-function updateOffset(axis: number, value: number) {
-  if (isNaN(value)) return; // Skip invalid/incomplete input
-  const newOffset: Vec3 = [...props.workpieceOffset] as Vec3;
-  newOffset[axis] = value;
-  emit("update:workpieceOffset", newOffset);
+function commitOffset(axis: number) {
+  if (isNaN(localOffset[axis]!)) return;
+  emit("update:workpieceOffset", [...localOffset] as Vec3);
 }
 
 // Click-to-toggle popovers (matching sidebar pattern)

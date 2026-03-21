@@ -67,9 +67,16 @@ provide("themeMode", themeMode);
 
 applyTheme(themeMode.value);
 
+// Select-all on focus for number inputs — typing replaces value
+function onNumFocus(e: FocusEvent) {
+  const t = e.target;
+  if (t instanceof HTMLInputElement && t.type === "number") t.select();
+}
+
 onMounted(() => {
   connectWs();
   themeMql.addEventListener("change", onOsThemeChange);
+  document.addEventListener("focusin", onNumFocus);
 });
 
 watch(lcncError, (newVal, oldVal) => {
@@ -375,7 +382,6 @@ function startEditCell(wcs: string, axis: string, current: number) {
   nextTick(() => {
     const el = Array.isArray(offsetInputRef.value) ? offsetInputRef.value[0] : offsetInputRef.value;
     el?.focus();
-    el?.select();
   });
 }
 
@@ -1139,6 +1145,7 @@ onUnmounted(() => {
   window.removeEventListener("keyup", onKeyUp);
   document.removeEventListener("click", onDocClick);
   document.removeEventListener("visibilitychange", visHandler);
+  document.removeEventListener("focusin", onNumFocus);
   themeMql.removeEventListener("change", onOsThemeChange);
   gamepad.stop();
 });
@@ -1531,6 +1538,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
                   <input v-if="editingCell?.wcs === row.name && editingCell?.axis === axis"
                          ref="offsetInputRef"
                          v-model="editValue"
+                         type="number"
                          class="offsetInput"
                          :disabled="!permissions.ready"
                          @keydown.enter.prevent="commitCell(row.name, axis)"
