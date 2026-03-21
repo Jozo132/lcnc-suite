@@ -12,7 +12,7 @@ import ToolTablePanel from "./ToolTablePanel.vue";
 import ProbePanel from "./ProbePanel.vue";
 import CameraViewer from "./CameraViewer.vue";
 import Btn from "./Btn.vue";
-import { LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2, BookOpen, ClipboardCopy } from "lucide-vue-next";
+import { LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2, BookOpen, ClipboardCopy, Expand, Shrink } from "lucide-vue-next";
 import GcodeReferenceDialog from "./GcodeReferenceDialog.vue";
 import { loadViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, loadGamepadDefaults, saveGamepadDefaults, settingsVersion, type ThemeMode, type MacroDef, type GamepadDefaults, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
 import { useGamepad } from "./useGamepad";
@@ -48,7 +48,7 @@ const isDark = computed(() => {
 function setTheme(mode: ThemeMode) {
   themeMode.value = mode;
   applyTheme(mode);
-  saveDisplayDefaults({ theme: mode });
+  saveDisplayDefaults({ ...loadDisplayDefaults(), theme: mode });
 }
 
 // Re-evaluate isDark when OS preference changes in auto mode
@@ -67,6 +67,24 @@ provide("themeMode", themeMode);
 
 applyTheme(themeMode.value);
 
+// ─── Fullscreen ──────────────────────────────────────────────────
+const isFullscreen = ref(!!document.fullscreenElement);
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+  } else {
+    document.documentElement.requestFullscreen();
+  }
+}
+
+function onFullscreenChange() {
+  isFullscreen.value = !!document.fullscreenElement;
+}
+
+provide("isFullscreen", isFullscreen);
+provide("toggleFullscreen", toggleFullscreen);
+
 // Select-all on focus for number inputs — typing replaces value
 function onNumFocus(e: FocusEvent) {
   const t = e.target;
@@ -77,6 +95,10 @@ onMounted(() => {
   connectWs();
   themeMql.addEventListener("change", onOsThemeChange);
   document.addEventListener("focusin", onNumFocus);
+  document.addEventListener("fullscreenchange", onFullscreenChange);
+  if (loadDisplayDefaults().startFullscreen && !document.fullscreenElement) {
+    document.documentElement.requestFullscreen().catch(() => {});
+  }
 });
 
 watch(lcncError, (newVal, oldVal) => {
@@ -1238,6 +1260,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
           <Gamepad2 :size="14" />
         </div>
 
+        <Btn icon :title="isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'" @click="toggleFullscreen">
+          <Shrink v-if="isFullscreen" :size="16" />
+          <Expand v-else :size="16" />
+        </Btn>
         <Btn icon class="hdrShutdown" title="Shut Down LinuxCNC" @click="showShutdownConfirm = true">
           <PowerOff :size="16" />
         </Btn>

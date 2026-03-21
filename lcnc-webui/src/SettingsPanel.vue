@@ -9,7 +9,7 @@ import {
   loadCameraDefaults, saveCameraDefaults, type CameraDefaults,
   loadToolsetterDefaults, saveToolsetterDefaults,
   loadProbeDefaults,
-  saveDisplayDefaults, settingsVersion,
+  loadDisplayDefaults, saveDisplayDefaults, settingsVersion,
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir, type SpindleFeedbackUnit,
   type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
@@ -28,6 +28,7 @@ const can = usePermissions();
 
 const themeMode = inject<Ref<ThemeMode>>("themeMode", ref("auto") as Ref<ThemeMode>);
 const setTheme = inject<(mode: ThemeMode) => void>("setTheme", () => {});
+const startFullscreen = ref(loadDisplayDefaults().startFullscreen);
 const machineParts = inject<ComputedRef<Array<{ id: string; group: string | null; direction: string | null }>>>("machineParts", computed(() => []));
 const setMachinePartColor = inject<(id: string, color: string | null) => void>("setMachinePartColor", () => {});
 const setMachineEdges = inject<(on: boolean) => void>("setMachineEdges", () => {});
@@ -176,9 +177,14 @@ function resetToolsetter() {
   saveTsParams();
 }
 
+function saveStartFullscreen() {
+  saveDisplayDefaults({ ...loadDisplayDefaults(), startFullscreen: startFullscreen.value });
+}
+
 function resetDisplay() {
   setTheme("auto");
-  saveDisplayDefaults({ theme: "auto" });
+  startFullscreen.value = false;
+  saveDisplayDefaults({ theme: "auto", startFullscreen: false });
 }
 
 function resetCamera() {
@@ -1024,6 +1030,13 @@ const halStats = computed(() => ({
               <Btn size="sm" :selected="themeMode === 'hc-light'" class="optBtn" @click="setTheme('hc-light')">HC Light</Btn>
               <Btn size="sm" :selected="themeMode === 'hc-dark'" class="optBtn" @click="setTheme('hc-dark')">HC Dark</Btn>
             </div>
+          </div>
+          <div class="section">
+            <div class="sub">Fullscreen</div>
+            <label class="checkLabel">
+              <input type="checkbox" v-model="startFullscreen" @change="saveStartFullscreen" />
+              Start in fullscreen mode
+            </label>
           </div>
           <div class="resetRow">
             <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'display'">Reset Display</Btn>
