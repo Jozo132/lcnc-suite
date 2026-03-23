@@ -70,18 +70,12 @@ export function registerSection<T>(key: string, fallback: T, merge: (saved: any,
 
 // ─── Storage I/O ─────────────────────────────────────────────────
 
-/** Sections stored on the server (shared across all clients). */
-const SERVER_SECTIONS = new Set(["macros", "machine", "camera", "mdi", "gamepad", "keyboard", "probe", "toolsetter"]);
-
 /** Reactive version counter — incremented on every server settings update.
  *  Components watch this to re-read their section when another client saves. */
 export const settingsVersion = ref(0);
 
 /** In-memory cache — localStorage is read at most once per page load. */
 let _cache: Record<string, any> | null = null;
-
-/** Server-side data populated before app mount. */
-let _serverData: Record<string, any> = {};
 
 /** True once server settings have been confirmed (REST fetch or WS delivery). */
 export const serverSettingsReady = ref(false);
@@ -94,21 +88,13 @@ const _pendingSaves = new Map<string, any>();
 
 /** Called once from main.ts before createApp().mount(). */
 export function initServerDefaults(data: Record<string, any>, fetchOk: boolean): void {
-  _serverData = data;
-  if (!_cache) _cache = {};
-  for (const [key, val] of Object.entries(data)) {
-    _cache[key] = val;
-  }
+  _cache = { ...data };
   if (fetchOk) serverSettingsReady.value = true;
 }
 
 /** Called from lcncWs.ts on settings_init (connect) or settings_changed (broadcast). */
 export function updateServerCache(data: Record<string, any>): void {
-  _serverData = data;
-  if (!_cache) _cache = {};
-  for (const [key, val] of Object.entries(data)) {
-    _cache[key] = val;
-  }
+  _cache = { ...data };
   serverSettingsReady.value = true;
   settingsVersion.value++;
 }
@@ -133,30 +119,7 @@ document.addEventListener("visibilitychange", () => {
 });
 
 function readAll(): Record<string, any> {
-  if (_cache) return _cache;
-
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      // Migration: flat format (has "layers" at top level, no "viewer" key)
-      // → wrap under "viewer" section
-      if (parsed && typeof parsed === "object" && !parsed.viewer && parsed.layers) {
-        _cache = { viewer: parsed };
-      } else {
-        _cache = (parsed as Record<string, any>) ?? {};
-      }
-    } else {
-      _cache = {};
-    }
-  } catch {
-    _cache = {};
-  }
-
-  // Server sections override localStorage
-  for (const [key, val] of Object.entries(_serverData)) {
-    _cache[key] = val;
-  }
+  if (!_cache) _cache = {};
   return _cache;
 }
 
@@ -172,31 +135,22 @@ export function loadSection<T>(key: string): T {
 
 /** Save a section. Routes server sections through WS, local sections to localStorage. */
 export function saveSection(key: string, data: any): void {
-  // Block server section saves until server data is confirmed
-  if (SERVER_SECTIONS.has(key) && !serverSettingsReady.value) return;
+  // Block saves until server data is confirmed (prevents overwriting with fallback zeros)
+  if (!serverSettingsReady.value) return;
 
   const all = readAll();
   all[key] = data;
   _cache = all;
 
-  if (SERVER_SECTIONS.has(key)) {
-    // Track pending save for sendBeacon flush on page exit
-    _pendingSaves.set(key, data);
-    // Debounce server saves (camera sliders fire rapidly)
-    clearTimeout(_saveTimers[key]);
-    _saveTimers[key] = setTimeout(() => {
-      _pendingSaves.delete(key);
-      // Dynamic import to avoid circular dependency at module load time
-      import("./lcncWs").then(({ saveSettings }) => saveSettings(key, data));
-    }, 300);
-  } else {
-    // Only persist local-only sections to localStorage
-    const localOnly: Record<string, any> = {};
-    for (const [k, v] of Object.entries(all)) {
-      if (!SERVER_SECTIONS.has(k)) localOnly[k] = v;
-    }
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(localOnly));
-  }
+  // Track pending save for sendBeacon flush on page exit
+  _pendingSaves.set(key, data);
+  // Debounce server saves (camera sliders fire rapidly)
+  clearTimeout(_saveTimers[key]);
+  _saveTimers[key] = setTimeout(() => {
+    _pendingSaves.delete(key);
+    // Dynamic import to avoid circular dependency at module load time
+    import("./lcncWs").then(({ saveSettings }) => saveSettings(key, data));
+  }, 300);
 }
 
 // ─── Viewer section ──────────────────────────────────────────────
@@ -831,7 +785,6 @@ export function resetAllDefaults(): void {
   localStorage.removeItem("lcnc-toolsetter-params");
   localStorage.removeItem("lcnc-probe-params");
   _cache = null;
-  _serverData = {};
   // Fire-and-forget server reset
   import("./lcncApi").then(({ resetServerSettings }) => resetServerSettings());
 }

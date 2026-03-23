@@ -692,7 +692,8 @@ const halStats = computed(() => ({
     <div class="hint">Changes here set startup defaults. They take effect on next page load.</div>
     <TabPanel :tabs="subTabs" v-model="activeTab" class="subTabs">
       <template #viewer>
-        <div class="stack-panel scrollContent scroll-thin">
+        <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
+        <div v-else class="stack-panel scrollContent scroll-thin">
         <fieldset :disabled="!can.idle" class="fs-reset">
         <div class="section">
           <div class="sub">Workpiece Defaults</div>
@@ -1044,7 +1045,8 @@ const halStats = computed(() => ({
       </template>
 
       <template #display>
-        <div class="stack-panel scrollContent scroll-thin">
+        <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
+        <div v-else class="stack-panel scrollContent scroll-thin">
           <fieldset :disabled="!can.idle" class="fs-reset">
           <div class="section">
             <div class="sub">Theme</div>

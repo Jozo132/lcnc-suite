@@ -1162,6 +1162,11 @@ watch(settingsVersion, () => {
   runFromLineEnabled.value = mach.runFromLine;
   keyboardConfig.value = loadKeyboardDefaults();
   gamepadConfig.value = loadGamepadDefaults();
+  const disp = loadDisplayDefaults();
+  if (disp.theme !== themeMode.value) {
+    themeMode.value = disp.theme;
+    applyTheme(disp.theme);
+  }
 });
 
 /** ---------- safety: stop jog on focus loss ---------- */
