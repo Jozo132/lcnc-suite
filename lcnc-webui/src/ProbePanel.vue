@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import Btn from "./Btn.vue";
+import Gate from "./Gate.vue";
 import { usePermissions } from "./permissions";
 import { STEP_DEFAULT, STEP_FEED, loadProbeDefaults, saveProbeDefaults, settingsVersion } from "./defaults";
 import { idwInterp } from "./interpolation";
@@ -542,44 +543,48 @@ function fmtR(key: string): string {
     </div>
 
     <!-- WCS selector -->
-    <div class="row-tight g5xRow" :class="{ inactive: !can.idle }">
-      <Btn
-        v-for="g in g5xOptions"
-        :key="g"
-        size="sm"
-        muted
-        :selected="g === g5xLabel"
-        :disabled="!can.idle"
-        @click="emit('setG5x', g)"
-      >{{ g }}</Btn>
-    </div>
+    <Gate :allow="can.idle">
+      <div class="row-tight g5xRow">
+        <Btn
+          v-for="g in g5xOptions"
+          :key="g"
+          size="sm"
+          muted
+          :selected="g === g5xLabel"
+          @click="emit('setG5x', g)"
+        >{{ g }}</Btn>
+      </div>
+    </Gate>
 
     <!-- Control bar -->
-    <div class="controlBar" :class="{ inactive: !can.ready }">
-      <label class="toggleRow">
-        <input type="checkbox" class="toggle" v-model="autoZero" :disabled="!can.ready" @change="saveParams" />
-        Auto Zero
-      </label>
-      <label class="toggleRow">
-        <input type="checkbox" class="toggle" :checked="params.wcoRotation === 1" :disabled="!can.ready" @change="params.wcoRotation = ($event.target as HTMLInputElement).checked ? 1 : 0; saveParams()" />
-        Set Rotation
-      </label>
-      <div class="controlBarRight">
-        <div class="statusRow">
-          <span class="statusDot" :class="statusClass"></span>
-          <span class="statusText">{{ probeStatus }}</span>
+    <Gate :allow="can.ready">
+      <div class="controlBar">
+        <label class="toggleRow">
+          <input type="checkbox" class="toggle" v-model="autoZero" @change="saveParams" />
+          Auto Zero
+        </label>
+        <label class="toggleRow">
+          <input type="checkbox" class="toggle" :checked="params.wcoRotation === 1" @change="params.wcoRotation = ($event.target as HTMLInputElement).checked ? 1 : 0; saveParams()" />
+          Set Rotation
+        </label>
+        <div class="controlBarRight">
+          <div class="statusRow">
+            <span class="statusDot" :class="statusClass"></span>
+            <span class="statusText">{{ probeStatus }}</span>
+          </div>
+          <Btn
+            variant="danger" size="sm"
+            :disabled="!probing"
+            @click="emit('abort')"
+          >Abort</Btn>
         </div>
-        <Btn
-          variant="danger" size="sm"
-          :disabled="!probing"
-          @click="emit('abort')"
-        >Abort</Btn>
       </div>
-    </div>
+    </Gate>
 
     <!-- ═══ OUTSIDE CORNERS VIEW ═══ -->
     <template v-if="probeView === 'outside'">
-      <div class="gridSection" :class="{ inactive: !can.probe }">
+      <Gate :allow="can.probe">
+      <div class="gridSection">
       <div class="section">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap">
@@ -588,7 +593,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
-            :disabled="!can.probe || probing"
+            :disabled="probing"
             :title="op.description"
             @click="runGridProbe(op)"
           >
@@ -663,11 +668,13 @@ function fmtR(key: string): string {
         </div>
       </div>
       </div>
+      </Gate>
     </template>
 
     <!-- ═══ INSIDE CORNERS VIEW ═══ -->
     <template v-else-if="probeView === 'inside'">
-      <div class="gridSection" :class="{ inactive: !can.probe }">
+      <Gate :allow="can.probe">
+      <div class="gridSection">
       <div class="section">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap">
@@ -676,7 +683,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
-            :disabled="!can.probe || probing"
+            :disabled="probing"
             :title="op.description"
             @click="runGridProbe(op)"
           >
@@ -751,11 +758,13 @@ function fmtR(key: string): string {
         </div>
       </div>
       </div>
+      </Gate>
     </template>
 
     <!-- ═══ BOSS / POCKET VIEW ═══ -->
     <template v-else-if="probeView === 'boss'">
-      <div class="gridSection" :class="{ inactive: !can.probe }">
+      <Gate :allow="can.probe">
+      <div class="gridSection">
       <div class="section">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap bossGrid">
@@ -765,7 +774,7 @@ function fmtR(key: string): string {
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
             :active="activeBossOp === op.id"
-            :disabled="!can.probe || probing"
+            :disabled="probing"
             :title="op.description"
             @click="runBossProbe(op)"
           >
@@ -836,18 +845,20 @@ function fmtR(key: string): string {
       <!-- Hint parameters (inline) -->
       <div class="inlineParams">
         <label title="Approximate pocket/bore diameter for initial positioning. Extends max XY travel to reach the far edge. Set to 0 for blind probing, or to the approximate diameter to speed up the cycle. (#3025)">Diameter</label>
-        <input type="number" v-model.number="params.diameterHint" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.diameterHint" min="0" :step="STEP_DEFAULT" @change="saveParams" />
         <label title="Approximate X size of a boss or pocket feature. Helps pre-position probes for faster measurement. Set to 0 for fully blind probing. (#3026)">X Hint</label>
-        <input type="number" v-model.number="params.xHintBP" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.xHintBP" min="0" :step="STEP_DEFAULT" @change="saveParams" />
         <label title="Approximate Y size of a boss or pocket feature. Helps pre-position probes for faster measurement. Set to 0 for fully blind probing. (#3027)">Y Hint</label>
-        <input type="number" v-model.number="params.yHintBP" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.yHintBP" min="0" :step="STEP_DEFAULT" @change="saveParams" />
       </div>
       </div>
+      </Gate>
     </template>
 
     <!-- ═══ EDGE ANGLE VIEW ═══ -->
     <template v-else-if="probeView === 'angle'">
-      <div class="gridSection" :class="{ inactive: !can.probe }">
+      <Gate :allow="can.probe">
+      <div class="gridSection">
       <div class="section">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap angleGrid">
@@ -856,7 +867,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
-            :disabled="!can.probe || probing"
+            :disabled="probing"
             :title="op.description"
             @click="runAngleProbe(op)"
           >
@@ -942,20 +953,22 @@ function fmtR(key: string): string {
       <!-- Angle parameters (inline) -->
       <div class="inlineParams">
         <label title="Width of the ridge or valley feature being probed. Used to position probes on opposite sides of the feature. Set to actual measured width. (#3024)">Edge Width</label>
-        <input type="number" v-model.number="params.edgeWidth" min="0.1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.edgeWidth" min="0.1" :step="STEP_DEFAULT" @change="saveParams" />
       </div>
       </div>
+      </Gate>
     </template>
 
     <!-- ═══ CALIBRATE VIEW ═══ -->
     <template v-else-if="probeView === 'cal'">
-      <div class="gridSection" :class="{ inactive: !can.probe }">
+      <Gate :allow="can.probe">
+      <div class="gridSection">
       <!-- Round calibration: buttons + diameter -->
       <div class="calSection">
         <div class="sub">Round Hole</div>
         <div class="calRow">
           <div class="calBtnPair">
-            <Btn class="gridCell" :disabled="!can.probe || probing" title="Round hole — edge start" @click="runCalProbe('probe_cal_round_pocket')">
+            <Btn class="gridCell" :disabled="probing" title="Round hole — edge start" @click="runCalProbe('probe_cal_round_pocket')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M40 18a22 22 0 1 0 0 44a22 22 0 1 0 0-44Z" fill-rule="evenodd" class="workpiece" />
                 <circle cx="5" cy="40" r="3" class="probeTip" />
@@ -966,7 +979,7 @@ function fmtR(key: string): string {
                 <circle cx="40" cy="40" r="2.5" class="crosshair" />
               </svg>
             </Btn>
-            <Btn class="gridCell" :disabled="!can.probe || probing" title="Round hole — center start" @click="runCalProbe('probe_cal_round_boss')">
+            <Btn class="gridCell" :disabled="probing" title="Round hole — center start" @click="runCalProbe('probe_cal_round_boss')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M40 18a22 22 0 1 0 0 44a22 22 0 1 0 0-44Z" fill-rule="evenodd" class="workpiece" />
                 <polygon points="40,18 35,27 45,27" class="arrowHead" />
@@ -981,7 +994,7 @@ function fmtR(key: string): string {
           <div class="calParamStacked">
             <div class="calParamRow">
               <label title="Known diameter of the calibration ring or pocket. Used by calibration routines to compute the probe tip offset. Use a precision ring gauge for best results. (#3033)">Diameter</label>
-              <input type="number" v-model.number="params.calDiameter" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+              <input type="number" v-model.number="params.calDiameter" min="0" :step="STEP_DEFAULT" @change="saveParams" />
             </div>
           </div>
         </div>
@@ -992,7 +1005,7 @@ function fmtR(key: string): string {
         <div class="sub">Rectangular Pocket</div>
         <div class="calRow">
           <div class="calBtnPair">
-            <Btn class="gridCell" :disabled="!can.probe || probing" title="Rect pocket — edge start" @click="runCalProbe('probe_cal_square_pocket')">
+            <Btn class="gridCell" :disabled="probing" title="Rect pocket — edge start" @click="runCalProbe('probe_cal_square_pocket')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M15 15H65V65H15Z" fill-rule="evenodd" class="workpiece" />
                 <circle cx="5" cy="40" r="3" class="probeTip" />
@@ -1003,7 +1016,7 @@ function fmtR(key: string): string {
                 <circle cx="40" cy="40" r="2.5" class="crosshair" />
               </svg>
             </Btn>
-            <Btn class="gridCell" :disabled="!can.probe || probing" title="Rect pocket — center start" @click="runCalProbe('probe_cal_square_boss')">
+            <Btn class="gridCell" :disabled="probing" title="Rect pocket — center start" @click="runCalProbe('probe_cal_square_boss')">
               <svg viewBox="0 0 80 80" class="gridIcon">
                 <path d="M0 0H80V80H0Z M15 15H65V65H15Z" fill-rule="evenodd" class="workpiece" />
                 <polygon points="40,15 35,24 45,24" class="arrowHead" />
@@ -1018,11 +1031,11 @@ function fmtR(key: string): string {
           <div class="calParamStacked">
             <div class="calParamRow">
               <label title="Known X width of a rectangular calibration reference block. (#3034)">X Width</label>
-              <input type="number" v-model.number="params.xCalWidth" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+              <input type="number" v-model.number="params.xCalWidth" min="0" :step="STEP_DEFAULT" @change="saveParams" />
             </div>
             <div class="calParamRow">
               <label title="Known Y width of a rectangular calibration reference block. (#3035)">Y Width</label>
-              <input type="number" v-model.number="params.yCalWidth" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+              <input type="number" v-model.number="params.yCalWidth" min="0" :step="STEP_DEFAULT" @change="saveParams" />
             </div>
           </div>
         </div>
@@ -1032,17 +1045,19 @@ function fmtR(key: string): string {
       <div class="section">
         <div class="calParamTitle">Calibrate on:</div>
         <div class="calAxisRow">
-          <Btn class="calAxisBtn" muted :selected="calAxis === 0" :disabled="!can.ready" @click="calAxis = 0">Avg XY</Btn>
-          <Btn class="calAxisBtn" muted :selected="calAxis === 1" :disabled="!can.ready" @click="calAxis = 1">X Error</Btn>
-          <Btn class="calAxisBtn" muted :selected="calAxis === 2" :disabled="!can.ready" @click="calAxis = 2">Y Error</Btn>
+          <Btn class="calAxisBtn" muted :selected="calAxis === 0" @click="calAxis = 0">Avg XY</Btn>
+          <Btn class="calAxisBtn" muted :selected="calAxis === 1" @click="calAxis = 1">X Error</Btn>
+          <Btn class="calAxisBtn" muted :selected="calAxis === 2" @click="calAxis = 2">Y Error</Btn>
         </div>
       </div>
       </div>
+      </Gate>
     </template>
 
     <!-- ═══ RIDGE / VALLEY VIEW ═══ -->
     <template v-else-if="probeView === 'ridge'">
-      <div class="gridSection" :class="{ inactive: !can.probe }">
+      <Gate :allow="can.probe">
+      <div class="gridSection">
       <div class="section">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap bossGrid">
@@ -1051,7 +1066,7 @@ function fmtR(key: string): string {
             :key="op.id"
             class="gridCell"
             :class="{ probing: probing && activeGridOp === op.id }"
-            :disabled="!can.probe || probing"
+            :disabled="probing"
             :title="op.description"
             @click="runRidgeProbe(op)"
           >
@@ -1114,46 +1129,52 @@ function fmtR(key: string): string {
       <!-- Hint parameters (inline) -->
       <div class="inlineParams">
         <label title="Approximate X width of the ridge or valley feature. Used to position probes on opposite sides. Set to approximate feature width. (#3028)">X Hint</label>
-        <input type="number" v-model.number="params.xHintRV" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.xHintRV" min="0" :step="STEP_DEFAULT" @change="saveParams" />
         <label title="Approximate Y width of the ridge or valley feature. Used to position probes on opposite sides. Set to approximate feature width. (#3029)">Y Hint</label>
-        <input type="number" v-model.number="params.yHintRV" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.yHintRV" min="0" :step="STEP_DEFAULT" @change="saveParams" />
       </div>
       </div>
+      </Gate>
     </template>
 
     <!-- ─── Surface Map ─── -->
     <template v-else>
-      <div class="section" :class="{ inactive: !can.ready }">
+      <Gate :allow="can.ready">
+      <div class="section">
         <div class="sub">Scan Grid</div>
         <div class="paramGrid twoCol">
           <label title="Scan grid minimum X bound in work coordinates. Must be less than X Max. Defines the left edge of the probing area. (#3050)">X0</label>
-          <input type="number" v-model.number="params.scanX0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanX0" :step="STEP_DEFAULT" @change="saveParams" />
           <label title="Scan grid maximum X bound in work coordinates. Must be greater than X Min. Defines the right edge of the probing area. (#3051)">X1</label>
-          <input type="number" v-model.number="params.scanX1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanX1" :step="STEP_DEFAULT" @change="saveParams" />
           <label title="Scan grid minimum Y bound in work coordinates. Must be less than Y Max. Defines the front edge of the probing area. (#3052)">Y0</label>
-          <input type="number" v-model.number="params.scanY0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanY0" :step="STEP_DEFAULT" @change="saveParams" />
           <label title="Scan grid maximum Y bound in work coordinates. Must be greater than Y Min. Defines the back edge of the probing area. (#3053)">Y1</label>
-          <input type="number" v-model.number="params.scanY1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanY1" :step="STEP_DEFAULT" @change="saveParams" />
           <label title="Number of probe points along X. Minimum 2. Point spacing = (X Max - X Min) / (count - 1). (#3054)">X Probes</label>
-          <input type="number" v-model.number="params.scanXProbes" min="2" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanXProbes" min="2" :step="STEP_DEFAULT" @change="saveParams" />
           <label title="Number of probe points along Y. Minimum 2. Point spacing = (Y Max - Y Min) / (count - 1). (#3055)">Y Probes</label>
-          <input type="number" v-model.number="params.scanYProbes" min="2" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanYProbes" min="2" :step="STEP_DEFAULT" @change="saveParams" />
           <label title="Safe Z height in work coordinates for retraction between scan probe points. Set above the highest point of the workpiece plus clearance for clamps. (#3058)">Safe Z</label>
-          <input type="number" v-model.number="params.scanSafeZ" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanSafeZ" :step="STEP_DEFAULT" @change="saveParams" />
           <label title="Maximum downward probe distance from current Z. Always positive. Set larger than the deepest surface valley expected. (#3059)">Probe Depth</label>
-          <input type="number" v-model.number="params.scanDepthZ" min="0.1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+          <input type="number" v-model.number="params.scanDepthZ" min="0.1" :step="STEP_DEFAULT" @change="saveParams" />
         </div>
       </div>
+      </Gate>
 
-      <div class="surfaceActions" :class="{ inactive: !can.ready }">
+      <Gate :allow="can.ready">
+      <div class="surfaceActions">
         <Btn :disabled="!can.probe || probing" @click="runSurfaceScan">Start Scan</Btn>
         <Btn v-if="!surfaceInViewer" :disabled="!can.idle" @click="loadSurfaceMap">Load Map</Btn>
         <Btn v-else :disabled="!can.idle" @click="emit('clearSurfaceMap')">Unload Map</Btn>
         <Btn :disabled="!can.idle" @click="if (!surfacePoints?.length) emit('getProbeResults'); mapDialogOpen = true">3D Inspect</Btn>
-        <Btn :active="eoffsetEnabled" :disabled="!can.ready || probing" @click="toggleComp">{{ eoffsetEnabled ? 'Disable Comp' : 'Enable Comp' }}</Btn>
+        <Btn :active="eoffsetEnabled" :disabled="probing" @click="toggleComp">{{ eoffsetEnabled ? 'Disable Comp' : 'Enable Comp' }}</Btn>
       </div>
+      </Gate>
 
-      <div class="compStatus" :class="{ inactive: !can.ready }">
+      <Gate :allow="can.ready">
+      <div class="compStatus">
         <span class="compDot" :class="{ on: eoffsetEnabled }"></span>
         <span>Compensation: <b>{{ eoffsetEnabled ? 'ON' : 'OFF' }}</b></span>
         <span v-if="eoffsetZ != null" class="compValue">Z: {{ eoffsetZ.toFixed(4) }}</span>
@@ -1161,57 +1182,60 @@ function fmtR(key: string): string {
           Method:
           <Btn v-for="(label, id) in METHOD_LABELS" :key="id"
             class="methodBtn" muted :selected="compMethod === Number(id)"
-            :disabled="!can.ready"
             @click="setMethod(Number(id))">{{ label }}</Btn>
         </span>
       </div>
+      </Gate>
     </template>
 
     <div class="sep"></div>
 
     <!-- Parameters (shared across views) -->
-    <div class="section" :class="{ inactive: !can.ready }">
+    <Gate :allow="can.ready">
+    <div class="section">
       <div class="sub">Parameters</div>
       <div class="paramGrid twoCol">
         <label title="Tool number of the probe. Must match the tool loaded in the spindle before any probing operation. (#3014)">Probe Tool #</label>
-        <input type="number" v-model.number="params.probeTool" min="1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.probeTool" min="1" :step="STEP_DEFAULT" @change="saveParams" />
 
         <label title="Feed rate for the refined slow probe pass. Set to 0 to skip the slow pass entirely — faster but less accurate. (#3015)">Probe Slow FRate</label>
-        <input type="number" v-model.number="params.slowFr" min="0" :step="STEP_FEED" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.slowFr" min="0" :step="STEP_FEED" @change="saveParams" />
 
         <label title="Feed rate for non-probing positioning moves between probe points. Does not affect probe accuracy. (#3017)">Probe Traverse FR</label>
-        <input type="number" v-model.number="params.traverseFr" min="1" :step="STEP_FEED" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.traverseFr" min="1" :step="STEP_FEED" @change="saveParams" />
 
         <label title="Feed rate for initial fast probe contact. Higher values are faster but reduce repeatability. (#3016)">Probe Fast FRate</label>
-        <input type="number" v-model.number="params.fastFr" min="1" :step="STEP_FEED" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.fastFr" min="1" :step="STEP_FEED" @change="saveParams" />
 
         <label title="Maximum lateral travel before probe aborts if no contact is made. Safety limit — set slightly larger than the expected edge distance. (#3018)">Max X/Y Distance</label>
-        <input type="number" v-model.number="params.maxXYDistance" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.maxXYDistance" min="0" :step="STEP_DEFAULT" @change="saveParams" />
 
         <label title="Retract distance in X/Y after each edge contact before the next move. Prevents the probe tip from scraping the feature wall. (#3019)">X/Y Clearance</label>
-        <input type="number" v-model.number="params.xyClearance" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.xyClearance" min="0" :step="STEP_DEFAULT" @change="saveParams" />
 
         <label title="Maximum downward travel before probe aborts if no contact. Safety limit to prevent crashes. Set slightly larger than expected distance to surface. (#3020)">Max Z Distance</label>
-        <input type="number" v-model.number="params.maxZDistance" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.maxZDistance" min="0" :step="STEP_DEFAULT" @change="saveParams" />
 
         <label title="Retract height above the workpiece between Z probe passes. Also controls slow probe depth (2x this value). (#3021)">Z Clearance</label>
-        <input type="number" v-model.number="params.zClearance" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.zClearance" min="0" :step="STEP_DEFAULT" @change="saveParams" />
 
         <label title="Additional depth added to the slow probe pass beyond Z clearance. Ensures solid re-contact on rough surfaces. Increase if slow probe misses contact. (#3022)">Extra Probe Depth</label>
-        <input type="number" v-model.number="params.extraProbeDepth" min="0" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.extraProbeDepth" min="0" :step="STEP_DEFAULT" @change="saveParams" />
 
         <label title="Distance the probe steps away from an edge before approaching perpendicular for measurement. Ensures a clean, straight-on contact. (#3023)">Step Off Width</label>
-        <input type="number" v-model.number="params.stepOffWidth" min="0.1" :step="STEP_DEFAULT" :disabled="!can.ready" @change="saveParams" />
+        <input type="number" v-model.number="params.stepOffWidth" min="0.1" :step="STEP_DEFAULT" @change="saveParams" />
 
         <label title="Probe tip radius calibration offset. Compensates for the difference between electrical trigger point and true tip center. Set via calibration routines — do not guess. (#3032)">Cal Offset</label>
-        <span class="calOffsetReadonly">{{ fmt(params.calOffset) }} <Btn size="xs" :disabled="!can.ready || probing" @click="resetCal">Reset</Btn></span>
+        <span class="calOffsetReadonly">{{ fmt(params.calOffset) }} <Btn size="xs" :disabled="probing" @click="resetCal">Reset</Btn></span>
       </div>
     </div>
+    </Gate>
 
     <div class="sep"></div>
 
     <!-- Probe Results (PB-style feedback) -->
-    <div class="section" :class="{ inactive: !can.ready }">
+    <Gate :allow="can.ready">
+    <div class="section">
       <div class="sub">Probe Results</div>
       <div class="probeResultsGrid">
         <div class="prCell"><span class="label">X-</span><span class="prVal">{{ fmtR("x_minus") }}</span></div>
@@ -1231,19 +1255,22 @@ function fmtR(key: string): string {
         <div class="prCell"><span class="label">Y Center</span><span class="prVal">{{ fmtR("y_center") }}</span></div>
       </div>
     </div>
+    </Gate>
 
   </div>
 
   <!-- Surface map popout dialog -->
-  <div v-if="mapDialogOpen" class="dialogOverlay" @click.self="mapDialogOpen = false">
-    <div class="dialog lg dialog-full">
-      <div class="dialogHeader">
-        <span class="dialogTitle">Surface Compensation Map</span>
-        <Btn icon @click="mapDialogOpen = false">&times;</Btn>
+  <Teleport to="body">
+    <div v-if="mapDialogOpen" class="dialogOverlay" @click.self="mapDialogOpen = false">
+      <div class="dialog lg dialog-full">
+        <div class="dialogHeader">
+          <span class="dialogTitle">Surface Compensation Map</span>
+          <Btn icon @click="mapDialogOpen = false">&times;</Btn>
+        </div>
+        <div ref="surfaceContainer" class="surface3d"></div>
       </div>
-      <div ref="surfaceContainer" class="surface3d"></div>
     </div>
-  </div>
+  </Teleport>
 </template>
 
 <style scoped>
