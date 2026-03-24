@@ -3,6 +3,10 @@ import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { loadCameraDefaults, saveCameraDefaults, settingsVersion } from "./defaults";
 import { Crosshair, Circle, Grid3x3 } from "lucide-vue-next";
 import Btn from "./Btn.vue";
+import Gate from "./Gate.vue";
+import { usePermissions } from "./permissions";
+
+const can = usePermissions();
 
 const props = defineProps<{ active?: boolean }>();
 
@@ -154,7 +158,7 @@ CAMERA_SOURCE = rtsp://&lt;host&gt;/live      # IP camera</pre>
       </svg>
 
       <!-- Floating toolbar -->
-      <div class="cameraToolbar">
+      <Gate :allow="can.idle" class="cameraToolbar">
         <Btn size="xs" :active="showCrosshair"
                 @click="showCrosshair = !showCrosshair" title="Crosshair"><Crosshair :size="14" /></Btn>
         <Btn size="xs" :active="showCircle"
@@ -172,7 +176,7 @@ CAMERA_SOURCE = rtsp://&lt;host&gt;/live      # IP camera</pre>
         <div class="camSliderGroup">
           <input type="color" v-model="overlayColor" class="camColorPicker" title="Overlay color" />
         </div>
-      </div>
+      </Gate>
     </template>
   </div>
 </template>
@@ -246,6 +250,7 @@ CAMERA_SOURCE = rtsp://&lt;host&gt;/live      # IP camera</pre>
   bottom: 12px;
   left: 12px;
   display: flex;
+  flex-direction: row;
   align-items: center;
   gap: var(--gap-tight);
   padding: var(--gap-tight);
