@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import Btn from "./Btn.vue";
+import Gate from "./Gate.vue";
 import { usePermissions } from "./permissions";
 import { STEP_DEFAULT } from "./defaults";
 
@@ -57,17 +58,19 @@ function fmt(n: any, letter?: string) {
 </script>
 
 <template>
-  <div class="stack-sections container" :class="{ inactive: !can.idle }">
+  <Gate :allow="can.idle" class="stack-sections container">
     <div class="section">
       <div class="sub">Work Position ({{ g5xLabel }})</div>
-      <div class="grid">
-        <template v-for="(letter, i) in axes" :key="'w' + letter">
-          <div class="axis"><span>{{ letter }}</span><b>{{ fmt(workPos[i], letter) }}</b></div>
-          <input type="number" :step="STEP_DEFAULT" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" :disabled="!can.zero" @keydown.enter="setAxis(i)" />
-          <Btn class="zeroBtn" size="sm" @click="setAxis(i)" :disabled="!can.zero">Set {{ letter }}</Btn>
-        </template>
-        <Btn class="homeBtn spanBtn" size="lg" @click="setAll()" :disabled="!can.zero" :style="{ gridColumn: 4, gridRow: spanRows }">Set All</Btn>
-      </div>
+      <Gate :allow="can.zero">
+        <div class="grid">
+          <template v-for="(letter, i) in axes" :key="'w' + letter">
+            <div class="axis"><span>{{ letter }}</span><b>{{ fmt(workPos[i], letter) }}</b></div>
+            <input type="number" :step="STEP_DEFAULT" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" @keydown.enter="setAxis(i)" />
+            <Btn class="zeroBtn" size="sm" @click="setAxis(i)">Set {{ letter }}</Btn>
+          </template>
+          <Btn class="homeBtn spanBtn" size="lg" @click="setAll()" :style="{ gridColumn: 4, gridRow: spanRows }">Set All</Btn>
+        </div>
+      </Gate>
     </div>
 
     <div class="sep"></div>
@@ -78,12 +81,12 @@ function fmt(n: any, letter?: string) {
         <template v-for="(letter, i) in axes" :key="'m' + letter">
           <div class="axis"><span>{{ letter }}</span><b>{{ fmt(machinePos[i], letter) }}</b></div>
           <div></div>
-          <Btn class="zeroBtn" size="sm" :disabled="!can.idle" @click="homedJoints[i] ? emit('unhomeAxis', i) : emit('homeAxis', i)">{{ homedJoints[i] ? `Unhome ${letter}` : `Home ${letter}` }}</Btn>
+          <Btn class="zeroBtn" size="sm" @click="homedJoints[i] ? emit('unhomeAxis', i) : emit('homeAxis', i)">{{ homedJoints[i] ? `Unhome ${letter}` : `Home ${letter}` }}</Btn>
         </template>
-        <Btn class="homeBtn spanBtn" size="lg" :disabled="!can.idle" :style="{ gridColumn: 4, gridRow: spanRows }" @click="homed ? emit('unhomeAll') : emit('homeAll')">{{ homed ? 'Unhome' : 'Home All' }}</Btn>
+        <Btn class="homeBtn spanBtn" size="lg" :style="{ gridColumn: 4, gridRow: spanRows }" @click="homed ? emit('unhomeAll') : emit('homeAll')">{{ homed ? 'Unhome' : 'Home All' }}</Btn>
       </div>
     </div>
-  </div>
+  </Gate>
 </template>
 
 <style scoped>
