@@ -2,6 +2,7 @@
 import { ref, reactive, computed, inject, onMounted, onUnmounted, watch, type Ref, type ComputedRef } from "vue";
 import TabPanel from "./TabPanel.vue";
 import Btn from "./Btn.vue";
+import Gate from "./Gate.vue";
 import {
   loadViewerDefaults, saveViewerDefaults,
   loadMachineDefaults, saveMachineDefaults,
@@ -689,7 +690,7 @@ const halStats = computed(() => ({
       <template #viewer>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-        <fieldset :disabled="!can.idle" class="fs-reset">
+        <Gate :allow="can.idle">
         <div class="section">
           <div class="sub">Colors</div>
           <div class="colorGrid">
@@ -751,14 +752,14 @@ const halStats = computed(() => ({
         <div class="resetRow">
           <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'viewer'">Reset 3D Viewer</Btn>
         </div>
-        </fieldset>
+        </Gate>
         </div>
       </template>
 
       <template #machine>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-          <fieldset :disabled="!can.idle" class="fs-reset">
+          <Gate :allow="can.idle">
           <div class="section">
             <div class="sub">Tool Load Behavior</div>
             <div class="settingDesc">Controls what happens when you load a tool from the Tool Table.</div>
@@ -826,14 +827,14 @@ const halStats = computed(() => ({
           <div class="resetRow">
             <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'machine'">Reset Machine</Btn>
           </div>
-          </fieldset>
+          </Gate>
         </div>
       </template>
 
       <template #toolsetter>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-          <fieldset :disabled="!can.ready" class="fs-reset">
+          <Gate :allow="can.ready">
           <div class="section">
             <div class="sub">Toolsetter Position (G53)</div>
             <div class="tsGrid">
@@ -961,14 +962,14 @@ const halStats = computed(() => ({
           <div class="resetRow">
             <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'toolsetter'">Reset Toolsetter</Btn>
           </div>
-          </fieldset>
+          </Gate>
         </div>
       </template>
 
       <template #display>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-          <fieldset :disabled="!can.idle" class="fs-reset">
+          <Gate :allow="can.idle">
           <div class="section">
             <div class="sub">Theme</div>
             <div class="radioGroup">
@@ -990,14 +991,14 @@ const halStats = computed(() => ({
           <div class="resetRow">
             <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'display'">Reset Display</Btn>
           </div>
-          </fieldset>
+          </Gate>
         </div>
       </template>
 
       <template #camera>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-          <fieldset :disabled="!can.idle" class="fs-reset">
+          <Gate :allow="can.idle">
           <div class="section">
             <div class="sub">Overlay Toggles</div>
             <div class="stack-controls">
@@ -1043,7 +1044,7 @@ const halStats = computed(() => ({
           <div class="resetRow">
             <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'camera'">Reset Camera</Btn>
           </div>
-          </fieldset>
+          </Gate>
         </div>
       </template>
 
@@ -1064,10 +1065,10 @@ const halStats = computed(() => ({
                   <code class="macroSettingsCmd">{{ m.command }}</code>
                 </div>
                 <div class="macroSettingsActions">
-                  <Btn icon :disabled="idx === 0" @click="moveMacro(idx, -1)" title="Move up"><ChevronUp :size="14" /></Btn>
-                  <Btn icon :disabled="idx === macros.length - 1" @click="moveMacro(idx, 1)" title="Move down"><ChevronDown :size="14" /></Btn>
-                  <Btn icon @click="editMacro(m)" title="Edit"><Pencil :size="14" /></Btn>
-                  <Btn icon @click="deleteMacro(m.id)" title="Delete"><Trash2 :size="14" /></Btn>
+                  <Btn icon :disabled="idx === 0 || !can.idle" @click="moveMacro(idx, -1)" title="Move up"><ChevronUp :size="14" /></Btn>
+                  <Btn icon :disabled="idx === macros.length - 1 || !can.idle" @click="moveMacro(idx, 1)" title="Move down"><ChevronDown :size="14" /></Btn>
+                  <Btn icon :disabled="!can.idle" @click="editMacro(m)" title="Edit"><Pencil :size="14" /></Btn>
+                  <Btn icon :disabled="!can.idle" @click="deleteMacro(m.id)" title="Delete"><Trash2 :size="14" /></Btn>
                 </div>
               </div>
             </div>
@@ -1102,7 +1103,7 @@ const halStats = computed(() => ({
               </div>
             </div>
 
-            <Btn v-if="!editingMacro && macros.length < 20" variant="primary" @click="addMacro" style="margin-top: var(--gap-section);">Add Macro</Btn>
+            <Btn v-if="!editingMacro && macros.length < 20" variant="primary" :disabled="!can.idle" @click="addMacro" style="margin-top: var(--gap-section);">Add Macro</Btn>
           </div>
         </div>
       </template>
@@ -1110,7 +1111,7 @@ const halStats = computed(() => ({
       <template #gamepad>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-        <fieldset :disabled="!can.idle" class="fs-reset">
+        <Gate :allow="can.idle">
           <div class="section">
             <div class="sub">Gamepad Jogging</div>
             <div class="settingDesc">Use an Xbox, PlayStation, or standard gamepad to jog the machine.</div>
@@ -1186,14 +1187,14 @@ const halStats = computed(() => ({
           <div class="resetRow">
             <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'gamepad'">Reset Gamepad</Btn>
           </div>
-        </fieldset>
+        </Gate>
         </div>
       </template>
 
       <template #keyboard>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-          <fieldset :disabled="!can.idle" class="fs-reset">
+          <Gate :allow="can.idle">
             <div class="section">
               <div class="sub">Keyboard Shortcuts</div>
               <div class="settingDesc">Allow keyboard keys to control the machine. When disabled, no keyboard shortcuts are active except E-Stop.</div>
@@ -1266,7 +1267,7 @@ const halStats = computed(() => ({
             <div class="resetRow">
               <Btn variant="danger" :disabled="!can.idle" @click="resetTarget = 'keyboard'">Reset Keyboard</Btn>
             </div>
-          </fieldset>
+          </Gate>
         </div>
       </template>
 
