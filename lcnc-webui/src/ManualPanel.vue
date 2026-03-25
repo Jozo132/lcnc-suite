@@ -143,7 +143,7 @@ function onMdiKeydown(e: KeyboardEvent) {
     </Gate>
 
     <!-- WCS selector -->
-    <Gate :allow="can.idle">
+    <Gate :allow="can.ready">
       <div class="row-tight g5xRow">
         <Btn
           v-for="g in g5xOptions"
