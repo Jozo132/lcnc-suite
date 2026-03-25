@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import Btn from "./Btn.vue";
+import Gate from "./Gate.vue";
 
 const props = defineProps<{
   tabs: Array<{ id: string; label: string }>;
@@ -16,7 +17,7 @@ const emit = defineEmits<{
 
 <template>
   <div class="tab-panel">
-    <div class="topBar" data-gate-exempt>
+    <Gate :allow="true" class="topBar">
       <div class="tabRow">
         <Btn
           v-for="tab in tabs"
@@ -31,7 +32,7 @@ const emit = defineEmits<{
         </Btn>
       </div>
       <Btn v-if="closable" icon @click="emit('close')">&times;</Btn>
-    </div>
+    </Gate>
 
     <div class="tab-content">
       <template v-for="tab in tabs" :key="tab.id">

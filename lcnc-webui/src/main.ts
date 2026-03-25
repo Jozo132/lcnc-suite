@@ -69,7 +69,7 @@ async function bootstrap() {
 
   if (import.meta.env.DEV) {
     // After initial mount, watch for elements added outside a Gate (<fieldset>).
-    // Exempt elements must have data-gate-exempt on themselves or an ancestor.
+    // Every interactive element must be inside a fieldset — no exceptions.
     setTimeout(() => {
       const observer = new MutationObserver((mutations) => {
         for (const m of mutations) {
@@ -80,7 +80,7 @@ async function bootstrap() {
               ...node.querySelectorAll('button, input, select, textarea'),
             ] as HTMLElement[];
             for (const el of els) {
-              if (!el.closest('fieldset') && !el.closest('[data-gate-exempt]')) {
+              if (!el.closest('fieldset')) {
                 console.warn('[Gate audit] Element outside fieldset:', el);
               }
             }

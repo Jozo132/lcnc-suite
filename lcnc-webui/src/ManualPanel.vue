@@ -136,11 +136,11 @@ function onMdiKeydown(e: KeyboardEvent) {
 <template>
   <div class="stack-sections manualPanel">
     <!-- Sub-view tabs -->
-    <div class="row-tight viewTabs" data-gate-exempt>
+    <Gate :allow="true" class="row-tight viewTabs">
       <Btn size="sm" muted :selected="manualView === 'dro'" @click="manualView = 'dro'">DRO</Btn>
       <Btn size="sm" muted :selected="manualView === 'jogging'" @click="manualView = 'jogging'">Jog</Btn>
       <Btn size="sm" muted :selected="manualView === 'mdi'" @click="manualView = 'mdi'">MDI</Btn>
-    </div>
+    </Gate>
 
     <!-- WCS selector -->
     <Gate :allow="can.idle">

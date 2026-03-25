@@ -1276,7 +1276,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
     <header class="hdr">
       <div class="title">LinuxCNC WebUI ({{ connLabel }})</div>
 
-      <div class="hdrRight" data-gate-exempt>
+      <Gate :allow="connected" class="hdrRight">
+        <template #exempt>
+          <Btn icon :title="isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'" @click="toggleFullscreen">
+            <Shrink v-if="isFullscreen" :size="16" />
+            <Expand v-else :size="16" />
+          </Btn>
+        </template>
         <div
           class="pill"
           :title="connectedClients.map(c => c.ip + (c.armed ? ' (armed)' : '')).join('\n')"
@@ -1309,35 +1315,24 @@ watch(isHomed, (nowHomed, wasHomed) => {
           <Gamepad2 :size="14" />
         </div>
 
-        <Btn icon :title="isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'" @click="toggleFullscreen">
-          <Shrink v-if="isFullscreen" :size="16" />
-          <Expand v-else :size="16" />
-        </Btn>
         <Btn icon class="hdrShutdown" title="Shut Down LinuxCNC" @click="showShutdownConfirm = true">
           <PowerOff :size="16" />
         </Btn>
-      </div>
+      </Gate>
     </header>
 
-    <div v-if="bannerLevel !== 'none'" class="statusBanner" :class="bannerLevel" data-gate-exempt>
+    <Gate v-if="bannerLevel !== 'none'" :allow="true" class="statusBanner" :class="bannerLevel">
       {{ bannerText }}
       <Btn v-if="bannerLevel === 'refresh'" @click="reloadPage">Refresh</Btn>
-    </div>
+    </Gate>
 
     <!-- Body: sidebar (safety+status) + main content -->
     <div class="bodyLayout">
 
     <!-- Machine Safety + Status -->
     <div class="topRow">
-    <section class="card" data-gate-exempt>
-      <div class="sub">Machine Safety</div>
-      <div class="btnrow">
-        <Btn size="lg" :variant="armed ? 'ok' : 'default'" class="safetyBtn" @click="arm(!armed)" :disabled="busy" :title="armed ? 'Disarm' : 'Arm'" block>
-          <component :is="armed ? LockOpen : Lock" class="safetyIcon" />
-        </Btn>
-
-        <div class="vsep"></div>
-
+    <Gate :allow="connected" class="card">
+      <template #exempt>
         <Btn
           size="lg" variant="estop" class="safetyBtn"
           :flashing="isEstop"
@@ -1346,6 +1341,12 @@ watch(isHomed, (nowHomed, wasHomed) => {
         >
           <TriangleAlert class="safetyIcon" />
           <span class="safetyLabel">{{ isEstop ? "Reset" : "E-Stop" }}</span>
+        </Btn>
+      </template>
+      <div class="sub">Machine Safety</div>
+      <div class="btnrow">
+        <Btn size="lg" :variant="armed ? 'ok' : 'default'" class="safetyBtn" @click="arm(!armed)" :disabled="busy" :title="armed ? 'Disarm' : 'Arm'" block>
+          <component :is="armed ? LockOpen : Lock" class="safetyIcon" />
         </Btn>
 
         <div class="vsep"></div>
@@ -1361,7 +1362,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </Btn>
 
       </div>
-    </section>
+    </Gate>
 
     <section class="card">
       <div class="sub">Machine Status</div>
@@ -1390,7 +1391,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
     <section class="card">
       <div class="sub">Controls</div>
-      <div class="controlBtns" data-gate-exempt>
+      <Gate :allow="permissions.abort" class="controlBtns">
         <div class="controlGroup">
         <Btn
           size="lg" class="controlBtn"
@@ -1705,7 +1706,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <Btn class="controlBtn simtrip" :disabled="!st.probing" @click.stop="send({ cmd: 'simulate_probe_trip' })" title="Simulate probe contact (sim/debug)" block>Sim Trip</Btn>
         </div>
 
-      </div>
+      </Gate>
     </section>
     </div>
 
@@ -1865,12 +1866,12 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </TabPanel>
       </div>
 
-      <button
-        v-if="panels.length < MAX_PANELS"
-        class="addPanel"
-        data-gate-exempt
-        @click="addPanel"
-      >+</button>
+      <Gate v-if="panels.length < MAX_PANELS" :allow="true">
+        <button
+          class="addPanel"
+          @click="addPanel"
+        >+</button>
+      </Gate>
     </div>
 
 
@@ -1878,7 +1879,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     </div><!-- /bodyLayout -->
 
     <!-- Tool table dialog -->
-    <div v-if="toolDialogOpen" class="dialogOverlay" data-gate-exempt>
+    <div v-if="toolDialogOpen" class="dialogOverlay">
       <div class="dialog lg dialog-full">
         <div class="dialogHeader">
           <span class="dialogTitle">Tool Table</span>
@@ -1928,7 +1929,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     </div>
 
     <!-- Settings dialog -->
-    <div v-if="settingsDialogOpen" class="dialogOverlay" data-gate-exempt>
+    <div v-if="settingsDialogOpen" class="dialogOverlay">
       <div class="dialog lg dialog-full">
         <div class="dialogHeader">
           <span class="dialogTitle">Settings</span>
@@ -1955,7 +1956,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     <GcodeReferenceDialog :open="gcodeRefOpen" :initialSearch="gcodeRefInitialSearch" @close="gcodeRefOpen = false" />
 
     <!-- Safety confirmation dialogs — z-index 1010 to always appear above other dialogs -->
-    <div v-if="toolChangeRequested" class="dialogOverlay safetyDialog" data-gate-exempt>
+    <div v-if="toolChangeRequested" class="dialogOverlay safetyDialog">
       <div class="dialog">
         <div class="dialogTitle">{{ !toolChangeTool ? 'Remove Tool from Spindle' : 'Load Tool into Spindle' }}</div>
         <div class="dialogBody">
@@ -1978,7 +1979,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     </div>
 
     <Teleport to="body">
-    <div v-if="macroParamDialog" class="dialogOverlay" data-gate-exempt @click.self="macroParamDialog = null">
+    <div v-if="macroParamDialog" class="dialogOverlay" @click.self="macroParamDialog = null">
       <div class="dialog">
         <div class="dialogTitle">{{ macroParamDialog.macro.name }}</div>
         <div class="dialogBody">
@@ -2002,18 +2003,18 @@ watch(isHomed, (nowHomed, wasHomed) => {
     </div>
     </Teleport>
 
-    <div v-if="showShutdownConfirm" class="dialogOverlay safetyDialog" data-gate-exempt>
+    <div v-if="showShutdownConfirm" class="dialogOverlay safetyDialog">
       <div class="dialog">
         <div class="dialogTitle danger">Shut Down LinuxCNC?</div>
         <div class="dialogBody">This will stop all motion and exit LinuxCNC.</div>
         <div class="dialogActions">
           <Btn @click="showShutdownConfirm = false">Cancel</Btn>
-          <Btn variant="danger" @click="send({ cmd: 'shutdown' }); showShutdownConfirm = false">Shut Down</Btn>
+          <Btn variant="danger" :disabled="!connected" @click="send({ cmd: 'shutdown' }); showShutdownConfirm = false">Shut Down</Btn>
         </div>
       </div>
     </div>
 
-    <div v-if="compConfirmPending !== null" class="dialogOverlay safetyDialog" data-gate-exempt>
+    <div v-if="compConfirmPending !== null" class="dialogOverlay safetyDialog">
       <div class="dialog">
         <div class="dialogTitle">{{ compConfirmPending ? 'Enable' : 'Disable' }} Compensation</div>
         <div class="dialogBody">
@@ -2029,7 +2030,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </div>
         <div class="dialogActions">
           <Btn variant="danger" @click="cancelCompToggle">Cancel</Btn>
-          <Btn variant="primary" @click="confirmCompToggle">Confirm</Btn>
+          <Btn variant="primary" :disabled="!permissions.ready" @click="confirmCompToggle">Confirm</Btn>
         </div>
       </div>
     </div>

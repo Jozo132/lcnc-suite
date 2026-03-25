@@ -113,6 +113,7 @@ import JogHUD from "./JogHUD.vue";
 
 import SetupHUD from "./SetupHUD.vue";
 import Btn from "./Btn.vue";
+import Gate from "./Gate.vue";
 
 const isDark = inject<ComputedRef<boolean>>("isDark", computed(() => window.matchMedia("(prefers-color-scheme: dark)").matches));
 
@@ -2036,7 +2037,7 @@ defineExpose({
     </div>
 
     <!-- HUD toggle buttons (top-left) -->
-    <div class="hudOverlay" data-gate-exempt>
+    <Gate :allow="true" class="hudOverlay">
       <div class="row-tight hudBtnRow">
         <Btn size="sm" muted :selected="activeHudPanel === 'jog'" @click="toggleHud('jog')">Jog</Btn>
         <Btn size="sm" muted :selected="activeHudPanel === 'setup'" @click="toggleHud('setup')">Quick Setup</Btn>
@@ -2081,7 +2082,7 @@ defineExpose({
           @goToZero="emit('goToZero')"
         />
       </div>
-    </div>
+    </Gate>
   </div>
 </template>
 

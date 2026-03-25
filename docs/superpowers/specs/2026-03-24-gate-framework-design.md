@@ -1,7 +1,7 @@
 # Gate Framework — Fieldset-Based Permission Enforcement
 
 **Date:** 2026-03-24
-**Status:** Approved for implementation
+**Status:** Approved for implementation (revised 2026-03-25)
 
 ## Problem
 
@@ -22,20 +22,31 @@ This is an additive layer on top of the existing system. Nothing below changes:
 What gets removed:
 
 - `.inactive` class and all 26 `:class="{ inactive: !can.X }"` bindings
+- `data-gate-exempt` attribute — eliminated entirely
 - ~76 `:disabled="!can.X"` bindings where the permission matches the parent Gate
 - 21 mixed-logic bindings simplify (e.g., `:disabled="!activeFile || !can.idle"` becomes `:disabled="!activeFile"`)
 
 ## Design
 
+### Three mechanisms only
+
+**1. `<Gate :allow="...">` — the zone.** Every interactive element lives inside one. No exceptions. Navigation sections use `<Gate :allow="true">` — always enabled, but the element is inside a fieldset and the audit is complete.
+
+**2. `#exempt` slot — the escape hatch.** Only for controls that must work when the parent Gate is disabled. E-Stop, Abort. Uses the HTML `<legend>` spec. Visible, explicit, auditable.
+
+**3. Individual `:disabled` — the refinement.** Only for conditions the parent Gate doesn't cover: app state (loading, no file, form validation) or tighter permissions than the parent.
+
+No `data-gate-exempt`. No audit suppression. The dev audit is binary: inside a fieldset = pass, not inside a fieldset = bug.
+
 ### Gate.vue
 
 ```vue
 <script setup lang="ts">
-const props = defineProps<{ allow: boolean }>();
+defineProps<{ allow: boolean }>();
 </script>
 
 <template>
-  <fieldset :disabled="!allow" class="gate">
+  <fieldset :disabled="!allow" class="fs-reset">
     <legend v-if="$slots.exempt" class="gate-exempt">
       <slot name="exempt" />
     </legend>
@@ -44,12 +55,6 @@ const props = defineProps<{ allow: boolean }>();
 </template>
 
 <style scoped>
-.gate {
-  border: none;
-  margin: 0;
-  padding: 0;
-  min-inline-size: 0;
-}
 .gate-exempt {
   float: none;
   padding: 0;
@@ -75,6 +80,15 @@ const props = defineProps<{ allow: boolean }>();
 ```
 
 When `can.ready` is false: Send and the input are disabled by the browser. Abort stays enabled.
+
+**Always-enabled Gate for navigation:** Pure UI navigation (tab buttons, view switchers, close buttons) uses `<Gate :allow="true">`. The fieldset is never disabled, but the element is inside a fieldset — the audit is complete and the intent is documented.
+
+```vue
+<Gate :allow="true">
+  <Btn @click="switchTab('dro')">DRO</Btn>
+  <Btn @click="switchTab('jog')">Jog</Btn>
+</Gate>
+```
 
 **Tighten-only nesting (ARINC 661 pattern):** Fieldsets can nest. An inner fieldset cannot re-enable children when its parent is disabled — this is HTML spec behavior. A child Gate can only add more restrictions:
 
@@ -106,15 +120,49 @@ When `can.ready` is false: Send and the input are disabled by the browser. Abort
 | `<Btn :disabled="!activeFile \|\| !can.idle" @click="...">` | `<Btn :disabled="!activeFile" @click="...">` (inside `<Gate :allow="can.idle">`) |
 | `<input type="number" v-model="x">` (ungated) | Lives inside a Gate — browser disables it |
 | `.inactive { opacity: var(--opacity-disabled) }` | Removed — `:disabled` CSS handles it |
+| `data-gate-exempt` on any element | Removed — replaced with `<Gate :allow="true">` or proper Gate |
 | Plain `<button>` (not Btn) | No change needed — native buttons are disabled by fieldset natively |
 
-### Gate boundaries — what lives outside Gates
+### Section-by-section Gate assignments
 
-**Tab navigation:** TabPanel.vue tab buttons must NOT be inside a Gate — tabs are pure navigation. When wrapping a panel, the Gate goes around the panel *content*, not the tab bar.
+Every section in the UI gets a Gate. This table is the single source of truth for what gate each section uses:
 
-**Status-display popovers:** Machine Status, Program Status, and Overrides popovers in the sidebar are read-only views. Their trigger buttons live outside any Gate so operators can always view machine status, even when disarmed.
+**Navigation sections (`<Gate :allow="true">`):**
+- TabPanel.vue tab bar
+- ManualPanel.vue view tabs (DRO/Jog/MDI)
+- ProbePanel.vue view tabs (Outside/Inside/Boss/etc.)
+- App.vue add panel button
+- App.vue status banner (Refresh is page reload, not machine)
+- GcodePanel.vue stats popover (display only)
+- GcodePanel.vue error banner (dismiss is UI only)
+- DebugTab.vue diagnostic buttons (dev-only, no machine actions)
 
-**Dialog overlays:** Dialogs (`.dialogOverlay`) render at `position: fixed; z-index: 1000`. If a dialog is inside a Gate that becomes disabled while the dialog is open, the dialog's buttons would be disabled — stranding the user. Strategy: dialogs use `<Teleport to="body">` to render outside any Gate scope. Close/Cancel buttons are always accessible. Action buttons inside dialogs get their own Gate if they perform machine operations.
+**Machine control sections (permission-gated):**
+- App.vue header right: `<Gate :allow="connected">`, Fullscreen in `#exempt`
+- App.vue safety section: `<Gate :allow="connected">`, E-Stop in `#exempt`
+- App.vue control openers: `<Gate :allow="permissions.abort">`
+- App.vue spindle popover content: `<Gate :allow="permissions.ready">`
+- App.vue coolant popover content: `<Gate :allow="permissions.ready">`
+- App.vue overrides popover content: `<Gate :allow="permissions.override">`
+- App.vue work offsets: `<Gate :allow="permissions.ready">`
+- App.vue tool dialog actions: `<Gate :allow="permissions.ready">`, Abort in `#exempt`
+- GcodePanel.vue file ops: `<Gate :allow="can.idle">`
+- GcodePanel.vue control row: `<Gate :allow="can.abort">`, Abort in `#exempt`
+- GcodePanel.vue file browser: `<Gate :allow="can.idle">`
+- GcodePanel.vue edit area: `<Gate :allow="can.idle">`
+- GcodeHUD.vue ctrl row: `<Gate :allow="can.abort">`, Abort in `#exempt`
+- All other component sections: per existing migration (DroPanel, JogPanel, ManualPanel, etc.)
+
+**Dialogs (inner Gates for action buttons):**
+- Dialogs render at root template level or via `<Teleport to="body">` — already outside all fieldsets
+- Close/Cancel buttons are always safe (pure UI)
+- Action buttons get their own `:disabled` binding or inner Gate:
+  - Tool change confirm: `:disabled="!armed"`
+  - Macro execute: `:disabled="!permissions.ready"`
+  - Shutdown confirm: `:disabled="!connected"`
+  - Compensation toggle: `:disabled="!permissions.ready"`
+  - Settings reset: `:disabled="!permissions.idle"`
+  - Run-from-line: `:disabled="!can.ready"` (already present)
 
 ### JogButton.vue
 
@@ -131,6 +179,7 @@ JogButton.vue has its own `isDisabled` computed that checks `props.disabled` (Vu
 | Event blocking | Browser blocks before JS — not bypassable |
 | Defense in depth (DO-178C) | Layer 1: fieldset. Layer 2: require_armed() backend |
 | Fail-closed for new elements | New button in fieldset = disabled by default |
+| No escape hatch abuse | `data-gate-exempt` eliminated — audit is binary |
 
 ## Migration Strategy
 
@@ -146,35 +195,43 @@ Each migration: wrap section in Gate, remove redundant `:disabled="!can.X"` and 
 
 1. **DroPanel** — 1 inactive wrapper → `Gate :allow="can.idle"`
 2. **JogPanel** — 1 inactive wrapper → `Gate :allow="can.jog"`, preserve JogButton `:disabled` props
-3. **ManualPanel** — 4 inactive wrappers → Gates for `can.idle`, `can.ready`
+3. **ManualPanel** — 4 inactive wrappers → Gates for `can.idle`, `can.ready`; view tabs → `Gate :allow="true"`
 4. **ToolTablePanel** — 1 inactive wrapper → `Gate :allow="can.idle"`, keep `:disabled="loading"` etc.
 5. **Toolbar** — 29 `:disabled="!can.idle"` bindings → `Gate :allow="can.idle"`
 6. **CameraViewer** — 6 `:disabled` bindings → Gate wrapping
-7. **ProbePanel** — 13 inactive wrappers → Gates for `can.idle`, `can.ready`, `can.probe` (distinct class: adds eoffset check)
-8. **GcodePanel** — mixed gates (ready + abort + override), needs exempt slot for Abort, nested Gate for M01/BD override buttons
-9. **App.vue sidebar** — popover groups, offset table, tool dialog; status popovers stay outside Gates
-10. **GcodeHUD / JogHUD / SetupHUD** — small HUD overlays
-11. **SettingsPanel** — all inputs gated (option A: gate everything) → `Gate :allow="can.idle"`
-12. **GcodeReferenceDialog** — 1 inactive wrapper → `Gate :allow="can.idle"`
-13. **Dialogs** — add `<Teleport to="body">` to dialogs that render inside gated sections
+7. **ProbePanel** — 13 inactive wrappers → Gates for `can.idle`, `can.ready`, `can.probe`; view tabs → `Gate :allow="true"`
+8. **GcodePanel** — control row → `Gate :allow="can.abort"` with Abort in `#exempt`; file browser/edit → `Gate :allow="can.idle"`; stats/error → `Gate :allow="true"`
+9. **GcodeHUD** — ctrl row → `Gate :allow="can.abort"` with Abort in `#exempt`
+10. **JogHUD / SetupHUD** — Gate wrapping with appropriate permissions
+11. **App.vue sidebar** — safety → `Gate :allow="connected"` with E-Stop in `#exempt`; control openers → `Gate :allow="permissions.abort"`; popover content already gated; header → `Gate :allow="connected"`
+12. **App.vue dialogs** — remove `data-gate-exempt`, add `:disabled` to unprotected action buttons
+13. **SettingsPanel** — existing fieldsets → Gates; dialog → remove `data-gate-exempt`
+14. **GcodeReferenceDialog** — 1 inactive wrapper → Gate; remove `data-gate-exempt`
+15. **TabPanel** — tab bar → `Gate :allow="true"`
+16. **DebugTab** — buttons → `Gate :allow="true"`
 
 ### Phase 3 — Cleanup
 
 - Remove `.inactive` class from `style.css`
+- Remove `data-gate-exempt` check from dev audit (simplify to just `!el.closest('fieldset')`)
 - Remove orphaned `:disabled="!can.X"` bindings
-- Update CLAUDE.md: replace Pre-Flight Checklist permission gate guidance (`:disabled="!can.X"` → Gate wrapping), remove `.inactive` references, document Gate.vue pattern
-- Audit: grep for any `<button>` or `<input>` not inside a `<fieldset>` ancestor
+- Remove `.fs-reset:disabled { opacity }` rule (prevents double-dimming)
+- Update CLAUDE.md
+- Final audit: grep for any `data-gate-exempt` remaining (should be zero)
+- Final audit: grep for any interactive element outside a fieldset
 
-### Phase 4 — Dev warning
+### Phase 4 — Dev warning (simplified)
 
-- Console warning in dev mode when a `<button>` or `<input>` renders without a `<fieldset>` ancestor
-- This is mandatory to maintain the fail-closed guarantee as new components are added
+Dev-mode MutationObserver checks: is this `<button>`/`<input>`/`<select>` inside a `<fieldset>`? No → console warning. That's it. No `data-gate-exempt` check. Binary pass/fail.
 
 ## Decisions Made
 
-- **Option A for settings**: all settings inputs gated (can relax individually later with `gate="safe"` or exemptions)
+- **Option A for settings**: all settings inputs gated (can relax individually later)
 - **Fieldset over provide/inject**: browser enforcement is structurally fail-closed; provide/inject is opt-in per element
 - **Legend exception for exempt controls**: E-Stop and Abort use the `#exempt` slot
+- **No `data-gate-exempt`**: eliminated entirely — replaced with `<Gate :allow="true">` for navigation or proper Gates for machine actions
 - **No changes to Btn.vue**: enforcement is at the Gate layer, not the component layer
 - **No changes to permissions.ts**: Gate consumes existing permission classes
 - **No useGate() composable initially**: fieldset handles all cases; add later if needed
+- **Dialogs use inner Gates**: not `data-gate-exempt` — action buttons get `:disabled` bindings or inner Gates
+- **Three mechanisms only**: Gate (zone), `#exempt` (escape hatch), `:disabled` (refinement) — nothing else

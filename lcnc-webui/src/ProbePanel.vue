@@ -532,7 +532,7 @@ function fmtR(key: string): string {
 <template>
   <div class="stack-sections probePanel scroll-thin">
     <!-- Sub-view tabs -->
-    <div class="row-tight viewTabs" data-gate-exempt>
+    <Gate :allow="true" class="row-tight viewTabs">
       <Btn size="sm" muted :selected="probeView === 'outside'" @click="probeView = 'outside'">Outside</Btn>
       <Btn size="sm" muted :selected="probeView === 'inside'" @click="probeView = 'inside'">Inside</Btn>
       <Btn size="sm" muted :selected="probeView === 'boss'" @click="probeView = 'boss'">Boss/Pocket</Btn>
@@ -540,7 +540,7 @@ function fmtR(key: string): string {
       <Btn size="sm" muted :selected="probeView === 'angle'" @click="probeView = 'angle'">Angle</Btn>
       <Btn size="sm" muted :selected="probeView === 'surface'" @click="probeView = 'surface'">Surface</Btn>
       <Btn size="sm" muted :selected="probeView === 'cal'" @click="probeView = 'cal'">Calibrate</Btn>
-    </div>
+    </Gate>
 
     <!-- WCS selector -->
     <Gate :allow="can.idle">

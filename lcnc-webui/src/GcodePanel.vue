@@ -448,7 +448,7 @@ async function saveEdit() {
         <span class="label">File:</span>
         <div class="fileName">{{ fileName }}</div>
         <span class="fileMeta" v-if="gcodeContent">{{ lineCount }} lines</span>
-        <div v-if="gcodeStats" class="statsAnchor" data-gate-exempt>
+        <Gate v-if="gcodeStats" :allow="true" class="statsAnchor">
           <Btn class="actionBtn" size="sm" @click.stop="showStats = !showStats">Stats</Btn>
           <div class="popover statsPopover" :class="{ open: showStats }" @click.stop>
             <div class="popHeader"><span class="popTitle">Program Stats</span><Btn icon @click="showStats = false">&times;</Btn></div>
@@ -517,12 +517,17 @@ async function saveEdit() {
               <span class="statsValue">{{ fmtSize(gcodeStats.fileSize) }}</span>
             </div>
           </div>
-        </div>
+        </Gate>
       </div>
     </div>
 
     <!-- Program control -->
-    <div class="controlRow" data-gate-exempt>
+    <Gate :allow="can.abort" class="controlRow">
+      <template #exempt>
+        <Btn class="ctrlBtn" variant="danger" @click="emit('abort')">
+          <Square :size="14" class="ctrlIcon" /> Abort
+        </Btn>
+      </template>
       <Btn class="ctrlBtn" variant="primary" @click="onStartClick" :disabled="!can.ready || !activeFile || editing">
         <Play :size="14" class="ctrlIcon" /> {{ selectedLine && selectedLine > 1 ? `Start L${selectedLine}` : 'Start' }}
       </Btn>
@@ -535,12 +540,9 @@ async function saveEdit() {
         <component :is="isPaused ? Play : Pause" :size="14" class="ctrlIcon" />
         {{ isPaused ? 'Resume' : 'Pause' }}
       </Btn>
-      <Btn class="ctrlBtn" variant="danger" @click="emit('abort')" :disabled="!can.abort">
-        <Square :size="14" class="ctrlIcon" /> Abort
-      </Btn>
       <Btn class="ctrlBtn switchBtn" :active="optionalStop" :disabled="!can.override" @click="emit('toggleOptionalStop')">M01</Btn>
       <Btn class="ctrlBtn switchBtn" :active="blockDelete" :disabled="!can.override" @click="emit('toggleBlockDelete')">/BD</Btn>
-    </div>
+    </Gate>
 
     <!-- Progress bar -->
     <div class="progressRow" v-if="gcodeContent">
@@ -555,13 +557,13 @@ async function saveEdit() {
     </div>
 
     <!-- Error banner -->
-    <div v-if="uploadError" class="errorBanner" data-gate-exempt>
+    <Gate v-if="uploadError" :allow="true" class="errorBanner">
       <span>{{ uploadError }}</span>
       <Btn icon @click="uploadError = null">&times;</Btn>
-    </div>
+    </Gate>
 
     <!-- File browser (collapsible) -->
-    <div v-if="showBrowser" class="fileBrowser" data-gate-exempt>
+    <Gate v-if="showBrowser" :allow="can.idle" class="fileBrowser">
       <div class="browserHeader">
         <Btn v-if="currentSubdir" class="backBtn" size="xs" @click="navigateUp">..</Btn>
         <span class="browserPath">{{ currentSubdir || '/' }}</span>
@@ -577,7 +579,7 @@ async function saveEdit() {
         <div v-if="files.length === 0 && !loading" class="emptyBrowser">No program files found</div>
         <div v-if="loading" class="emptyBrowser">Loading...</div>
       </div>
-    </div>
+    </Gate>
 
     <!-- Code area wrapper (drop overlay target) -->
     <div class="codeArea">
@@ -596,7 +598,7 @@ async function saveEdit() {
       </div>
 
       <!-- Edit mode -->
-      <div v-if="editing" class="stack-controls editArea" data-gate-exempt>
+      <Gate v-if="editing" :allow="can.idle" class="stack-controls editArea">
         <div v-if="saveError" class="errorBanner">
           <span>{{ saveError }}</span>
           <Btn icon @click="saveError = null">&times;</Btn>
@@ -606,7 +608,7 @@ async function saveEdit() {
           <Btn class="actionBtn" size="sm" variant="primary" @click="saveEdit" :disabled="saving">{{ saving ? 'Saving...' : 'Save' }}</Btn>
           <Btn class="actionBtn" size="sm" @click="discardEdit" :disabled="saving">Discard</Btn>
         </div>
-      </div>
+      </Gate>
 
       <!-- Code viewer (virtual scroll) -->
       <div class="codeViewer" v-else-if="gcodeContent" ref="codeViewerRef" @scroll="onCodeScroll">
@@ -652,7 +654,7 @@ async function saveEdit() {
     </div>
 
     <!-- Run from line confirmation dialog -->
-    <div v-if="showRunDialog" class="dialogOverlay" data-gate-exempt @click.self="showRunDialog = false">
+    <div v-if="showRunDialog" class="dialogOverlay" @click.self="showRunDialog = false">
       <div class="dialog runDialog">
         <div class="dialogTitle">Run from Line {{ selectedLine }}</div>
         <div class="dialogBody">

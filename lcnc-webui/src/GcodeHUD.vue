@@ -98,22 +98,24 @@ function tokenizeCode(code: string, tokens: Token[]) {
 <template>
   <div class="gcodeHud hud-panel">
     <!-- Program controls -->
-    <div class="row-tight ctrlRow">
-      <div class="row-tight ctrlGroup">
-        <Btn variant="ok" size="sm" :disabled="!can.ready || !gcodeContent" @click="emit('cycleStart')"><Play :size="16" /></Btn>
-        <Btn size="sm" :disabled="!((can.ready && gcodeContent) || can.resume)" @click="emit('cycleStep')"><SkipForward :size="16" /></Btn>
-        <Btn
-          size="sm"
-          :disabled="!can.pause && !can.resume"
-          @click="isPaused ? emit('cycleResume') : emit('cyclePause')"
-        ><component :is="isPaused ? Play : Pause" :size="16" /></Btn>
-        <Btn variant="danger" size="sm" :disabled="!can.abort" @click="emit('abort')"><Square :size="16" /></Btn>
-      </div>
+    <Gate :allow="can.abort" class="row-tight ctrlRow">
+      <template #exempt>
+        <div class="row-tight ctrlGroup">
+          <Btn variant="ok" size="sm" :disabled="!can.ready || !gcodeContent" @click="emit('cycleStart')"><Play :size="16" /></Btn>
+          <Btn size="sm" :disabled="!((can.ready && gcodeContent) || can.resume)" @click="emit('cycleStep')"><SkipForward :size="16" /></Btn>
+          <Btn
+            size="sm"
+            :disabled="!can.pause && !can.resume"
+            @click="isPaused ? emit('cycleResume') : emit('cyclePause')"
+          ><component :is="isPaused ? Play : Pause" :size="16" /></Btn>
+          <Btn variant="danger" size="sm" @click="emit('abort')"><Square :size="16" /></Btn>
+        </div>
+      </template>
       <Gate :allow="can.override" class="switchGroup">
         <Btn size="sm" muted :active="optionalStop" @click="emit('toggleOptionalStop')">M01</Btn>
         <Btn size="sm" muted :active="blockDelete" @click="emit('toggleBlockDelete')">/BD</Btn>
       </Gate>
-    </div>
+    </Gate>
 
     <!-- Progress bar -->
     <div class="progressRow">
