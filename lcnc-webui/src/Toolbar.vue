@@ -5,7 +5,7 @@
     </div>
 
     <!-- Floating toolbar overlay (bottom-left) -->
-    <Gate :allow="can.idle" class="floatingBar">
+    <div class="floatingBar">
 
       <!-- Views pill -->
       <div class="toolPill">
@@ -24,8 +24,8 @@
           </div>
           <div class="sep"></div>
           <div class="radioGroup inline">
-            <label><input type="radio" :checked="!isOrtho" @change="isOrtho && toggleProjection()" /> Perspective</label>
-            <label><input type="radio" :checked="isOrtho" @change="!isOrtho && toggleProjection()" /> Parallel</label>
+            <label><MachineRadio gate="viewerSetting" name="projection" value="perspective" v-model="projectionModel" /> Perspective</label>
+            <label><MachineRadio gate="viewerSetting" name="projection" value="parallel" v-model="projectionModel" /> Parallel</label>
           </div>
         </div>
       </div>
@@ -35,14 +35,14 @@
         <Btn size="sm" muted :selected="openPill === 'layers'" @click.stop="togglePill('layers')">Layers</Btn>
         <div class="popover pillPopover" :class="{ open: openPill === 'layers' }" @click.stop>
           <div class="popHeader"><span class="popTitle">Layers</span><Btn icon @click="openPill = null">&times;</Btn></div>
-          <label><input type="checkbox" v-model="local.backplot" @change="emitToggle('backplot')" /> Backplot</label>
-          <label><input type="checkbox" v-model="local.toolpath" @change="emitToggle('toolpath')" /> Toolpath</label>
-          <label><input type="checkbox" v-model="local.machine"  @change="emitToggle('machine')"  /> Machine</label>
-          <label><input type="checkbox" v-model="local.workpiece" @change="emitToggle('workpiece')" /> Workpiece</label>
-          <label><input type="checkbox" v-model="local.bounds" @change="emitToggle('bounds')" /> Bounds</label>
-          <label><input type="checkbox" v-model="local.workzero" @change="emitToggle('workzero')" /> Work Zero</label>
-          <label><input type="checkbox" v-model="local.hud" @change="emitToggle('hud')" /> HUD</label>
-          <label><input type="checkbox" v-model="local.surface" @change="emitToggle('surface')" /> Surface</label>
+          <MachineToggle gate="viewerSetting" v-model="local.backplot" label="Backplot" />
+          <MachineToggle gate="viewerSetting" v-model="local.toolpath" label="Toolpath" />
+          <MachineToggle gate="viewerSetting" v-model="local.machine" label="Machine" />
+          <MachineToggle gate="viewerSetting" v-model="local.workpiece" label="Workpiece" />
+          <MachineToggle gate="viewerSetting" v-model="local.bounds" label="Bounds" />
+          <MachineToggle gate="viewerSetting" v-model="local.workzero" label="Work Zero" />
+          <MachineToggle gate="viewerSetting" v-model="local.hud" label="HUD" />
+          <MachineToggle gate="viewerSetting" v-model="local.surface" label="Surface" />
         </div>
       </div>
 
@@ -53,7 +53,7 @@
           <div class="popHeader"><span class="popTitle">Toolpath</span><Btn icon @click="openPill = null">&times;</Btn></div>
           <Btn size="sm" @click="$emit('resetBackplot')">Clear Backplot</Btn>
           <div class="sep"></div>
-          <label class="toggleRow"><input type="checkbox" class="toggle" v-model="pathOnTop" @change="$emit('setPathOnTop', pathOnTop)" /> Always on top</label>
+          <MachineToggle gate="viewerSetting" v-model="pathOnTop" label="Always on top" />
         </div>
       </div>
 
@@ -62,9 +62,9 @@
         <Btn size="sm" muted :selected="openPill === 'tracking'" @click.stop="togglePill('tracking')">Tracking</Btn>
         <div class="popover pillPopover" :class="{ open: openPill === 'tracking' }" @click.stop>
           <div class="popHeader"><span class="popTitle">Tracking</span><Btn icon @click="openPill = null">&times;</Btn></div>
-          <label><input type="radio" :checked="trackMode === 'none'" @change="setTrack('none')" /> None</label>
-          <label><input type="radio" :checked="trackMode === 'tool'" @change="setTrack('tool')" /> Tool</label>
-          <label><input type="radio" :checked="trackMode === 'workpiece'" @change="setTrack('workpiece')" /> Workpiece</label>
+          <label><MachineRadio gate="viewerSetting" name="tracking" value="none" v-model="trackMode" /> None</label>
+          <label><MachineRadio gate="viewerSetting" name="tracking" value="tool" v-model="trackMode" /> Tool</label>
+          <label><MachineRadio gate="viewerSetting" name="tracking" value="workpiece" v-model="trackMode" /> Workpiece</label>
         </div>
       </div>
 
@@ -75,50 +75,49 @@
           <div class="popHeader"><span class="popTitle">Workpiece</span><Btn icon @click="openPill = null">&times;</Btn></div>
           <div class="inputRow">
             <label class="inputLabel">Size X</label>
-            <input type="number" class="numInput" v-model.number="localSize[0]"
+            <MachineInput gate="viewerSetting" type="number" class="numInput" v-model.number="localSize[0]"
               @change="commitSize(0)" :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Size Y</label>
-            <input type="number" class="numInput" v-model.number="localSize[1]"
+            <MachineInput gate="viewerSetting" type="number" class="numInput" v-model.number="localSize[1]"
               @change="commitSize(1)" :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Size Z</label>
-            <input type="number" class="numInput" v-model.number="localSize[2]"
+            <MachineInput gate="viewerSetting" type="number" class="numInput" v-model.number="localSize[2]"
               @change="commitSize(2)" :step="STEP_DEFAULT" min="0" max="9999" />
           </div>
           <div class="sep"></div>
           <div class="inputRow">
             <label class="inputLabel">Offset X</label>
-            <input type="number" class="numInput" v-model.number="localOffset[0]"
+            <MachineInput gate="viewerSetting" type="number" class="numInput" v-model.number="localOffset[0]"
               @change="commitOffset(0)" :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Offset Y</label>
-            <input type="number" class="numInput" v-model.number="localOffset[1]"
+            <MachineInput gate="viewerSetting" type="number" class="numInput" v-model.number="localOffset[1]"
               @change="commitOffset(1)" :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
           <div class="inputRow">
             <label class="inputLabel">Offset Z</label>
-            <input type="number" class="numInput" v-model.number="localOffset[2]"
+            <MachineInput gate="viewerSetting" type="number" class="numInput" v-model.number="localOffset[2]"
               @change="commitOffset(2)" :step="STEP_DEFAULT" min="-9999" max="9999" />
           </div>
         </div>
       </div>
 
-    </Gate>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { reactive, ref, watch } from "vue";
 import Btn from "./Btn.vue";
-import Gate from "./Gate.vue";
-import { usePermissions } from "./permissions";
+import MachineInput from "./MachineInput.vue";
+import MachineRadio from "./MachineRadio.vue";
+import MachineToggle from "./MachineToggle.vue";
 import { loadViewerDefaults, settingsVersion, STEP_DEFAULT, type Vec3, type Layer, type TrackMode } from "./defaults";
-
-const can = usePermissions();
 
 type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
 
@@ -142,24 +141,41 @@ const emit = defineEmits<{
 
 const pathOnTop = ref(vd.pathOnTop);
 const isOrtho = ref(vd.projection === "parallel");
+const projectionModel = ref<string>(vd.projection === "parallel" ? "parallel" : "perspective");
 
-function toggleProjection() {
-  isOrtho.value = !isOrtho.value;
-  emit("toggleProjection");
-}
+// Emit pathOnTop changes (MachineToggle uses v-model, no @change)
+watch(pathOnTop, (val) => emit("setPathOnTop", val));
+
+// Sync projection when radio model changes (from user click)
+watch(projectionModel, (val) => {
+  const wantOrtho = val === "parallel";
+  if (wantOrtho !== isOrtho.value) {
+    isOrtho.value = wantOrtho;
+    emit("toggleProjection");
+  }
+});
 
 const trackMode = ref<TrackMode>(vd.trackingMode);
 
-function setTrack(mode: TrackMode) {
-  trackMode.value = mode;
-  emit("setTrackMode", mode);
-}
+// Emit trackMode changes (MachineRadio uses v-model, no @change)
+watch(trackMode, (val) => emit("setTrackMode", val));
 
 const local = reactive<Record<Layer, boolean>>({ ...vd.layers });
+const _prevLocal = { ...vd.layers };
 
 function emitToggle(layer: Layer) {
   emit("toggleLayer", layer, local[layer]);
 }
+
+// Watch for layer toggle changes (MachineToggle uses v-model, no @change)
+watch(local, () => {
+  for (const key of Object.keys(local) as Layer[]) {
+    if (local[key] !== _prevLocal[key]) {
+      _prevLocal[key] = local[key];
+      emitToggle(key);
+    }
+  }
+});
 
 // Re-sync local state when server settings change (multi-client or page refresh)
 watch(settingsVersion, () => {
@@ -167,6 +183,7 @@ watch(settingsVersion, () => {
   Object.assign(local, fresh.layers);
   pathOnTop.value = fresh.pathOnTop;
   isOrtho.value = fresh.projection === "parallel";
+  projectionModel.value = fresh.projection === "parallel" ? "parallel" : "perspective";
   trackMode.value = fresh.trackingMode;
 });
 
