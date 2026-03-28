@@ -8,6 +8,9 @@ export interface ButtonDef {
   gate: ControlGate;
   variant: 'default' | 'primary' | 'ok' | 'danger' | 'estop';
   size: 'xs' | 'sm' | 'md' | 'lg';
+  icon?: boolean;
+  muted?: boolean;
+  inline?: boolean;
 }
 
 export const BUTTON_TYPES = {
@@ -64,6 +67,18 @@ export const BUTTON_TYPES = {
 
   // Shutdown
   shutdown:       { gate: 'abort',    variant: 'danger',  size: 'md' },
+
+  // ── UI buttons (gate: always — no permission, styling only) ──
+  close:          { gate: 'always',  variant: 'default', size: 'md',  icon: true },
+  tab:            { gate: 'always',  variant: 'default', size: 'sm',  muted: true },
+  viewPreset:     { gate: 'always',  variant: 'default', size: 'sm' },
+  overlayToggle:  { gate: 'always',  variant: 'default', size: 'xs' },
+  dialogCancel:   { gate: 'always',  variant: 'default', size: 'md' },
+  dialogConfirm:  { gate: 'always',  variant: 'primary', size: 'md' },
+  dialogDanger:   { gate: 'always',  variant: 'danger',  size: 'md' },
+  listAction:     { gate: 'always',  variant: 'default', size: 'md',  icon: true },
+  inline:         { gate: 'always',  variant: 'default', size: 'sm' },
+  headerIcon:     { gate: 'always',  variant: 'default', size: 'md',  icon: true },
 } as const satisfies Record<string, ButtonDef>;
 
 export type ButtonType = keyof typeof BUTTON_TYPES;
