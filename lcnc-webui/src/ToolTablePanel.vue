@@ -425,23 +425,20 @@ defineExpose({ openAdd, fetchTools, triggerImport });
     </div>
 
     <!-- Delete confirm dialog -->
-    <Teleport to="body">
       <div v-if="deletingTool != null" class="dialogOverlay" @click.self="cancelDelete">
         <div class="dialog">
           <div class="dialogTitle danger">Delete Tool</div>
           <div class="dialogBody">
             Remove tool <strong>T{{ deletingTool }}</strong> from the tool table?
           </div>
-          <div class="dialogActions">
+          <Gate :allow="can.idle" class="dialogActions">
             <Btn @click="cancelDelete">Cancel</Btn>
             <Btn variant="danger" @click="confirmDelete">Delete</Btn>
-          </div>
+          </Gate>
         </div>
       </div>
-    </Teleport>
 
     <!-- Edit / Add modal -->
-    <Teleport to="body">
       <div v-if="editTool" class="dialogOverlay" @click.self="cancelEditModal">
         <div class="dialog lg editDialog">
           <!-- Header -->
@@ -525,16 +522,14 @@ defineExpose({ openAdd, fetchTools, triggerImport });
           </div>
 
           <!-- Footer -->
-          <div class="editFooter">
+          <Gate :allow="can.idle" class="editFooter">
             <Btn @click="cancelEditModal">Cancel</Btn>
             <Btn variant="primary" @click="saveEdit">{{ isNewTool ? "Add" : "Save" }}</Btn>
-          </div>
+          </Gate>
         </div>
       </div>
-    </Teleport>
 
     <!-- Import preview dialog -->
-    <Teleport to="body">
       <div v-if="importPreview" class="dialogOverlay" @click.self="cancelImport">
         <div class="dialog importDialog">
           <div class="dialogTitle">Import Tool Library</div>
@@ -555,15 +550,14 @@ defineExpose({ openAdd, fetchTools, triggerImport });
               </div>
             </div>
           </div>
-          <div class="dialogActions">
+          <Gate :allow="can.idle" class="dialogActions">
             <Btn @click="cancelImport">Cancel</Btn>
             <Btn variant="primary" @click="confirmImport" :disabled="importBusy">
               {{ importBusy ? 'Importing...' : 'Import' }}
             </Btn>
-          </div>
+          </Gate>
         </div>
       </div>
-    </Teleport>
 
     <!-- Table -->
     <div class="tableWrap dataTable scroll-thin">

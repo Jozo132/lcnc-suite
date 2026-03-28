@@ -250,10 +250,6 @@ const currentLine = computed<number | null>(() => {
 const canEstop = computed(() => !isEstop.value);
 const canResetEstop = computed(() => armed.value && isEstop.value);
 
-const canMachineOn = computed(
-  () => armed.value && !isEstop.value && !isEnabled.value
-);
-const canMachineOff = computed(() => armed.value && isEnabled.value);
 
 /** Centralized permissions — single source of truth for all button enable/disable.
  *  Memoized: returns the same object reference when values haven't changed,
@@ -1276,14 +1272,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     <header class="hdr">
       <div class="title">LinuxCNC WebUI ({{ connLabel }})</div>
 
-      <Gate :allow="connected">
-        <template #exempt>
-          <Btn icon :title="isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'" @click="toggleFullscreen">
-            <Shrink v-if="isFullscreen" :size="16" />
-            <Expand v-else :size="16" />
-          </Btn>
-        </template>
-        <div class="hdrRight">
+      <Gate :allow="permissions.abort" class="hdrRight">
           <div
             class="pill"
             :title="connectedClients.map(c => c.ip + (c.armed ? ' (armed)' : '')).join('\n')"
@@ -1316,37 +1305,29 @@ watch(isHomed, (nowHomed, wasHomed) => {
             <Gamepad2 :size="14" />
           </div>
 
-          <Btn icon class="hdrShutdown" title="Shut Down LinuxCNC" @click="showShutdownConfirm = true">
-            <PowerOff :size="16" />
-          </Btn>
-        </div>
+        <Btn icon :title="isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'" @click="toggleFullscreen">
+          <Shrink v-if="isFullscreen" :size="16" />
+          <Expand v-else :size="16" />
+        </Btn>
+        <Btn icon class="hdrShutdown" title="Shut Down LinuxCNC" @click="showShutdownConfirm = true">
+          <PowerOff :size="16" />
+        </Btn>
       </Gate>
     </header>
 
-    <Gate v-if="bannerLevel !== 'none'" :allow="true">
+    <div v-if="bannerLevel !== 'none'">
       <div class="statusBanner" :class="bannerLevel">
         {{ bannerText }}
         <Btn v-if="bannerLevel === 'refresh'" @click="reloadPage">Refresh</Btn>
       </div>
-    </Gate>
+    </div>
 
     <!-- Body: sidebar (safety+status) + main content -->
     <div class="bodyLayout">
 
     <!-- Machine Safety + Status -->
     <div class="topRow">
-    <Gate :allow="connected" class="card">
-      <template #exempt>
-        <Btn
-          size="lg" variant="estop" class="safetyBtn"
-          :flashing="isEstop"
-          @click="send({ cmd: isEstop ? 'estop_reset' : 'estop' })"
-          :disabled="!(isEstop ? canResetEstop : canEstop)"
-        >
-          <TriangleAlert class="safetyIcon" />
-          <span class="safetyLabel">{{ isEstop ? "Reset" : "E-Stop" }}</span>
-        </Btn>
-      </template>
+    <Gate :allow="permissions.always" class="card">
       <div class="sub">Machine Safety</div>
       <div class="btnrow">
         <Btn size="lg" :variant="armed ? 'ok' : 'default'" class="safetyBtn" @click="arm(!armed)" :disabled="busy" :title="armed ? 'Disarm' : 'Arm'" block>
@@ -1356,15 +1337,28 @@ watch(isHomed, (nowHomed, wasHomed) => {
         <div class="vsep"></div>
 
         <Btn
-          size="lg" :variant="isEnabled ? 'ok' : 'default'" class="safetyBtn"
-          @click="fire({ cmd: isEnabled ? 'machine_off' : 'machine_on' })"
-          :disabled="!(isEnabled ? canMachineOff : canMachineOn) || busy"
-          :title="isEnabled ? 'Machine Off' : 'Machine On'"
-          block
+          size="lg" variant="estop" class="safetyBtn"
+          :flashing="isEstop"
+          @click="send({ cmd: isEstop ? 'estop_reset' : 'estop' })"
+          :disabled="!(isEstop ? canResetEstop : canEstop)"
         >
-          <Power class="safetyIcon" />
+          <TriangleAlert class="safetyIcon" />
+          <span class="safetyLabel">{{ isEstop ? "Reset" : "E-Stop" }}</span>
         </Btn>
 
+        <div class="vsep"></div>
+
+        <Gate :allow="permissions.safety">
+          <Btn
+            size="lg" :variant="isEnabled ? 'ok' : 'default'" class="safetyBtn"
+            @click="fire({ cmd: isEnabled ? 'machine_off' : 'machine_on' })"
+            :disabled="busy"
+            :title="isEnabled ? 'Machine Off' : 'Machine On'"
+            block
+          >
+            <Power class="safetyIcon" />
+          </Btn>
+        </Gate>
       </div>
     </Gate>
 
@@ -1716,7 +1710,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     </div>
 
     <!-- Main content column -->
-    <div class="mainCol">
+    <Gate :allow="permissions.abort" class="mainCol">
 
     <!-- Dynamic tab panels (1–4) -->
     <div class="panels">
@@ -1871,16 +1865,16 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </TabPanel>
       </div>
 
-      <Gate v-if="panels.length < MAX_PANELS" :allow="true">
+      <div v-if="panels.length < MAX_PANELS">
         <button
           class="addPanel"
           @click="addPanel"
         >+</button>
-      </Gate>
+      </div>
     </div>
 
 
-    </div><!-- /mainCol -->
+    </Gate><!-- /mainCol -->
     </div><!-- /bodyLayout -->
 
     <!-- Tool table dialog -->
@@ -1892,11 +1886,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </div>
         <div class="toolDialogActions">
           <Gate :allow="permissions.ready">
-            <template #exempt>
-              <div class="toolActions">
-                <Btn variant="danger" :disabled="!permissions.abort" @click="fire({ cmd: 'abort' })">Abort</Btn>
-              </div>
-            </template>
             <div class="toolInputRow">
               <span class="toolFieldLabel">Tool #</span>
               <input
@@ -1913,6 +1902,11 @@ watch(isHomed, (nowHomed, wasHomed) => {
               <Btn variant="ok" :disabled="!!st.probing" @click="measureAuto">Measure</Btn>
               <Btn variant="primary" :disabled="!!st.probing" @click="loadTool">Load</Btn>
               <Btn :disabled="!!st.probing || st.tool_number === 0" @click="unloadTool">Unload</Btn>
+            </div>
+          </Gate>
+          <Gate :allow="permissions.abort">
+            <div class="toolActions">
+              <Btn variant="danger" @click="fire({ cmd: 'abort' })">Abort</Btn>
             </div>
           </Gate>
           <Gate :allow="permissions.idle">
@@ -1974,16 +1968,13 @@ watch(isHomed, (nowHomed, wasHomed) => {
             Remove tool and press Confirm
           </template>
         </div>
-        <div class="dialogActions">
+        <Gate :allow="permissions.abort" class="dialogActions">
           <Btn variant="danger" @click="send({ cmd: 'abort' })">Cancel</Btn>
-          <Btn variant="primary" :disabled="!armed" @click="confirmToolChange">
-            Confirm
-          </Btn>
-        </div>
+          <Btn variant="primary" @click="confirmToolChange">Confirm</Btn>
+        </Gate>
       </div>
     </div>
 
-    <Teleport to="body">
     <div v-if="macroParamDialog" class="dialogOverlay" @click.self="macroParamDialog = null">
       <div class="dialog">
         <div class="dialogTitle">{{ macroParamDialog.macro.name }}</div>
@@ -2000,22 +1991,21 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
           <code class="macroPreview">{{ macroPreview() }}</code>
         </div>
-        <div class="dialogActions">
+        <Gate :allow="permissions.ready" class="dialogActions">
           <Btn @click="macroParamDialog = null">Cancel</Btn>
-          <Btn variant="primary" :disabled="!permissions.ready" @click="confirmMacroParams">Execute</Btn>
-        </div>
+          <Btn variant="primary" @click="confirmMacroParams">Execute</Btn>
+        </Gate>
       </div>
     </div>
-    </Teleport>
 
     <div v-if="showShutdownConfirm" class="dialogOverlay safetyDialog">
       <div class="dialog">
         <div class="dialogTitle danger">Shut Down LinuxCNC?</div>
         <div class="dialogBody">This will stop all motion and exit LinuxCNC.</div>
-        <div class="dialogActions">
+        <Gate :allow="permissions.abort" class="dialogActions">
           <Btn @click="showShutdownConfirm = false">Cancel</Btn>
-          <Btn variant="danger" :disabled="!connected" @click="send({ cmd: 'shutdown' }); showShutdownConfirm = false">Shut Down</Btn>
-        </div>
+          <Btn variant="danger" @click="send({ cmd: 'shutdown' }); showShutdownConfirm = false">Shut Down</Btn>
+        </Gate>
       </div>
     </div>
 
@@ -2033,10 +2023,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
             Ensure tool is clear of the workpiece.
           </template>
         </div>
-        <div class="dialogActions">
+        <Gate :allow="permissions.ready" class="dialogActions">
           <Btn variant="danger" @click="cancelCompToggle">Cancel</Btn>
-          <Btn variant="primary" :disabled="!permissions.ready" @click="confirmCompToggle">Confirm</Btn>
-        </div>
+          <Btn variant="primary" @click="confirmCompToggle">Confirm</Btn>
+        </Gate>
       </div>
     </div>
 
@@ -2187,7 +2177,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
   width: 150px;
   gap: var(--gap-section);
   position: relative;
-  z-index: 1001;  /* above dialog overlays (z-index: 1000) so safety buttons stay accessible */
+  z-index: 1020;  /* above ALL dialogs including safetyDialog (1010) — E-Stop/Arm must never be blocked */
 }
 
 .topRow > .card {

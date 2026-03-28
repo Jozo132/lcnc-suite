@@ -1409,18 +1409,16 @@ const halStats = computed(() => ({
       </template>
     </TabPanel>
 
-    <Teleport to="body">
       <div v-if="resetTarget" class="dialogOverlay" @click.self="resetTarget = null">
         <div class="dialog">
           <div class="dialogTitle danger">Reset {{ resetLabels[resetTarget] }}</div>
           <div class="dialogBody">Restore {{ resetLabels[resetTarget] }} settings to defaults? This cannot be undone.</div>
-          <div class="dialogActions">
+          <Gate :allow="can.idle" class="dialogActions">
             <Btn @click="resetTarget = null">Cancel</Btn>
             <Btn variant="danger" @click="confirmReset">Reset</Btn>
-          </div>
+          </Gate>
         </div>
       </div>
-    </Teleport>
   </div>
 </template>
 

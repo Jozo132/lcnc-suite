@@ -450,7 +450,7 @@ async function saveEdit() {
         <span class="label">File:</span>
         <div class="fileName">{{ fileName }}</div>
         <span class="fileMeta" v-if="gcodeContent">{{ lineCount }} lines</span>
-        <Gate v-if="gcodeStats" :allow="true">
+        <div v-if="gcodeStats">
           <div class="statsAnchor">
           <Btn class="actionBtn" size="sm" @click.stop="showStats = !showStats">Stats</Btn>
           <div class="popover statsPopover" :class="{ open: showStats }" @click.stop>
@@ -521,7 +521,7 @@ async function saveEdit() {
             </div>
           </div>
           </div>
-        </Gate>
+        </div>
       </div>
     </div>
 
@@ -567,10 +567,10 @@ async function saveEdit() {
     </div>
 
     <!-- Error banner -->
-    <Gate v-if="uploadError" :allow="true" class="errorBanner">
+    <div v-if="uploadError" class="errorBanner">
         <span>{{ uploadError }}</span>
         <Btn icon @click="uploadError = null">&times;</Btn>
-    </Gate>
+    </div>
 
     <!-- File browser (collapsible) -->
     <Gate v-if="showBrowser" :allow="can.idle" class="fileBrowser">
@@ -689,11 +689,10 @@ async function saveEdit() {
           </div>
         </div>
 
-        <div class="dialogActions">
+        <Gate :allow="can.ready" class="dialogActions">
           <Btn @click="showRunDialog = false">Cancel</Btn>
-          <Btn variant="primary" @click="confirmRunFromLine"
-                  :disabled="!can.ready">Run from Line {{ selectedLine }}</Btn>
-        </div>
+          <Btn variant="primary" @click="confirmRunFromLine">Run from Line {{ selectedLine }}</Btn>
+        </Gate>
       </div>
     </div>
 

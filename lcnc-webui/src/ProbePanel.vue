@@ -532,7 +532,7 @@ function fmtR(key: string): string {
 <template>
   <div class="stack-sections probePanel scroll-thin">
     <!-- Sub-view tabs -->
-    <Gate :allow="true" class="row-tight viewTabs">
+    <div class="row-tight viewTabs">
         <Btn size="sm" muted :selected="probeView === 'outside'" @click="probeView = 'outside'">Outside</Btn>
         <Btn size="sm" muted :selected="probeView === 'inside'" @click="probeView = 'inside'">Inside</Btn>
         <Btn size="sm" muted :selected="probeView === 'boss'" @click="probeView = 'boss'">Boss/Pocket</Btn>
@@ -540,7 +540,7 @@ function fmtR(key: string): string {
         <Btn size="sm" muted :selected="probeView === 'angle'" @click="probeView = 'angle'">Angle</Btn>
         <Btn size="sm" muted :selected="probeView === 'surface'" @click="probeView = 'surface'">Surface</Btn>
         <Btn size="sm" muted :selected="probeView === 'cal'" @click="probeView = 'cal'">Calibrate</Btn>
-    </Gate>
+    </div>
 
     <!-- WCS selector -->
     <Gate :allow="can.ready">
@@ -1260,7 +1260,6 @@ function fmtR(key: string): string {
   </div>
 
   <!-- Surface map popout dialog -->
-  <Teleport to="body">
     <div v-if="mapDialogOpen" class="dialogOverlay" @click.self="mapDialogOpen = false">
       <div class="dialog lg dialog-full">
         <div class="dialogHeader">
@@ -1270,7 +1269,6 @@ function fmtR(key: string): string {
         <div ref="surfaceContainer" class="surface3d"></div>
       </div>
     </div>
-  </Teleport>
 </template>
 
 <style scoped>

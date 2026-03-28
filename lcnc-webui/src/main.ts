@@ -88,6 +88,16 @@ async function bootstrap() {
         }
       });
       observer.observe(document.body, { childList: true, subtree: true });
+
+      // Check for literal allow="true" Gates — only can.always is permitted
+      const checkFakeGates = () => {
+        for (const fs of document.querySelectorAll('fieldset')) {
+          if (fs.getAttribute('allow') === 'true') {
+            console.error('[Gate audit] Literal allow="true" fieldset found — use can.always instead:', fs);
+          }
+        }
+      };
+      setTimeout(checkFakeGates, 500);
     }, 0);
   }
 }

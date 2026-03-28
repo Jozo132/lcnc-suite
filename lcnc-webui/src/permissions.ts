@@ -34,6 +34,10 @@ export type Permissions = {
   probe: boolean;
   /** zero: idle + no eoffset (zeroing with comp active bakes offset into G5x) */
   zero: boolean;
+  /** safety: armed + estop cleared — for Machine On/Off (doesn't require enabled) */
+  safety: boolean;
+  /** always: unconditional — only for Arm and E-Stop */
+  always: boolean;
 };
 
 /** Evaluate all permission classes from machine state — single source of truth */
@@ -49,6 +53,8 @@ export function evaluatePermissions(s: MachineState): Permissions {
     abort:    base,
     probe:    base && s.isIdle && !s.busy && s.isHomed && !s.eoffsetEnabled,
     zero:     base && s.isIdle && !s.busy && !s.eoffsetEnabled,
+    safety:   s.armed && !s.isEstop,
+    always:   true,
   };
 }
 

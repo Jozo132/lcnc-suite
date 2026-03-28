@@ -2,7 +2,6 @@
 import { ref } from "vue";
 import { timingStats, resetTimingStats, getTimingCsv, send, status, lastReply, type TimingComponentStats } from "./lcncWs";
 import Btn from "./Btn.vue";
-import Gate from "./Gate.vue";
 
 const timingLogActive = ref(false);
 
@@ -52,11 +51,11 @@ const timingComponents: { key: keyof Omit<import("./lcncWs").TimingStats, "count
         </div>
       </div>
       <div v-else class="muted">Waiting for data…</div>
-      <Gate :allow="true" class="row" style="gap: var(--gap-controls); margin-top: var(--gap-section)">
+      <div class="row" style="gap: var(--gap-controls); margin-top: var(--gap-section)">
           <Btn @click="toggleTimingLog">{{ timingLogActive ? 'Stop Log' : 'Start Log' }}</Btn>
           <Btn @click="resetTimingStats">Reset</Btn>
           <Btn @click="downloadTimingCsv" :disabled="!timingStats">Download CSV</Btn>
-      </Gate>
+      </div>
     </div>
     <div class="section">
       <div class="sub">Last reply</div>
