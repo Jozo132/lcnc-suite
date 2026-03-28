@@ -13,6 +13,9 @@ import ProbePanel from "./ProbePanel.vue";
 import CameraViewer from "./CameraViewer.vue";
 import Btn from "./Btn.vue";
 import Gate from "./Gate.vue";
+import MachineBtn from "./MachineBtn.vue";
+import MachineInput from "./MachineInput.vue";
+import MachineSlider from "./MachineSlider.vue";
 import { LocateFixed, SlidersHorizontal, Gauge, MessageSquare, RotateCw, RotateCcw, Square, Droplets, Drill, CodeXml, Lock, LockOpen, TriangleAlert, Power, PowerOff, Gamepad2, BookOpen, ClipboardCopy, Expand, Shrink } from "lucide-vue-next";
 import GcodeReferenceDialog from "./GcodeReferenceDialog.vue";
 import { loadViewerDefaults, saveViewerDefaults, loadPanelsDefaults, savePanelsDefaults, MAX_PANELS, loadMachineDefaults, loadDisplayDefaults, saveDisplayDefaults, loadMacrosDefaults, loadGamepadDefaults, saveGamepadDefaults, loadKeyboardDefaults, saveKeyboardDefaults, settingsVersion, type ThemeMode, type MacroDef, type GamepadDefaults, type KeyboardDefaults, type KeyboardAction, type Layer, type TrackMode, type Projection, type Vec3, STEP_DEFAULT, STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE } from "./defaults";
@@ -1346,20 +1349,19 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </Btn>
         <div class="popover spindlePopover" :class="{ open: openChip === 'spindle' }" @click.stop>
           <div class="popHeader"><span class="popTitle">Spindle</span><Btn icon @click="openChip = null">&times;</Btn></div>
-          <Gate :allow="permissions.ready">
           <!-- Direction controls -->
           <div class="spDirRow">
-            <Btn
-              size="lg" class="spDirBtn"
+            <MachineBtn
+              type="spindleRev" class="spDirBtn"
               :active="isReverse"
               @click="spindleReverse(rpmInput)"
               title="Spindle Reverse (CCW)"
             >
               <RotateCcw :size="14" />
               <span class="label">Rev</span>
-            </Btn>
-            <Btn
-              size="lg" variant="danger" class="spDirBtn"
+            </MachineBtn>
+            <MachineBtn
+              type="spindleStop" class="spDirBtn"
               :active="isSpinning"
               :disabled="!isSpinning"
               @click="spindleStop()"
@@ -1367,22 +1369,23 @@ watch(isHomed, (nowHomed, wasHomed) => {
             >
               <Square :size="14" />
               <span class="label">Stop</span>
-            </Btn>
-            <Btn
-              size="lg" class="spDirBtn"
+            </MachineBtn>
+            <MachineBtn
+              type="spindleFwd" class="spDirBtn"
               :active="isForward"
               @click="spindleForward(rpmInput)"
               title="Spindle Forward (CW)"
             >
               <RotateCw :size="14" />
               <span class="label">Fwd</span>
-            </Btn>
+            </MachineBtn>
           </div>
 
           <!-- RPM input -->
           <div class="spRpmRow">
             <span class="spFieldLabel">Speed</span>
-            <input
+            <MachineInput
+              gate="rpmInput"
               type="number"
               class="spRpmInput"
               v-model.number="rpmInput"
@@ -1414,8 +1417,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
               <span class="spActualValue">{{ Math.round(spindleLoad) }} <span class="spUnit">%</span></span>
             </div>
           </div>
-
-          </Gate>
         </div>
         </div>
 
@@ -1431,24 +1432,24 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </Btn>
         <div class="popover coolantPopover" :class="{ open: openChip === 'coolant' }" @click.stop>
           <div class="popHeader"><span class="popTitle">Coolant</span><Btn icon @click="openChip = null">&times;</Btn></div>
-          <Gate :allow="permissions.ready">
           <div class="coolantRow">
             <span class="coolantLabel">Flood</span>
-            <Btn
+            <MachineBtn
+              type="flood"
               class="coolantToggle"
               :active="floodOn"
               @click="toggleFlood"
-            >{{ floodOn ? 'ON' : 'OFF' }}</Btn>
+            >{{ floodOn ? 'ON' : 'OFF' }}</MachineBtn>
           </div>
           <div class="coolantRow">
             <span class="coolantLabel">Mist</span>
-            <Btn
+            <MachineBtn
+              type="mist"
               class="coolantToggle"
               :active="mistOn"
               @click="toggleMist"
-            >{{ mistOn ? 'ON' : 'OFF' }}</Btn>
+            >{{ mistOn ? 'ON' : 'OFF' }}</MachineBtn>
           </div>
-          </Gate>
         </div>
         </div>
 
@@ -1478,14 +1479,14 @@ watch(isHomed, (nowHomed, wasHomed) => {
             No macros configured.<br>Add macros in Settings.
           </div>
           <template v-else>
-            <Btn
+            <MachineBtn
               v-for="m in userMacros"
               :key="m.id"
+              type="macro"
               class="macroBtn"
-              :disabled="!permissions.ready"
               @click="executeMacro(m)"
               block
-            >{{ m.name }}</Btn>
+            >{{ m.name }}</MachineBtn>
           </template>
         </div>
         </div>
@@ -1503,33 +1504,31 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </Btn>
         <div class="popover overridesPopover" :class="{ open: openChip === 'overrides' }" @click.stop>
           <div class="popHeader"><span class="popTitle">Overrides</span><Btn icon @click="openChip = null">&times;</Btn></div>
-          <Gate :allow="permissions.override">
           <div class="ovrRow">
             <span class="ovrLabel">Feed</span>
-            <input type="range" v-model.number="feedSlider" @change="onFeedChange" min="0" :max="maxFeedOverride" :step="STEP_OVERRIDE" :disabled="!feedOvrEnabled" />
+            <MachineSlider gate="feedOverride" v-model="feedSlider" @change="onFeedChange" :min="0" :max="maxFeedOverride" :step="STEP_OVERRIDE" :disabled="!feedOvrEnabled" />
             <span class="sliderVal" :class="{ warn: feedSlider !== 100 }">{{ feedSlider }}%</span>
           </div>
           <div class="ovrPresets">
-            <Btn v-for="p in [50, 100, 150, 200]" :key="'f'+p" size="xs" :disabled="!feedOvrEnabled" @click="setOverridePreset('feed', p)">{{ p }}%</Btn>
+            <MachineBtn v-for="p in [50, 100, 150, 200]" :key="'f'+p" type="overridePreset" :disabled="!feedOvrEnabled" @click="setOverridePreset('feed', p)">{{ p }}%</MachineBtn>
           </div>
           <div class="ovrRow">
             <span class="ovrLabel">Spindle</span>
-            <input type="range" v-model.number="spindleSlider" @change="onSpindleSliderChange" :min="minSpindleOverride" :max="maxSpindleOverride" :step="STEP_OVERRIDE" :disabled="!spindleOvrEnabled" />
+            <MachineSlider gate="spindleOverride" v-model="spindleSlider" @change="onSpindleSliderChange" :min="minSpindleOverride" :max="maxSpindleOverride" :step="STEP_OVERRIDE" :disabled="!spindleOvrEnabled" />
             <span class="sliderVal" :class="{ warn: spindleSlider !== 100 }">{{ spindleSlider }}%</span>
           </div>
           <div class="ovrPresets">
-            <Btn v-for="p in [50, 100, 150, 200]" :key="'s'+p" size="xs" :disabled="!spindleOvrEnabled" @click="setOverridePreset('spindle', p)">{{ p }}%</Btn>
+            <MachineBtn v-for="p in [50, 100, 150, 200]" :key="'s'+p" type="overridePreset" :disabled="!spindleOvrEnabled" @click="setOverridePreset('spindle', p)">{{ p }}%</MachineBtn>
           </div>
           <div class="ovrRow">
             <span class="ovrLabel">Rapid</span>
-            <input type="range" v-model.number="rapidSlider" @change="onRapidChange" min="25" max="100" :step="STEP_RAPID_OVERRIDE" />
+            <MachineSlider gate="rapidOverride" v-model="rapidSlider" @change="onRapidChange" :min="25" :max="100" :step="STEP_RAPID_OVERRIDE" />
             <span class="sliderVal" :class="{ warn: rapidSlider !== 100 }">{{ rapidSlider }}%</span>
           </div>
           <div class="ovrPresets">
-            <Btn v-for="p in [25, 50, 75, 100]" :key="'r'+p" size="xs" @click="setOverridePreset('rapid', p)">{{ p }}%</Btn>
+            <MachineBtn v-for="p in [25, 50, 75, 100]" :key="'r'+p" type="overridePreset" @click="setOverridePreset('rapid', p)">{{ p }}%</MachineBtn>
           </div>
-          <Btn size="sm" class="ovrResetBtn" @click="resetAllOverrides" block>Reset All</Btn>
-          </Gate>
+          <MachineBtn type="overrideReset" class="ovrResetBtn" @click="resetAllOverrides" block>Reset All</MachineBtn>
         </div>
         </div>
 
@@ -1546,7 +1545,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </Btn>
         <div class="popover offsetsPopover" :class="{ open: openChip === 'offsets' }" @click.stop>
           <div class="popHeader"><span class="popTitle">Work Offsets</span><Btn icon @click="openChip = null">&times;</Btn></div>
-          <Gate :allow="permissions.ready">
           <table class="offsetTable">
             <thead>
               <tr><th></th><th v-for="col in offsetColumns" :key="col">{{ col.toUpperCase() }}</th></tr>
@@ -1559,7 +1557,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
                 <td v-for="axis in offsetColumns" :key="axis"
                     :class="{ warn: axis === 'r' && row[axis] !== 0, editableCell: permissions.ready }"
                     @dblclick.stop="startEditCell(row.name, axis, Number(row[axis]) || 0)">
-                  <input v-if="editingCell?.wcs === row.name && editingCell?.axis === axis"
+                  <MachineInput v-if="editingCell?.wcs === row.name && editingCell?.axis === axis"
+                         gate="touchoff"
                          ref="offsetInputRef"
                          v-model="editValue"
                          type="number"
@@ -1586,10 +1585,9 @@ watch(isHomed, (nowHomed, wasHomed) => {
             </tbody>
           </table>
           <div class="offsetActions">
-            <Btn size="xs" :disabled="!selectedWcs" @click="clearWcs(selectedWcs!)">Clear {{ selectedWcs }}</Btn>
-            <Btn size="xs" @click="clearWcs('all')">Clear All</Btn>
+            <MachineBtn type="wcs" :disabled="!selectedWcs" @click="clearWcs(selectedWcs!)">Clear {{ selectedWcs }}</MachineBtn>
+            <MachineBtn type="wcs" @click="clearWcs('all')">Clear All</MachineBtn>
           </div>
-          </Gate>
         </div>
         </div>
 
@@ -1876,10 +1874,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
           <Btn icon @click="toolDialogOpen = false">&times;</Btn>
         </div>
         <div class="toolDialogActions">
-          <Gate :allow="permissions.ready">
             <div class="toolInputRow">
               <span class="toolFieldLabel">Tool #</span>
-              <input
+              <MachineInput
+                gate="toolEdit"
                 type="number"
                 class="toolNumInput"
                 v-model.number="toolNumber"
@@ -1890,23 +1888,18 @@ watch(isHomed, (nowHomed, wasHomed) => {
               />
             </div>
             <div class="toolActions">
-              <Btn variant="ok" :disabled="!!st.probing" @click="measureAuto">Measure</Btn>
-              <Btn variant="primary" :disabled="!!st.probing" @click="loadTool">Load</Btn>
-              <Btn :disabled="!!st.probing || st.tool_number === 0" @click="unloadTool">Unload</Btn>
+              <MachineBtn type="toolMeasure" :disabled="!!st.probing" @click="measureAuto">Measure</MachineBtn>
+              <MachineBtn type="toolLoad" :disabled="!!st.probing" @click="loadTool">Load</MachineBtn>
+              <MachineBtn type="toolUnload" :disabled="!!st.probing || st.tool_number === 0" @click="unloadTool">Unload</MachineBtn>
             </div>
-          </Gate>
-          <Gate :allow="permissions.abort">
             <div class="toolActions">
-              <Btn variant="danger" @click="fire({ cmd: 'abort' })">Abort</Btn>
+              <MachineBtn type="abort" @click="fire({ cmd: 'abort' })">Abort</MachineBtn>
             </div>
-          </Gate>
-          <Gate :allow="permissions.idle">
             <div class="toolActions">
-              <Btn @click="toolTableRef?.openAdd()">+ Add</Btn>
-              <Btn @click="toolTableRef?.triggerImport()">Import</Btn>
-              <Btn @click="toolTableRef?.fetchTools()">Refresh</Btn>
+              <MachineBtn type="manage" @click="toolTableRef?.openAdd()">+ Add</MachineBtn>
+              <MachineBtn type="manage" @click="toolTableRef?.triggerImport()">Import</MachineBtn>
+              <MachineBtn type="manage" @click="toolTableRef?.fetchTools()">Refresh</MachineBtn>
             </div>
-          </Gate>
           <div class="toolStatusRow">
             <span class="toolStatusDot" :class="probeStatusClass"></span>
             <span class="toolStatusText">{{ probeStatus }}</span>
