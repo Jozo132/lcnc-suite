@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { send } from "./lcncWs";
+import { INPUT_GATES } from "./machineControls";
+import { usePermissions } from "./permissions";
 
 type Direction = 'up' | 'down' | 'left' | 'right' | 'up-left' | 'up-right' | 'down-left' | 'down-right';
 
@@ -17,7 +19,8 @@ const props = defineProps<{
   dir2?: 1 | -1;         // direction for second axis
 }>();
 
-const isDisabled = computed(() => !!props.disabled || !Number.isFinite(props.vel) || props.vel <= 0);
+const can = usePermissions();
+const isDisabled = computed(() => !can.value[INPUT_GATES.jogAxis] || !!props.disabled || !Number.isFinite(props.vel) || props.vel <= 0);
 const isDiagonal = computed(() => props.axis2 != null && props.dir2 != null);
 
 // SVG polygon points for each direction
