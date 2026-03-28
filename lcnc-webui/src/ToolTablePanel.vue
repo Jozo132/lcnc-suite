@@ -4,7 +4,6 @@ import { send, lastReply, connected } from "./lcncWs";
 import { usePermissions } from "./permissions";
 import { loadMachineDefaults, STEP_DEFAULT, type ToolChangeMode } from "./defaults";
 import { Pencil, Trash2 } from "lucide-vue-next";
-import Btn from "./Btn.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import MachineSelect from "./MachineSelect.vue";
@@ -424,7 +423,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
     <!-- Import result banner -->
     <div v-if="importResult" class="importBanner">
       Imported {{ importResult.added }} tools (all Z offsets set to 0)
-      <Btn icon @click="importResult = null">&times;</Btn>
+      <MachineBtn type="close" @click="importResult = null">&times;</MachineBtn>
     </div>
 
     <!-- Delete confirm dialog -->
@@ -435,7 +434,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
             Remove tool <strong>T{{ deletingTool }}</strong> from the tool table?
           </div>
           <div class="dialogActions">
-            <Btn @click="cancelDelete">Cancel</Btn>
+            <MachineBtn type="dialogCancel" @click="cancelDelete">Cancel</MachineBtn>
             <MachineBtn type="reset" @click="confirmDelete">Delete</MachineBtn>
           </div>
         </div>
@@ -447,7 +446,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
           <!-- Header -->
           <div class="dialogHeader">
             <span class="dialogTitle">{{ isNewTool ? "Add Tool" : `Edit Tool T${editTool.T}` }}</span>
-            <Btn icon @click="cancelEditModal">&times;</Btn>
+            <MachineBtn type="close" @click="cancelEditModal">&times;</MachineBtn>
           </div>
 
           <!-- Body: two columns -->
@@ -526,7 +525,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
 
           <!-- Footer -->
           <div class="editFooter">
-            <Btn @click="cancelEditModal">Cancel</Btn>
+            <MachineBtn type="dialogCancel" @click="cancelEditModal">Cancel</MachineBtn>
             <MachineBtn type="fileSave" @click="saveEdit">{{ isNewTool ? "Add" : "Save" }}</MachineBtn>
           </div>
         </div>
@@ -554,7 +553,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
             </div>
           </div>
           <div class="dialogActions">
-            <Btn @click="cancelImport">Cancel</Btn>
+            <MachineBtn type="dialogCancel" @click="cancelImport">Cancel</MachineBtn>
             <MachineBtn type="fileSave" @click="confirmImport" :disabled="importBusy">
               {{ importBusy ? 'Importing...' : 'Import' }}
             </MachineBtn>

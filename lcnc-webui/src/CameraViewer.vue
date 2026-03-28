@@ -2,7 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { loadCameraDefaults, saveCameraDefaults, settingsVersion } from "./defaults";
 import { Crosshair, Circle, Grid3x3 } from "lucide-vue-next";
-import Btn from "./Btn.vue";
+import MachineBtn from "./MachineBtn.vue";
 import MachineSlider from "./MachineSlider.vue";
 import MachineColor from "./MachineColor.vue";
 
@@ -157,12 +157,12 @@ CAMERA_SOURCE = rtsp://&lt;host&gt;/live      # IP camera</pre>
 
       <!-- Floating toolbar -->
       <div class="cameraToolbar">
-          <Btn size="xs" :active="showCrosshair"
-                  @click="showCrosshair = !showCrosshair" title="Crosshair"><Crosshair :size="14" /></Btn>
-          <Btn size="xs" :active="showCircle"
-                  @click="showCircle = !showCircle" title="Circle"><Circle :size="14" /></Btn>
-          <Btn size="xs" :active="showGrid"
-                  @click="showGrid = !showGrid" title="Grid"><Grid3x3 :size="14" /></Btn>
+          <MachineBtn type="overlayToggle" :active="showCrosshair"
+                  @click="showCrosshair = !showCrosshair" title="Crosshair"><Crosshair :size="14" /></MachineBtn>
+          <MachineBtn type="overlayToggle" :active="showCircle"
+                  @click="showCircle = !showCircle" title="Circle"><Circle :size="14" /></MachineBtn>
+          <MachineBtn type="overlayToggle" :active="showGrid"
+                  @click="showGrid = !showGrid" title="Grid"><Grid3x3 :size="14" /></MachineBtn>
           <div class="camSliderGroup">
             <Circle :size="12" class="camSliderLabel" />
             <MachineSlider gate="cameraSetting" :min="10" :max="300" v-model="circleRadius" class="camSlider" />

@@ -2,7 +2,7 @@
 import { ref, computed, watch } from "vue";
 import { GCODE_REFERENCE, GCODE_GROUPS, type GcodeEntry } from "./gcodeReference";
 import { usePermissions } from "./permissions";
-import Btn from "./Btn.vue";
+import MachineBtn from "./MachineBtn.vue";
 import Gate from "./Gate.vue";
 
 const props = defineProps<{ open: boolean; initialSearch?: string }>();
@@ -50,7 +50,7 @@ function toggleSort(key: "code" | "name") {
     <div class="dialog lg dialog-full">
       <div class="dialogHeader">
         <span class="dialogTitle">G-code Reference</span>
-        <Btn icon @click="emit('close')">&times;</Btn>
+        <MachineBtn type="close" @click="emit('close')">&times;</MachineBtn>
       </div>
       <Gate :allow="can.idle" class="stack-controls refContent">
         <input

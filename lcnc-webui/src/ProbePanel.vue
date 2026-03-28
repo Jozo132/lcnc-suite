@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
-import Btn from "./Btn.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import MachineToggle from "./MachineToggle.vue";
@@ -539,13 +538,13 @@ function fmtR(key: string): string {
   <div class="stack-sections probePanel scroll-thin">
     <!-- Sub-view tabs -->
     <div class="row-tight viewTabs">
-        <Btn size="sm" muted :selected="probeView === 'outside'" @click="probeView = 'outside'">Outside</Btn>
-        <Btn size="sm" muted :selected="probeView === 'inside'" @click="probeView = 'inside'">Inside</Btn>
-        <Btn size="sm" muted :selected="probeView === 'boss'" @click="probeView = 'boss'">Boss/Pocket</Btn>
-        <Btn size="sm" muted :selected="probeView === 'ridge'" @click="probeView = 'ridge'">Ridge/Valley</Btn>
-        <Btn size="sm" muted :selected="probeView === 'angle'" @click="probeView = 'angle'">Angle</Btn>
-        <Btn size="sm" muted :selected="probeView === 'surface'" @click="probeView = 'surface'">Surface</Btn>
-        <Btn size="sm" muted :selected="probeView === 'cal'" @click="probeView = 'cal'">Calibrate</Btn>
+        <MachineBtn type="tab" :selected="probeView === 'outside'" @click="probeView = 'outside'">Outside</MachineBtn>
+        <MachineBtn type="tab" :selected="probeView === 'inside'" @click="probeView = 'inside'">Inside</MachineBtn>
+        <MachineBtn type="tab" :selected="probeView === 'boss'" @click="probeView = 'boss'">Boss/Pocket</MachineBtn>
+        <MachineBtn type="tab" :selected="probeView === 'ridge'" @click="probeView = 'ridge'">Ridge/Valley</MachineBtn>
+        <MachineBtn type="tab" :selected="probeView === 'angle'" @click="probeView = 'angle'">Angle</MachineBtn>
+        <MachineBtn type="tab" :selected="probeView === 'surface'" @click="probeView = 'surface'">Surface</MachineBtn>
+        <MachineBtn type="tab" :selected="probeView === 'cal'" @click="probeView = 'cal'">Calibrate</MachineBtn>
     </div>
 
     <!-- WCS selector -->
@@ -1243,7 +1242,7 @@ function fmtR(key: string): string {
       <div class="dialog lg dialog-full">
         <div class="dialogHeader">
           <span class="dialogTitle">Surface Compensation Map</span>
-          <Btn icon @click="mapDialogOpen = false">&times;</Btn>
+          <MachineBtn type="close" @click="mapDialogOpen = false">&times;</MachineBtn>
         </div>
         <div ref="surfaceContainer" class="surface3d"></div>
       </div>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import Btn from "./Btn.vue";
+import MachineBtn from "./MachineBtn.vue";
 const props = defineProps<{
   tabs: Array<{ id: string; label: string }>;
   modelValue: string;
@@ -17,19 +17,18 @@ const emit = defineEmits<{
   <div class="tab-panel">
     <div class="topBar">
         <div class="tabRow">
-          <Btn
+          <MachineBtn
             v-for="tab in tabs"
             :key="tab.id"
-            size="sm"
-            muted
+            type="tab"
             :selected="modelValue === tab.id"
             @click="emit('update:modelValue', tab.id)"
           >
             {{ tab.label }}
             <span v-if="badges?.[tab.id]" class="badge">{{ badges[tab.id]! > 99 ? '99+' : badges[tab.id] }}</span>
-          </Btn>
+          </MachineBtn>
         </div>
-        <Btn v-if="closable" icon @click="emit('close')">&times;</Btn>
+        <MachineBtn v-if="closable" type="close" @click="emit('close')">&times;</MachineBtn>
     </div>
 
     <div class="tab-content">

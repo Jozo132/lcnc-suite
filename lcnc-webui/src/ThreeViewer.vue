@@ -112,7 +112,7 @@ import { loadViewerDefaults, ALL_LAYERS, settingsVersion, type Vec3, type Layer 
 import JogHUD from "./JogHUD.vue";
 
 import SetupHUD from "./SetupHUD.vue";
-import Btn from "./Btn.vue";
+import MachineBtn from "./MachineBtn.vue";
 
 const isDark = inject<ComputedRef<boolean>>("isDark", computed(() => window.matchMedia("(prefers-color-scheme: dark)").matches));
 
@@ -2038,12 +2038,12 @@ defineExpose({
     <!-- HUD toggle buttons (top-left) -->
     <div class="hudOverlay">
       <div class="row-tight hudBtnRow">
-        <Btn size="sm" muted :selected="activeHudPanel === 'jog'" @click="toggleHud('jog')">Jog</Btn>
-        <Btn size="sm" muted :selected="activeHudPanel === 'setup'" @click="toggleHud('setup')">Quick Setup</Btn>
+        <MachineBtn type="tab" :selected="activeHudPanel === 'jog'" @click="toggleHud('jog')">Jog</MachineBtn>
+        <MachineBtn type="tab" :selected="activeHudPanel === 'setup'" @click="toggleHud('setup')">Quick Setup</MachineBtn>
       </div>
 
       <div v-show="activeHudPanel === 'jog'" class="hud-panel">
-        <div class="popHeader"><span class="popTitle">Jog</span><Btn icon @click="activeHudPanel = 'none'">&times;</Btn></div>
+        <div class="popHeader"><span class="popTitle">Jog</span><MachineBtn type="close" @click="activeHudPanel = 'none'">&times;</MachineBtn></div>
         <JogHUD
           :axes="props.axes"
           :jogVel="props.jogVel ?? 10"
@@ -2066,7 +2066,7 @@ defineExpose({
       </div>
 
       <div v-show="activeHudPanel === 'setup'" class="hud-panel">
-        <div class="popHeader"><span class="popTitle">Quick Setup</span><Btn icon @click="activeHudPanel = 'none'">&times;</Btn></div>
+        <div class="popHeader"><span class="popTitle">Quick Setup</span><MachineBtn type="close" @click="activeHudPanel = 'none'">&times;</MachineBtn></div>
         <SetupHUD
           :axes="props.axes"
           :homed="props.isHomed ?? false"

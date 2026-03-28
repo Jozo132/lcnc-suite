@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from "vue";
-import Btn from "./Btn.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import DroPanel from "./DroPanel.vue";
@@ -138,9 +137,9 @@ function onMdiKeydown(e: KeyboardEvent) {
   <div class="stack-sections manualPanel">
     <!-- Sub-view tabs -->
     <div class="row-tight viewTabs">
-        <Btn size="sm" muted :selected="manualView === 'dro'" @click="manualView = 'dro'">DRO</Btn>
-        <Btn size="sm" muted :selected="manualView === 'jogging'" @click="manualView = 'jogging'">Jog</Btn>
-        <Btn size="sm" muted :selected="manualView === 'mdi'" @click="manualView = 'mdi'">MDI</Btn>
+        <MachineBtn type="tab" :selected="manualView === 'dro'" @click="manualView = 'dro'">DRO</MachineBtn>
+        <MachineBtn type="tab" :selected="manualView === 'jogging'" @click="manualView = 'jogging'">Jog</MachineBtn>
+        <MachineBtn type="tab" :selected="manualView === 'mdi'" @click="manualView = 'mdi'">MDI</MachineBtn>
     </div>
 
     <!-- WCS selector -->
@@ -226,7 +225,7 @@ function onMdiKeydown(e: KeyboardEvent) {
       </div>
       <div class="mdiHistoryHeader">
         <span class="sub">History</span>
-        <Btn inline @click="clearHistory" :disabled="history.length === 0">Clear</Btn>
+        <MachineBtn type="inline" @click="clearHistory" :disabled="history.length === 0">Clear</MachineBtn>
       </div>
       <div class="mdiHistoryList scroll-thin">
         <button v-for="(cmd, i) in history" :key="i" class="mdiHistoryItem"
