@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, reactive, computed, inject, onMounted, onUnmounted, watch, type Ref, type ComputedRef } from "vue";
 import TabPanel from "./TabPanel.vue";
-import Btn from "./Btn.vue";
 import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
@@ -757,7 +756,7 @@ const halStats = computed(() => ({
                   @update:modelValue="onMachineColorChange(part.id, $event!)"
                 />
                 <span class="colorLabel">{{ formatPartLabel(part.id) }}</span>
-                <Btn v-if="machineColors[part.id]" icon @click="resetMachineColor(part.id)">&times;</Btn>
+                <MachineBtn v-if="machineColors[part.id]" type="close" @click="resetMachineColor(part.id)">&times;</MachineBtn>
               </div>
             </div>
             <MachineToggle gate="viewerSetting" v-model="machineEdgesOn" @update:modelValue="setMachineEdges(machineEdgesOn); save()" label="Edge outline" />
@@ -870,7 +869,7 @@ const halStats = computed(() => ({
             </div>
             <div class="tsBtnRow" style="margin-top: var(--gap-controls);">
               <MachineBtn type="manage" @click="setG30">Set Current Position</MachineBtn>
-              <Btn size="sm" class="optBtn" @click="loadG30" :disabled="g30Loading">Refresh</Btn>
+              <MachineBtn type="inline" class="optBtn" @click="loadG30" :disabled="g30Loading">Refresh</MachineBtn>
             </div>
           </div>
 
@@ -1062,10 +1061,10 @@ const halStats = computed(() => ({
                   <code class="macroSettingsCmd">{{ m.command }}</code>
                 </div>
                 <div class="macroSettingsActions">
-                  <Btn icon :disabled="idx === 0" @click="moveMacro(idx, -1)" title="Move up"><ChevronUp :size="14" /></Btn>
-                  <Btn icon :disabled="idx === macros.length - 1" @click="moveMacro(idx, 1)" title="Move down"><ChevronDown :size="14" /></Btn>
-                  <Btn icon @click="editMacro(m)" title="Edit"><Pencil :size="14" /></Btn>
-                  <Btn icon @click="deleteMacro(m.id)" title="Delete"><Trash2 :size="14" /></Btn>
+                  <MachineBtn type="listAction" :disabled="idx === 0" @click="moveMacro(idx, -1)" title="Move up"><ChevronUp :size="14" /></MachineBtn>
+                  <MachineBtn type="listAction" :disabled="idx === macros.length - 1" @click="moveMacro(idx, 1)" title="Move down"><ChevronDown :size="14" /></MachineBtn>
+                  <MachineBtn type="listAction" @click="editMacro(m)" title="Edit"><Pencil :size="14" /></MachineBtn>
+                  <MachineBtn type="listAction" @click="deleteMacro(m.id)" title="Delete"><Trash2 :size="14" /></MachineBtn>
                 </div>
               </div>
             </div>
@@ -1095,8 +1094,8 @@ const halStats = computed(() => ({
                 </div>
               </div>
               <div class="macroEditActions">
-                <Btn @click="editingMacro = null">Cancel</Btn>
-                <Btn variant="primary" @click="saveMacro" :disabled="!editingMacro.name.trim() || !editingMacro.command.trim()">Save</Btn>
+                <MachineBtn type="dialogCancel" @click="editingMacro = null">Cancel</MachineBtn>
+                <MachineBtn type="dialogConfirm" @click="saveMacro" :disabled="!editingMacro.name.trim() || !editingMacro.command.trim()">Save</MachineBtn>
               </div>
             </div>
 
@@ -1218,7 +1217,7 @@ const halStats = computed(() => ({
                         {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
                       </td>
                       <td class="kbUnbind">
-                        <Btn icon v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</Btn>
+                        <MachineBtn type="close" v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</MachineBtn>
                       </td>
                     </tr>
                     <template v-if="hasRotaryAxes">
@@ -1230,7 +1229,7 @@ const halStats = computed(() => ({
                         {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
                       </td>
                       <td class="kbUnbind">
-                        <Btn icon v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</Btn>
+                        <MachineBtn type="close" v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</MachineBtn>
                       </td>
                     </tr>
                     </template>
@@ -1243,7 +1242,7 @@ const halStats = computed(() => ({
                         {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
                       </td>
                       <td class="kbUnbind">
-                        <Btn icon v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</Btn>
+                        <MachineBtn type="close" v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</MachineBtn>
                       </td>
                     </tr>
                   </tbody>
@@ -1263,31 +1262,31 @@ const halStats = computed(() => ({
           <!-- Header: section toggles + search + refresh (pinned) -->
           <div class="halHeader">
             <div class="btnGroup">
-              <Btn size="sm" :selected="halSection === 'pins'" class="optBtn"
+              <MachineBtn type="inline" :selected="halSection === 'pins'" class="optBtn"
                       @click="halSection = 'pins'">
                 Pins <span class="halCount" v-if="halStats.pins">({{ halStats.pins }})</span>
-              </Btn>
-              <Btn size="sm" :selected="halSection === 'signals'" class="optBtn"
+              </MachineBtn>
+              <MachineBtn type="inline" :selected="halSection === 'signals'" class="optBtn"
                       @click="halSection = 'signals'">
                 Signals <span class="halCount" v-if="halStats.signals">({{ halStats.signals }})</span>
-              </Btn>
-              <Btn size="sm" :selected="halSection === 'params'" class="optBtn"
+              </MachineBtn>
+              <MachineBtn type="inline" :selected="halSection === 'params'" class="optBtn"
                       @click="halSection = 'params'">
                 Params <span class="halCount" v-if="halStats.params">({{ halStats.params }})</span>
-              </Btn>
+              </MachineBtn>
             </div>
             <div class="halActions">
               <input type="text" class="halSearchInput" v-model="halSearch" placeholder="Search..." />
-              <Btn size="sm" class="optBtn" @click="refreshHal" :disabled="halLoading">
+              <MachineBtn type="inline" class="optBtn" @click="refreshHal" :disabled="halLoading">
                 {{ halLoading ? '...' : 'Refresh' }}
-              </Btn>
+              </MachineBtn>
             </div>
           </div>
 
           <!-- Tree controls (pinned) -->
           <div v-if="!halSearch.trim() && ((halSection === 'pins' && halPins.length > 0) || (halSection === 'params' && halParams.length > 0))" class="halTreeControls">
-            <Btn size="sm" class="optBtn" @click="expandAllHal">+ all</Btn>
-            <Btn size="sm" class="optBtn" @click="collapseAllHal">- all</Btn>
+            <MachineBtn type="inline" class="optBtn" @click="expandAllHal">+ all</MachineBtn>
+            <MachineBtn type="inline" class="optBtn" @click="collapseAllHal">- all</MachineBtn>
             <span class="halFilterInfo" v-if="halSection === 'pins' && filteredPins.length !== halPins.length">
               {{ filteredPins.length }} / {{ halPins.length }}
             </span>
@@ -1308,11 +1307,11 @@ const halStats = computed(() => ({
             <!-- Tree view -->
             <template v-if="!halSearch.trim()">
               <div v-for="[group, pins] of pinGroups" :key="group" class="halGroup">
-                <Btn class="halGroupHeader" @click="toggleHalGroup(group)">
+                <MachineBtn type="inline" class="halGroupHeader" @click="toggleHalGroup(group)">
                   <span class="halChevron">{{ halExpanded.has(group) ? '\u25BC' : '\u25B6' }}</span>
                   <span class="halGroupName">{{ group }}</span>
                   <span class="halGroupCount">({{ pins.length }})</span>
-                </Btn>
+                </MachineBtn>
                 <div v-if="halExpanded.has(group)" class="halGroupBody">
                   <div class="halRow" v-for="pin in pins" :key="pin.name">
                     <span class="halName" :title="pin.name">{{ pin.name }}</span>
@@ -1359,11 +1358,11 @@ const halStats = computed(() => ({
           <div v-if="halSection === 'params' && halParams.length > 0">
             <template v-if="!halSearch.trim()">
               <div v-for="[group, params] of paramGroups" :key="group" class="halGroup">
-                <Btn class="halGroupHeader" @click="toggleHalGroup(group)">
+                <MachineBtn type="inline" class="halGroupHeader" @click="toggleHalGroup(group)">
                   <span class="halChevron">{{ halExpanded.has(group) ? '\u25BC' : '\u25B6' }}</span>
                   <span class="halGroupName">{{ group }}</span>
                   <span class="halGroupCount">({{ params.length }})</span>
-                </Btn>
+                </MachineBtn>
                 <div v-if="halExpanded.has(group)" class="halGroupBody">
                   <div class="halRow" v-for="param in params" :key="param.name">
                     <span class="halName" :title="param.name">{{ param.name }}</span>
@@ -1399,8 +1398,8 @@ const halStats = computed(() => ({
           <div class="dialogTitle danger">Reset {{ resetLabels[resetTarget] }}</div>
           <div class="dialogBody">Restore {{ resetLabels[resetTarget] }} settings to defaults? This cannot be undone.</div>
           <Gate :allow="can.idle" class="dialogActions">
-            <Btn @click="resetTarget = null">Cancel</Btn>
-            <Btn variant="danger" @click="confirmReset">Reset</Btn>
+            <MachineBtn type="dialogCancel" @click="resetTarget = null">Cancel</MachineBtn>
+            <MachineBtn type="dialogDanger" @click="confirmReset">Reset</MachineBtn>
           </Gate>
         </div>
       </div>
