@@ -9,18 +9,18 @@
 
       <!-- Views pill -->
       <div class="toolPill">
-        <Btn size="sm" muted :selected="openPill === 'views'" @click.stop="togglePill('views')">Views</Btn>
+        <MachineBtn type="tab" :selected="openPill === 'views'" @click.stop="togglePill('views')">Views</MachineBtn>
         <div class="popover pillPopover" :class="{ open: openPill === 'views' }" @click.stop>
-          <div class="popHeader"><span class="popTitle">Views</span><Btn icon @click="openPill = null">&times;</Btn></div>
+          <div class="popHeader"><span class="popTitle">Views</span><MachineBtn type="close" @click="openPill = null">&times;</MachineBtn></div>
           <div class="viewGrid">
-            <Btn size="sm" @click="$emit('setView', 'top')">Top</Btn>
-            <Btn size="sm" @click="$emit('setView', 'bottom')">Bottom</Btn>
-            <Btn size="sm" @click="$emit('setView', 'front')">Front</Btn>
-            <Btn size="sm" @click="$emit('setView', 'back')">Back</Btn>
-            <Btn size="sm" @click="$emit('setView', 'left')">Left</Btn>
-            <Btn size="sm" @click="$emit('setView', 'right')">Right</Btn>
-            <Btn size="sm" class="wide" @click="$emit('setView', 'dimetric')">Dimetric</Btn>
-            <Btn size="sm" class="wide" @click="$emit('setView', 'reset')">Reset</Btn>
+            <MachineBtn type="viewPreset" @click="$emit('setView', 'top')">Top</MachineBtn>
+            <MachineBtn type="viewPreset" @click="$emit('setView', 'bottom')">Bottom</MachineBtn>
+            <MachineBtn type="viewPreset" @click="$emit('setView', 'front')">Front</MachineBtn>
+            <MachineBtn type="viewPreset" @click="$emit('setView', 'back')">Back</MachineBtn>
+            <MachineBtn type="viewPreset" @click="$emit('setView', 'left')">Left</MachineBtn>
+            <MachineBtn type="viewPreset" @click="$emit('setView', 'right')">Right</MachineBtn>
+            <MachineBtn type="viewPreset" class="wide" @click="$emit('setView', 'dimetric')">Dimetric</MachineBtn>
+            <MachineBtn type="viewPreset" class="wide" @click="$emit('setView', 'reset')">Reset</MachineBtn>
           </div>
           <div class="sep"></div>
           <div class="radioGroup inline">
@@ -32,9 +32,9 @@
 
       <!-- Layers pill -->
       <div class="toolPill">
-        <Btn size="sm" muted :selected="openPill === 'layers'" @click.stop="togglePill('layers')">Layers</Btn>
+        <MachineBtn type="tab" :selected="openPill === 'layers'" @click.stop="togglePill('layers')">Layers</MachineBtn>
         <div class="popover pillPopover" :class="{ open: openPill === 'layers' }" @click.stop>
-          <div class="popHeader"><span class="popTitle">Layers</span><Btn icon @click="openPill = null">&times;</Btn></div>
+          <div class="popHeader"><span class="popTitle">Layers</span><MachineBtn type="close" @click="openPill = null">&times;</MachineBtn></div>
           <MachineToggle gate="viewerSetting" v-model="local.backplot" label="Backplot" />
           <MachineToggle gate="viewerSetting" v-model="local.toolpath" label="Toolpath" />
           <MachineToggle gate="viewerSetting" v-model="local.machine" label="Machine" />
@@ -48,10 +48,10 @@
 
       <!-- Toolpath pill -->
       <div class="toolPill">
-        <Btn size="sm" muted :selected="openPill === 'toolpath'" @click.stop="togglePill('toolpath')">Toolpath</Btn>
+        <MachineBtn type="tab" :selected="openPill === 'toolpath'" @click.stop="togglePill('toolpath')">Toolpath</MachineBtn>
         <div class="popover pillPopover" :class="{ open: openPill === 'toolpath' }" @click.stop>
-          <div class="popHeader"><span class="popTitle">Toolpath</span><Btn icon @click="openPill = null">&times;</Btn></div>
-          <Btn size="sm" @click="$emit('resetBackplot')">Clear Backplot</Btn>
+          <div class="popHeader"><span class="popTitle">Toolpath</span><MachineBtn type="close" @click="openPill = null">&times;</MachineBtn></div>
+          <MachineBtn type="viewPreset" @click="$emit('resetBackplot')">Clear Backplot</MachineBtn>
           <div class="sep"></div>
           <MachineToggle gate="viewerSetting" v-model="pathOnTop" label="Always on top" />
         </div>
@@ -59,9 +59,9 @@
 
       <!-- Tracking pill -->
       <div class="toolPill">
-        <Btn size="sm" muted :selected="openPill === 'tracking'" @click.stop="togglePill('tracking')">Tracking</Btn>
+        <MachineBtn type="tab" :selected="openPill === 'tracking'" @click.stop="togglePill('tracking')">Tracking</MachineBtn>
         <div class="popover pillPopover" :class="{ open: openPill === 'tracking' }" @click.stop>
-          <div class="popHeader"><span class="popTitle">Tracking</span><Btn icon @click="openPill = null">&times;</Btn></div>
+          <div class="popHeader"><span class="popTitle">Tracking</span><MachineBtn type="close" @click="openPill = null">&times;</MachineBtn></div>
           <label><MachineRadio gate="viewerSetting" name="tracking" value="none" v-model="trackMode" /> None</label>
           <label><MachineRadio gate="viewerSetting" name="tracking" value="tool" v-model="trackMode" /> Tool</label>
           <label><MachineRadio gate="viewerSetting" name="tracking" value="workpiece" v-model="trackMode" /> Workpiece</label>
@@ -70,9 +70,9 @@
 
       <!-- Workpiece pill -->
       <div class="toolPill">
-        <Btn size="sm" muted :selected="openPill === 'workpiece'" @click.stop="togglePill('workpiece')">Workpiece</Btn>
+        <MachineBtn type="tab" :selected="openPill === 'workpiece'" @click.stop="togglePill('workpiece')">Workpiece</MachineBtn>
         <div class="popover pillPopover wpPopover" :class="{ open: openPill === 'workpiece' }" @click.stop>
-          <div class="popHeader"><span class="popTitle">Workpiece</span><Btn icon @click="openPill = null">&times;</Btn></div>
+          <div class="popHeader"><span class="popTitle">Workpiece</span><MachineBtn type="close" @click="openPill = null">&times;</MachineBtn></div>
           <div class="inputRow">
             <label class="inputLabel">Size X</label>
             <MachineInput gate="viewerSetting" type="number" class="numInput" v-model.number="localSize[0]"
@@ -113,7 +113,7 @@
 
 <script setup lang="ts">
 import { reactive, ref, watch } from "vue";
-import Btn from "./Btn.vue";
+import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import MachineRadio from "./MachineRadio.vue";
 import MachineToggle from "./MachineToggle.vue";
