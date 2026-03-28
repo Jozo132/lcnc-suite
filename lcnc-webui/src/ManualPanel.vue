@@ -1,7 +1,8 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onMounted } from "vue";
 import Btn from "./Btn.vue";
-import Gate from "./Gate.vue";
+import MachineBtn from "./MachineBtn.vue";
+import MachineInput from "./MachineInput.vue";
 import DroPanel from "./DroPanel.vue";
 import JogPanel from "./JogPanel.vue";
 import { usePermissions } from "./permissions";
@@ -143,18 +144,16 @@ function onMdiKeydown(e: KeyboardEvent) {
     </div>
 
     <!-- WCS selector -->
-    <Gate :allow="can.ready">
-      <div class="row-tight g5xRow">
-        <Btn
-          v-for="g in g5xOptions"
-          :key="g"
-          size="sm"
-          muted
-          :selected="g === g5xLabel"
-          @click="emit('setG5x', g)"
-        >{{ g }}</Btn>
-      </div>
-    </Gate>
+    <div class="row-tight g5xRow">
+      <MachineBtn
+        v-for="g in g5xOptions"
+        :key="g"
+        type="wcs"
+        muted
+        :selected="g === g5xLabel"
+        @click="emit('setG5x', g)"
+      >{{ g }}</MachineBtn>
+    </div>
 
     <!-- ═══ DRO VIEW ═══ -->
     <div v-if="manualView === 'dro'" class="subView scroll-thin">
@@ -177,11 +176,11 @@ function onMdiKeydown(e: KeyboardEvent) {
         @unhomeAxis="emit('unhomeAxis', $event)"
       />
       <div class="sep"></div>
-      <Gate :allow="can.ready" class="gotoRow">
-          <Btn @click="emit('goToG30')">Go to G30</Btn>
-          <Btn @click="emit('goToHome')">Go to Home</Btn>
-          <Btn @click="emit('goToZero')">Go to Zero</Btn>
-      </Gate>
+      <div class="gotoRow">
+          <MachineBtn type="goTo" @click="emit('goToG30')">Go to G30</MachineBtn>
+          <MachineBtn type="goTo" @click="emit('goToHome')">Go to Home</MachineBtn>
+          <MachineBtn type="goTo" @click="emit('goToZero')">Go to Zero</MachineBtn>
+      </div>
     </div>
 
     <!-- ═══ JOGGING VIEW ═══ -->
@@ -208,9 +207,10 @@ function onMdiKeydown(e: KeyboardEvent) {
     </div>
 
     <!-- ═══ MDI VIEW ═══ -->
-    <Gate v-if="manualView === 'mdi'" :allow="can.ready" class="mdiSection">
+    <div v-if="manualView === 'mdi'" class="mdiSection">
       <div class="mdiRow">
-        <input
+        <MachineInput
+          gate="mdiText"
           ref="mdiInputRef"
           type="text"
           class="mdiInput"
@@ -220,9 +220,9 @@ function onMdiKeydown(e: KeyboardEvent) {
           @keydown="onMdiKeydown"
           placeholder="G-code command (↑↓ history)"
         />
-        <Btn inline @click="handleSend">
+        <MachineBtn type="mdi" inline @click="handleSend">
           Send
-        </Btn>
+        </MachineBtn>
       </div>
       <div class="mdiHistoryHeader">
         <span class="sub">History</span>
@@ -234,7 +234,7 @@ function onMdiKeydown(e: KeyboardEvent) {
              @click="emit('update:mdiText', cmd)">{{ cmd }}</button>
         <div v-if="history.length === 0" class="mdiHistoryEmpty">No history</div>
       </div>
-    </Gate>
+    </div>
   </div>
 </template>
 
