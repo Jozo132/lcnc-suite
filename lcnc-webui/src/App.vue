@@ -268,12 +268,8 @@ const permissions = computed(() => {
     hasFile: !!activeFile.value,
     eoffsetEnabled: !!st.value.eoffset_enabled,
   });
-  if (_prevPerms &&
-      _prevPerms.idle === next.idle && _prevPerms.jog === next.jog &&
-      _prevPerms.override === next.override && _prevPerms.ready === next.ready &&
-      _prevPerms.pause === next.pause && _prevPerms.resume === next.resume &&
-      _prevPerms.abort === next.abort && _prevPerms.probe === next.probe &&
-      _prevPerms.zero === next.zero) return _prevPerms;
+  const keys = Object.keys(next) as (keyof typeof next)[];
+  if (_prevPerms && keys.every(k => _prevPerms![k] === next[k])) return _prevPerms;
   _prevPerms = next;
   return next;
 });
@@ -1269,64 +1265,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
 <template>
   <div class="wrap">
-    <header class="hdr">
-      <div class="title">LinuxCNC WebUI ({{ connLabel }})</div>
+    <!-- ══ Sidebar — outside outer Gate, never disabled ══ -->
+    <div class="sidebar">
 
-      <Gate :allow="permissions.abort" class="hdrRight">
-          <div
-            class="pill"
-            :title="connectedClients.map(c => c.ip + (c.armed ? ' (armed)' : '')).join('\n')"
-          >
-            {{ connectedClients.length }} client{{ connectedClients.length !== 1 ? 's' : '' }}
-          </div>
-
-          <div class="pill" :class="connected ? 'ok' : 'bad'">
-            {{ connected ? "WS connected" : "WS disconnected" }}
-          </div>
-
-          <div v-if="connected && networkLatency != null" class="pill"
-               title="Network latency: WebSocket ping/pong transit time between browser and gateway">
-            Net {{ networkLatency }}ms
-          </div>
-          <div v-if="connected && latency != null" class="pill"
-               title="Round-trip latency: full cycle from browser → gateway status poll → browser, includes network + server processing">
-            Ping {{ latency }}ms
-          </div>
-
-          <div class="pill" :class="lcncError ? 'bad' : (configName ? 'ok' : '')">
-            {{ lcncLabel }}
-          </div>
-
-          <div class="pill" :class="armed ? 'armed' : 'disarmed'">
-            {{ armed ? "ARMED" : "DISARMED" }}
-          </div>
-
-          <div v-if="gamepad.gamepadConnected.value" class="pill ok" :title="gamepad.gamepadName.value">
-            <Gamepad2 :size="14" />
-          </div>
-
-        <Btn icon :title="isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'" @click="toggleFullscreen">
-          <Shrink v-if="isFullscreen" :size="16" />
-          <Expand v-else :size="16" />
-        </Btn>
-        <Btn icon class="hdrShutdown" title="Shut Down LinuxCNC" @click="showShutdownConfirm = true">
-          <PowerOff :size="16" />
-        </Btn>
-      </Gate>
-    </header>
-
-    <div v-if="bannerLevel !== 'none'">
-      <div class="statusBanner" :class="bannerLevel">
-        {{ bannerText }}
-        <Btn v-if="bannerLevel === 'refresh'" @click="reloadPage">Refresh</Btn>
-      </div>
-    </div>
-
-    <!-- Body: sidebar (safety+status) + main content -->
-    <div class="bodyLayout">
-
-    <!-- Machine Safety + Status -->
-    <div class="topRow">
+    <!-- Machine Safety — always accessible -->
     <Gate :allow="permissions.always" class="card">
       <div class="sub">Machine Safety</div>
       <div class="btnrow">
@@ -1707,10 +1649,63 @@ watch(isHomed, (nowHomed, wasHomed) => {
         </div>
       </Gate>
     </section>
-    </div>
+    </div><!-- /sidebar -->
 
-    <!-- Main content column -->
-    <Gate :allow="permissions.abort" class="mainCol">
+    <!-- ══ Outer Gate — covers everything except sidebar ══ -->
+    <Gate :allow="permissions.safety" class="mainArea">
+
+    <header class="hdr">
+      <div class="title">LinuxCNC WebUI ({{ connLabel }})</div>
+
+      <div class="hdrRight">
+          <div
+            class="pill"
+            :title="connectedClients.map(c => c.ip + (c.armed ? ' (armed)' : '')).join('\n')"
+          >
+            {{ connectedClients.length }} client{{ connectedClients.length !== 1 ? 's' : '' }}
+          </div>
+
+          <div class="pill" :class="connected ? 'ok' : 'bad'">
+            {{ connected ? "WS connected" : "WS disconnected" }}
+          </div>
+
+          <div v-if="connected && networkLatency != null" class="pill"
+               title="Network latency: WebSocket ping/pong transit time between browser and gateway">
+            Net {{ networkLatency }}ms
+          </div>
+          <div v-if="connected && latency != null" class="pill"
+               title="Round-trip latency: full cycle from browser → gateway status poll → browser, includes network + server processing">
+            Ping {{ latency }}ms
+          </div>
+
+          <div class="pill" :class="lcncError ? 'bad' : (configName ? 'ok' : '')">
+            {{ lcncLabel }}
+          </div>
+
+          <div class="pill" :class="armed ? 'armed' : 'disarmed'">
+            {{ armed ? "ARMED" : "DISARMED" }}
+          </div>
+
+          <div v-if="gamepad.gamepadConnected.value" class="pill ok" :title="gamepad.gamepadName.value">
+            <Gamepad2 :size="14" />
+          </div>
+
+        <Btn icon :title="isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'" @click="toggleFullscreen">
+          <Shrink v-if="isFullscreen" :size="16" />
+          <Expand v-else :size="16" />
+        </Btn>
+        <Btn icon class="hdrShutdown" title="Shut Down LinuxCNC" @click="showShutdownConfirm = true">
+          <PowerOff :size="16" />
+        </Btn>
+      </div>
+    </header>
+
+    <div v-if="bannerLevel !== 'none'">
+      <div class="statusBanner" :class="bannerLevel">
+        {{ bannerText }}
+        <Btn v-if="bannerLevel === 'refresh'" @click="reloadPage">Refresh</Btn>
+      </div>
+    </div>
 
     <!-- Dynamic tab panels (1–4) -->
     <div class="panels">
@@ -1871,11 +1866,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           @click="addPanel"
         >+</button>
       </div>
-    </div>
-
-
-    </Gate><!-- /mainCol -->
-    </div><!-- /bodyLayout -->
+    </div><!-- /panels -->
 
     <!-- Tool table dialog -->
     <div v-if="toolDialogOpen" class="dialogOverlay">
@@ -2030,18 +2021,38 @@ watch(isHomed, (nowHomed, wasHomed) => {
       </div>
     </div>
 
+    </Gate><!-- /outerGate -->
   </div>
 </template>
 
 <style scoped>
 .wrap {
-  --sidebar-total: 178px; /* 16px wrap padding + 150px sidebar + 12px gap */
+  --sidebar-w: 150px;
+  --sidebar-total: 178px; /* 16px wrap padding + sidebar + 12px gap */
   height: 100%;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   box-sizing: border-box;
   padding: 16px;
+  gap: var(--gap-section);
   font-family: var(--font-sans);
+}
+
+.sidebar {
+  width: var(--sidebar-w);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-section);
+  z-index: 1020;
+}
+
+.mainArea {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .hdr {
@@ -2095,6 +2106,8 @@ watch(isHomed, (nowHomed, wasHomed) => {
 /* ---- Shared panel styles (visual, no layout) ---- */
 .panels {
   display: flex;
+  flex: 1;
+  min-height: 0;
   gap: var(--gap-section);
   margin-bottom: var(--gap-section);
   overflow: hidden;
@@ -2155,47 +2168,23 @@ watch(isHomed, (nowHomed, wasHomed) => {
   background: color-mix(in oklab, var(--active-tool) 20%, var(--panel));
 }
 
-.bodyLayout {
-  display: flex;
-  flex: 1;
-  min-height: 0;
-  gap: var(--gap-section);
-}
-
-.mainCol {
-  flex: 1;
-  min-width: 0;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
-.topRow {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-  width: 150px;
-  gap: var(--gap-section);
-  position: relative;
-  z-index: 1020;  /* above ALL dialogs including safetyDialog (1010) — E-Stop/Arm must never be blocked */
-}
-
-.topRow > .card {
+.sidebar > .card {
   margin-bottom: 0;
 }
 
-.topRow .btnrow {
+.sidebar .btnrow {
   flex-direction: column;
+  align-items: stretch;
   gap: var(--gap-controls);
 }
 
-.topRow .safetyBtn {
+.sidebar .safetyBtn {
   width: 100%;
   padding: 8px 10px;
   min-width: 0;
 }
 
-.topRow .vsep {
+.sidebar .vsep {
   width: 100%;
   height: 1px;
   margin: 0;
