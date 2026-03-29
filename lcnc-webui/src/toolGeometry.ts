@@ -120,10 +120,30 @@ export function buildToolProfile(
       break;
     }
     case "tapered": {
+      // BTL/Fusion model: DC = max cutting diameter (at top of flutes).
+      // Taper narrows from DC/2 at fluteLen down to a small tip.
+      // TA = half-angle per side from axis, no multiplication.
+      // RE (cornerR) = ball radius at tip, centered on axis.
+      const taperRad = taperAngle * (Math.PI / 180);
+
       pts.push(V(0, 0));
-      if (tipR > 0.01) pts.push(V(tipR, 0));
-      else pts.push(V(0.1, 0));
-      pts.push(V(r, bodyLen), V(r, fluteLen));
+      if (cornerR > 0.01) {
+        // Ball tip: center at (0, RE) on axis.
+        // Arc from (0, 0) sweeping to tangent point with taper line.
+        // Tangent point: (RE·cos(TA), RE·(1 − sin(TA)))
+        const arcN = 10;
+        const startA = -Math.PI / 2;  // bottom of ball at (0, 0)
+        const endA = -taperRad;       // tangent to taper line
+        for (let i = 1; i <= arcN; i++) {
+          const a = startA + (endA - startA) * (i / arcN);
+          pts.push(V(cornerR * Math.cos(a), cornerR + cornerR * Math.sin(a)));
+        }
+      } else {
+        // Sharp tip
+        pts.push(V(0.1, 0));
+      }
+      // Taper to DC/2 at top of flutes, then shaft to OAL
+      pts.push(V(r, fluteLen));
       if (Math.abs(shaftR - r) > 0.01) pts.push(V(shaftR, fluteLen));
       pts.push(V(shaftR, oal), V(0, oal));
       break;
