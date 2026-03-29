@@ -714,7 +714,6 @@ const halStats = computed(() => ({
             <div class="colorRow" v-for="cf in colorFields" :key="cf.key">
               <MachineColor
                 gate="viewerSetting"
-                class="colorInput"
                 :modelValue="colors[cf.key]"
                 @update:modelValue="onColorChange(cf.key, $event!)"
               />
@@ -751,8 +750,7 @@ const halStats = computed(() => ({
               <div class="colorRow" v-for="part in machineParts" :key="part.id">
                 <MachineColor
                   gate="viewerSetting"
-                  class="colorInput"
-                  :modelValue="machineColors[part.id] ?? defaultMachineColor(part)"
+                    :modelValue="machineColors[part.id] ?? defaultMachineColor(part)"
                   @update:modelValue="onMachineColorChange(part.id, $event!)"
                 />
                 <span class="colorLabel">{{ formatPartLabel(part.id) }}</span>
@@ -1030,8 +1028,7 @@ const halStats = computed(() => ({
               <div class="colorRow">
                 <MachineColor
                   gate="cameraSetting"
-                  class="colorInput"
-                  :modelValue="cam.overlayColor"
+                    :modelValue="cam.overlayColor"
                   @update:modelValue="cam.overlayColor = $event!; saveCam()"
                 />
                 <span class="colorLabel">Overlay Color</span>
@@ -1276,7 +1273,7 @@ const halStats = computed(() => ({
               </MachineBtn>
             </div>
             <div class="halActions">
-              <input type="text" class="halSearchInput" v-model="halSearch" placeholder="Search..." />
+              <MachineInput gate="search" type="text" class="halSearchInput" v-model="halSearch" placeholder="Search..." />
               <MachineBtn type="inline" class="optBtn" @click="refreshHal" :disabled="halLoading">
                 {{ halLoading ? '...' : 'Refresh' }}
               </MachineBtn>
@@ -1477,12 +1474,6 @@ const halStats = computed(() => ({
   min-width: 60px;
 }
 
-.numInput {
-  padding: 4px 8px;
-  font-size: var(--fs-base);
-  border-radius: var(--radius-md);
-  width: 80px;
-}
 
 .layerGrid {
   display: grid;
@@ -1511,24 +1502,6 @@ const halStats = computed(() => ({
   gap: var(--gap-controls);
 }
 
-.colorInput {
-  width: 32px;
-  height: 24px;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: none;
-  cursor: pointer;
-  padding: 0;
-}
-
-.colorInput::-webkit-color-swatch-wrapper {
-  padding: 2px;
-}
-
-.colorInput::-webkit-color-swatch {
-  border: none;
-  border-radius: var(--radius-sm);
-}
 
 .colorLabel {
   font-size: var(--fs-base);
@@ -1609,9 +1582,6 @@ const halStats = computed(() => ({
 }
 
 .tsGrid input {
-  padding: 4px 8px;
-  font-size: var(--fs-base);
-  border-radius: var(--radius-md);
   max-width: 100px;
 }
 
