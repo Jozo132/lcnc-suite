@@ -1090,10 +1090,10 @@ const halStats = computed(() => ({
                   </div>
                 </div>
               </div>
-              <div class="macroEditActions">
+              <Gate gate="idle" class="macroEditActions">
                 <MachineBtn type="dialogCancel" @click="editingMacro = null">Cancel</MachineBtn>
                 <MachineBtn type="dialogConfirm" @click="saveMacro" :disabled="!editingMacro.name.trim() || !editingMacro.command.trim()">Save</MachineBtn>
-              </div>
+              </Gate>
             </div>
 
             <MachineBtn v-if="!editingMacro && macros.length < 20" type="manage" @click="addMacro" style="margin-top: var(--gap-section);">Add Macro</MachineBtn>
@@ -1394,7 +1394,7 @@ const halStats = computed(() => ({
         <div class="dialog">
           <div class="dialogTitle danger">Reset {{ resetLabels[resetTarget] }}</div>
           <div class="dialogBody">Restore {{ resetLabels[resetTarget] }} settings to defaults? This cannot be undone.</div>
-          <Gate :allow="can.idle" class="dialogActions">
+          <Gate gate="idle" class="dialogActions">
             <MachineBtn type="dialogCancel" @click="resetTarget = null">Cancel</MachineBtn>
             <MachineBtn type="dialogDanger" @click="confirmReset">Reset</MachineBtn>
           </Gate>

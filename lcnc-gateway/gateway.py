@@ -2950,7 +2950,11 @@ _FUSION_TYPE_MAP = {
     "ball end mill": "ball",
     "bull nose end mill": "bullnose",
     "chamfer mill": "chamfer",
+    "drill": "drill",
     "spot drill": "drill",
+    "counter bore": "drill",
+    "reamer": "drill",
+    "boring bar": "drill",
     "counter sink": "countersink",
     "dovetail mill": "dovetail",
     "face mill": "facemill",
@@ -2961,12 +2965,22 @@ _FUSION_TYPE_MAP = {
     "radius mill": "radiusmill",
     "tapered mill": "tapered",
     "probe": "probe",
+    "tap right hand": "tap",
+    "tap left hand": "tap",
+    "engraving cutter": "engraver",
 }
 
 
-def _parse_fusion_library(data: dict) -> list:
-    """Parse a Fusion 360 Library.json → list of tool dicts for import."""
-    tools = []
+def _parse_fusion_library(data: dict) -> tuple[list, list]:
+    """Parse a Fusion 360 Library.json → (tools, skipped_duplicates).
+
+    Tools with duplicate numbers are excluded from the main list and returned
+    separately so the caller can warn about them.  The *first* occurrence of
+    each number is kept; later duplicates are skipped.
+    """
+    tools: list[dict] = []
+    skipped: list[dict] = []
+    seen_nums: dict[int, int] = {}          # tool_num → index in tools[]
     for entry in data.get("data", []):
         pp = entry.get("post-process", {})
         geom = entry.get("geometry", {})
@@ -3029,8 +3043,14 @@ def _parse_fusion_library(data: dict) -> list:
         # Preserve raw presets (speeds/feeds per material) for sidecar
         if presets:
             tool["presets"] = presets
-        tools.append(tool)
-    return tools
+
+        t_int = int(tool_num)
+        if t_int in seen_nums:
+            skipped.append(tool)
+        else:
+            seen_nums[t_int] = len(tools)
+            tools.append(tool)
+    return tools, skipped
 
 
 @app.post("/import-tool-library")
@@ -3055,8 +3075,8 @@ async def import_tool_library(file: UploadFile = File(...)):
     if "data" not in data or not isinstance(data["data"], list):
         raise HTTPException(status_code=400, detail="Not a Fusion 360 tool library (missing 'data' array)")
 
-    parsed = _parse_fusion_library(data)
-    if not parsed:
+    parsed, skipped = _parse_fusion_library(data)
+    if not parsed and not skipped:
         raise HTTPException(status_code=400, detail="No tools found in library")
 
     # Count existing tools for warning
@@ -3069,9 +3089,13 @@ async def import_tool_library(file: UploadFile = File(...)):
             pass
 
     preview = [{**t} for t in parsed]
+    skipped_preview = [{"T": t["T"], "description": t.get("description", ""),
+                        "type": t.get("type", ""), "fusion_type": t.get("fusion_type", "")}
+                       for t in skipped]
 
     return {"ok": True, "tools": preview, "total": len(parsed),
-            "existing_count": existing_count}
+            "existing_count": existing_count,
+            "skipped_duplicates": skipped_preview}
 
 
 @app.post("/import-tool-library/apply")
@@ -3085,7 +3109,7 @@ async def apply_tool_library_import(
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
-    parsed = _parse_fusion_library(data)
+    parsed, _skipped = _parse_fusion_library(data)
     if not parsed:
         raise HTTPException(status_code=400, detail="No tools found")
 
@@ -3122,7 +3146,7 @@ async def apply_tool_library_import(
         CMD.load_tool_table()
     save_tool_library(library)
 
-    return {"ok": True, "added": len(parsed)}
+    return {"ok": True, "added": len(parsed), "skipped": len(_skipped)}
 
 
 @app.get("/files")

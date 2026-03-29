@@ -58,6 +58,15 @@ export function evaluatePermissions(s: MachineState): Permissions {
   };
 }
 
+/** Valid gate names — derived from evaluatePermissions, cannot drift */
+const _dummy: MachineState = {
+  armed: false, isEstop: false, isEnabled: false, isHomed: false,
+  isIdle: false, isRunning: false, isPaused: false, busy: false,
+  hasFile: false, eoffsetEnabled: false,
+};
+export const VALID_GATES: ReadonlySet<string> =
+  new Set(Object.keys(evaluatePermissions(_dummy)).filter(k => k !== 'always'));
+
 /** Injection key for provide/inject */
 export const PERMISSIONS_KEY = Symbol("permissions") as InjectionKey<ComputedRef<Permissions>>;
 

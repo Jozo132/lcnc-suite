@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import { send, lastReply, connected } from "./lcncWs";
 import { loadMachineDefaults, STEP_DEFAULT, type ToolChangeMode } from "./defaults";
 import { Pencil, Trash2 } from "lucide-vue-next";
+import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import MachineSelect from "./MachineSelect.vue";
@@ -292,9 +293,10 @@ interface ImportTool {
 }
 
 const importPreview = ref<ImportTool[] | null>(null);
+const importSkipped = ref<ImportTool[]>([]);
 const importExistingCount = ref(0);
 const importBusy = ref(false);
-const importResult = ref<{ added: number } | null>(null);
+const importResult = ref<{ added: number; skipped?: number } | null>(null);
 const importFile = ref<File | null>(null);
 
 async function onImportFileSelect(e: Event) {
@@ -315,10 +317,12 @@ async function onImportFileSelect(e: Event) {
     }
     const data = await resp.json();
     importPreview.value = data.tools;
+    importSkipped.value = data.skipped_duplicates ?? [];
     importExistingCount.value = data.existing_count ?? 0;
   } catch (err: any) {
     error.value = err.message || "Import failed";
     importPreview.value = null;
+    importSkipped.value = [];
   } finally {
     importBusy.value = false;
   }
@@ -336,8 +340,9 @@ async function confirmImport() {
       throw new Error(body.detail || `HTTP ${resp.status}`);
     }
     const data = await resp.json();
-    importResult.value = { added: data.added };
+    importResult.value = { added: data.added, skipped: data.skipped };
     importPreview.value = null;
+    importSkipped.value = [];
     importFile.value = null;
     setTimeout(fetchTools, REFETCH_AFTER_DELETE_MS);
   } catch (err: any) {
@@ -349,6 +354,7 @@ async function confirmImport() {
 
 function cancelImport() {
   importPreview.value = null;
+  importSkipped.value = [];
   importFile.value = null;
   importResult.value = null;
 }
@@ -425,10 +431,10 @@ defineExpose({ openAdd, fetchTools, triggerImport });
           <div class="dialogBody">
             Remove tool <strong>T{{ deletingTool }}</strong> from the tool table?
           </div>
-          <div class="dialogActions">
+          <Gate gate="idle" class="dialogActions">
             <MachineBtn type="dialogCancel" @click="cancelDelete">Cancel</MachineBtn>
             <MachineBtn type="reset" @click="confirmDelete">Delete</MachineBtn>
-          </div>
+          </Gate>
         </div>
       </div>
 
@@ -511,10 +517,10 @@ defineExpose({ openAdd, fetchTools, triggerImport });
           </div>
 
           <!-- Footer -->
-          <div class="editFooter">
+          <Gate gate="idle" class="editFooter">
             <MachineBtn type="dialogCancel" @click="cancelEditModal">Cancel</MachineBtn>
             <MachineBtn type="fileSave" @click="saveEdit">{{ isNewTool ? "Add" : "Save" }}</MachineBtn>
-          </div>
+          </Gate>
         </div>
       </div>
 
@@ -530,6 +536,11 @@ defineExpose({ openAdd, fetchTools, triggerImport });
               </template>
               Z offsets will use Fusion gauge lengths (measure to replace with actual values).
             </div>
+            <div v-if="importSkipped.length" class="importWarn">
+              {{ importSkipped.length }} tools skipped — duplicate tool numbers
+              (T{{ [...new Set(importSkipped.map(s => s.T))].join(', T') }}).
+              Fix numbering in Fusion 360 and re-export.
+            </div>
             <div class="importList scroll-thin">
               <div v-for="t in importPreview" :key="t.T" class="importRow">
                 <span class="importT mono">T{{ t.T }}</span>
@@ -539,12 +550,12 @@ defineExpose({ openAdd, fetchTools, triggerImport });
               </div>
             </div>
           </div>
-          <div class="dialogActions">
+          <Gate gate="idle" class="dialogActions">
             <MachineBtn type="dialogCancel" @click="cancelImport">Cancel</MachineBtn>
             <MachineBtn type="fileSave" @click="confirmImport" :disabled="importBusy">
               {{ importBusy ? 'Importing...' : 'Import' }}
             </MachineBtn>
-          </div>
+          </Gate>
         </div>
       </div>
 
@@ -749,6 +760,12 @@ defineExpose({ openAdd, fetchTools, triggerImport });
   margin-bottom: var(--gap-controls);
 }
 
+.importWarn {
+  font-size: var(--fs-base);
+  color: var(--warn);
+  margin-bottom: var(--gap-controls);
+}
+
 .importOption {
   display: flex;
   align-items: center;
@@ -769,7 +786,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
   display: flex;
   align-items: center;
   gap: var(--gap-controls);
-  padding: 4px 8px;
+  padding: var(--gap-tight) var(--gap-controls);
   font-size: var(--fs-base);
   border-bottom: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
 }

@@ -1288,7 +1288,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     <div class="sidebar">
 
     <!-- Machine Safety — always accessible -->
-    <Gate :allow="permissions.always" class="card">
+    <Gate gate="always" class="card">
       <div class="sub">Machine Safety</div>
       <div class="btnrow">
         <MachineBtn type="arm" :variant="armed ? 'ok' : 'default'" class="safetyBtn" @click="arm(!armed)" :disabled="busy" :title="armed ? 'Disarm' : 'Arm'" block>
@@ -1309,7 +1309,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
         <div class="vsep"></div>
 
-        <Gate :allow="permissions.safety">
+        <Gate gate="safety">
           <MachineBtn
             type="machineOn" :variant="isEnabled ? 'ok' : 'default'" class="safetyBtn"
             @click="fire({ cmd: isEnabled ? 'machine_off' : 'machine_on' })"
@@ -1350,7 +1350,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
     <section class="card">
       <div class="sub">Controls</div>
-      <Gate :allow="permissions.abort">
+      <Gate gate="abort">
         <div class="controlBtns">
         <div class="controlGroup">
         <MachineBtn
@@ -1666,7 +1666,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
     </div><!-- /sidebar -->
 
     <!-- ══ Outer Gate — covers everything except sidebar ══ -->
-    <Gate :allow="permissions.safety" class="mainArea">
+    <Gate gate="safety" class="mainArea">
 
     <header class="hdr">
       <div class="title">LinuxCNC WebUI ({{ connLabel }})</div>
@@ -1968,7 +1968,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             Remove tool and press Confirm
           </template>
         </div>
-        <Gate :allow="permissions.abort" class="dialogActions">
+        <Gate gate="abort" class="dialogActions">
           <MachineBtn type="dialogDanger" @click="send({ cmd: 'abort' })">Cancel</MachineBtn>
           <MachineBtn type="dialogConfirm" @click="confirmToolChange">Confirm</MachineBtn>
         </Gate>
@@ -1991,7 +1991,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
           </div>
           <code class="macroPreview">{{ macroPreview() }}</code>
         </div>
-        <Gate :allow="permissions.ready" class="dialogActions">
+        <Gate gate="ready" class="dialogActions">
           <MachineBtn type="dialogCancel" @click="macroParamDialog = null">Cancel</MachineBtn>
           <MachineBtn type="dialogConfirm" @click="confirmMacroParams">Execute</MachineBtn>
         </Gate>
@@ -2002,7 +2002,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
       <div class="dialog">
         <div class="dialogTitle danger">Shut Down LinuxCNC?</div>
         <div class="dialogBody">This will stop all motion and exit LinuxCNC.</div>
-        <Gate :allow="permissions.abort" class="dialogActions">
+        <Gate gate="abort" class="dialogActions">
           <MachineBtn type="dialogCancel" @click="showShutdownConfirm = false">Cancel</MachineBtn>
           <MachineBtn type="dialogDanger" @click="send({ cmd: 'shutdown' }); showShutdownConfirm = false">Shut Down</MachineBtn>
         </Gate>
@@ -2023,7 +2023,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
             Ensure tool is clear of the workpiece.
           </template>
         </div>
-        <Gate :allow="permissions.ready" class="dialogActions">
+        <Gate gate="ready" class="dialogActions">
           <MachineBtn type="dialogDanger" @click="cancelCompToggle">Cancel</MachineBtn>
           <MachineBtn type="dialogConfirm" @click="confirmCompToggle">Confirm</MachineBtn>
         </Gate>

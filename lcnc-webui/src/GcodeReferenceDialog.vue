@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from "vue";
 import { GCODE_REFERENCE, GCODE_GROUPS, type GcodeEntry } from "./gcodeReference";
-import { usePermissions } from "./permissions";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import MachineSelect from "./MachineSelect.vue";
@@ -9,7 +8,6 @@ import Gate from "./Gate.vue";
 
 const props = defineProps<{ open: boolean; initialSearch?: string }>();
 const emit = defineEmits<{ (e: "close"): void }>();
-const can = usePermissions();
 
 const search = ref("");
 const filterGroup = ref("");
@@ -54,7 +52,7 @@ function toggleSort(key: "code" | "name") {
         <span class="dialogTitle">G-code Reference</span>
         <MachineBtn type="close" @click="emit('close')">&times;</MachineBtn>
       </div>
-      <Gate :allow="can.idle" class="stack-controls refContent">
+      <Gate gate="idle" class="stack-controls refContent">
         <MachineInput
           gate="search"
           type="text"

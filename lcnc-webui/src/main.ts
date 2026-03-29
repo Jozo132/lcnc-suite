@@ -3,6 +3,7 @@ import './style.css'
 import App from './App.vue'
 import { fetchSettings, saveSettingsSection } from './lcncApi'
 import { initServerDefaults } from './defaults'
+import { VALID_GATES } from './permissions'
 
 const SERVER_SECTIONS = ["macros", "machine", "camera", "mdi", "gamepad", "keyboard", "probe", "toolsetter", "display", "viewer", "panels"];
 
@@ -68,36 +69,39 @@ async function bootstrap() {
   createApp(App).mount('#app');
 
   if (import.meta.env.DEV) {
-    // After initial mount, watch for elements added outside a Gate (<fieldset>).
-    // Every interactive element must be inside a fieldset — no exceptions.
+    function auditElement(el: HTMLElement) {
+      const gate = el.closest('[data-gate]');
+      if (gate && VALID_GATES.has(gate.getAttribute('data-gate')!)) return;
+
+      el.style.outline = '3px solid red';
+      el.title = 'UNGATED: not inside a <Gate> with a valid permission';
+      console.warn(
+        '[Gate audit] Ungated element:',
+        el,
+        gate ? `(nearest data-gate="${gate.getAttribute('data-gate')}" is not a valid permission)` : '(no Gate ancestor)',
+      );
+    }
+
+    function auditAll(root: Element | Document = document) {
+      for (const el of root.querySelectorAll('button, input, select, textarea')) {
+        auditElement(el as HTMLElement);
+      }
+    }
+
+    // Audit initial DOM after mount settles
     setTimeout(() => {
-      const observer = new MutationObserver((mutations) => {
+      auditAll();
+
+      // Watch for dynamically added elements (dialogs, popovers)
+      new MutationObserver((mutations) => {
         for (const m of mutations) {
           for (const node of m.addedNodes) {
             if (!(node instanceof HTMLElement)) continue;
-            const els = [
-              ...(node.matches('button, input, select, textarea') ? [node] : []),
-              ...node.querySelectorAll('button, input, select, textarea'),
-            ] as HTMLElement[];
-            for (const el of els) {
-              if (!el.closest('fieldset')) {
-                console.warn('[Gate audit] Element outside fieldset:', el);
-              }
-            }
+            if (node.matches('button, input, select, textarea')) auditElement(node);
+            auditAll(node);
           }
         }
-      });
-      observer.observe(document.body, { childList: true, subtree: true });
-
-      // Check for literal allow="true" Gates — only can.always is permitted
-      const checkFakeGates = () => {
-        for (const fs of document.querySelectorAll('fieldset')) {
-          if (fs.getAttribute('allow') === 'true') {
-            console.error('[Gate audit] Literal allow="true" fieldset found — use can.always instead:', fs);
-          }
-        }
-      };
-      setTimeout(checkFakeGates, 500);
+      }).observe(document.body, { childList: true, subtree: true });
     }, 0);
   }
 }

@@ -577,7 +577,7 @@ async function saveEdit() {
     </div>
 
     <!-- File browser (collapsible) -->
-    <Gate v-if="showBrowser" :allow="can.idle" class="fileBrowser">
+    <Gate v-if="showBrowser" gate="idle" class="fileBrowser">
         <div class="browserHeader">
           <MachineBtn v-if="currentSubdir" type="inline" class="backBtn" @click="navigateUp">..</MachineBtn>
           <span class="browserPath">{{ currentSubdir || '/' }}</span>
@@ -693,7 +693,7 @@ async function saveEdit() {
           </div>
         </div>
 
-        <Gate :allow="can.ready" class="dialogActions">
+        <Gate gate="ready" class="dialogActions">
           <MachineBtn type="dialogCancel" @click="showRunDialog = false">Cancel</MachineBtn>
           <MachineBtn type="dialogConfirm" @click="confirmRunFromLine">Run from Line {{ selectedLine }}</MachineBtn>
         </Gate>
