@@ -95,50 +95,77 @@ export const BUTTON_TYPES = {
 
 export type ButtonType = keyof typeof BUTTON_TYPES;
 
-// ── Input gate definitions ──
+// ── Input definitions ──
 
-export const INPUT_GATES = {
+export interface InputDef {
+  gate: ControlGate;
+  size?: 'sm' | 'md' | 'lg';
+  mono?: boolean;
+  align?: 'left' | 'right' | 'center';
+  width?: string;
+}
+
+export const INPUT_DEFS = {
   // Motion parameters
-  jogSpeed:        'jog',
-  jogIncrement:    'jog',
-  jogWheel:        'jog',
-  jogAxis:         'jog',
-  mdiText:         'ready',
-  touchoff:        'zero',
-  rpmInput:        'ready',
+  jogSpeed:        { gate: 'jog',      mono: true, align: 'right' },
+  jogIncrement:    { gate: 'jog',      mono: true, align: 'right' },
+  jogWheel:        { gate: 'jog' },
+  jogAxis:         { gate: 'jog' },
+  mdiText:         { gate: 'ready' },
+  touchoff:        { gate: 'zero',     mono: true, align: 'right' },
+  rpmInput:        { gate: 'ready',    mono: true, align: 'right' },
 
   // Override sliders
-  feedOverride:    'override',
-  spindleOverride: 'override',
-  rapidOverride:   'override',
+  feedOverride:    { gate: 'override' },
+  spindleOverride: { gate: 'override' },
+  rapidOverride:   { gate: 'override' },
 
   // Probe parameters
-  probeParam:      'ready',
-  scanParam:       'ready',
+  probeParam:      { gate: 'ready',    mono: true, align: 'right' },
+  scanParam:       { gate: 'ready',    mono: true, align: 'right' },
 
   // Toolsetter parameters
-  toolsetterParam: 'ready',
+  toolsetterParam: { gate: 'ready',    mono: true, align: 'right' },
 
   // Tool table editing
-  toolEdit:        'idle',
-  toolSearch:      'idle',
+  toolEdit:        { gate: 'idle' },
+  toolEditNum:     { gate: 'idle',     mono: true, align: 'right' },
+  toolSearch:      { gate: 'idle' },
 
   // 3D Viewer settings
-  viewerSetting:   'idle',
-  cameraSetting:   'idle',
+  viewerSetting:   { gate: 'idle' },
+  viewerSettingNum:{ gate: 'idle',     mono: true, align: 'right', size: 'sm' },
+  cameraSetting:   { gate: 'idle' },
 
   // Display settings
-  displaySetting:  'idle',
+  displaySetting:  { gate: 'idle' },
+  displaySettingNum:{ gate: 'idle',    mono: true, align: 'right' },
 
   // Macro editing
-  macroEdit:       'idle',
+  macroEdit:       { gate: 'idle' },
 
   // Keyboard/gamepad config
-  inputConfig:     'idle',
+  inputConfig:     { gate: 'idle' },
 
   // Program toggles
-  optionalStop:    'override',
-  blockDelete:     'override',
-} as const satisfies Record<string, ControlGate>;
+  optionalStop:    { gate: 'override' },
+  blockDelete:     { gate: 'override' },
 
-export type InputType = keyof typeof INPUT_GATES;
+  // Color pickers (used by MachineColor)
+  viewerColor:     { gate: 'idle' },
+  cameraColor:     { gate: 'idle' },
+
+  // Offset editing
+  offsetEdit:      { gate: 'zero',     mono: true, align: 'right' },
+
+  // UI-only (always enabled)
+  search:          { gate: 'always' },
+  filter:          { gate: 'always' },
+} as const satisfies Record<string, InputDef>;
+
+export type InputType = keyof typeof INPUT_DEFS;
+
+// Backward-compatible gate-only map
+export const INPUT_GATES = Object.fromEntries(
+  Object.entries(INPUT_DEFS).map(([k, v]) => [k, v.gate])
+) as Record<InputType, ControlGate>;
