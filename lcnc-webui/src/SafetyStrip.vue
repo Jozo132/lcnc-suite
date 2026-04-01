@@ -32,8 +32,8 @@ const estopLabel = computed(() => props.isEstop ? "Reset" : "E-Stop");
       <span class="headerLabel">Safety &amp; Power</span>
     </div>
 
-    <Gate gate="always" class="safetyBtnsGate">
-      <div class="safetyBtns">
+    <div class="safetyBtns">
+      <Gate gate="always" class="btnGate">
         <MachineBtn
           type="arm"
           :variant="armed ? 'ok' : 'default'"
@@ -43,10 +43,12 @@ const estopLabel = computed(() => props.isEstop ? "Reset" : "E-Stop");
           class="safetyBtn"
           block
         >
-          <component :is="armed ? LockOpen : Lock" :size="20" />
-          <span class="btnLabel">{{ armed ? 'Armed' : 'Arm System' }}</span>
+          <component :is="armed ? LockOpen : Lock" :size="18" />
+          <span class="btnLabel">{{ armed ? 'Armed' : 'Arm' }}</span>
         </MachineBtn>
+      </Gate>
 
+      <Gate gate="always" class="btnGate">
         <MachineBtn
           type="estop"
           :flashing="isEstop"
@@ -55,45 +57,38 @@ const estopLabel = computed(() => props.isEstop ? "Reset" : "E-Stop");
           class="safetyBtn"
           block
         >
-          <TriangleAlert :size="20" />
+          <TriangleAlert :size="18" />
           <span class="btnLabel">{{ estopLabel }}</span>
         </MachineBtn>
-      </div>
-    </Gate>
+      </Gate>
+
+      <Gate gate="safety" class="btnGate">
+        <MachineBtn
+          type="machineOn"
+          :variant="isEnabled ? 'ok' : 'default'"
+          @click="isEnabled ? emit('machineOff') : emit('machineOn')"
+          class="safetyBtn"
+          block
+        >
+          <Power :size="18" />
+          <span class="btnLabel">{{ isEnabled ? 'On' : 'Off' }}</span>
+        </MachineBtn>
+      </Gate>
+    </div>
 
     <div class="statusBar">
-      <div class="statusDots">
-        <div class="statusItem">
-          <span class="statusDot" :class="{ on: !isEstop }"></span>
-          <span class="statusLabel">READY</span>
-        </div>
-        <div class="statusItem">
-          <span class="statusDot" :class="{ on: isHomed }"></span>
-          <span class="statusLabel">HOMED</span>
-        </div>
-        <div class="statusItem">
-          <span class="statusDot" :class="{ on: isEnabled }"></span>
-          <span class="statusLabel">ENABLED</span>
-        </div>
+      <div class="statusItem">
+        <span class="statusDot" :class="{ on: !isEstop }"></span>
+        <span class="statusLabel">READY</span>
       </div>
-      <Gate gate="safety" class="machOnGate">
-        <div class="machOnBtns">
-          <MachineBtn
-            type="machineOn"
-            :variant="!isEnabled ? 'default' : 'default'"
-            :disabled="isEnabled"
-            @click="emit('machineOff')"
-            class="machOnBtn"
-          >OFF</MachineBtn>
-          <MachineBtn
-            type="machineOn"
-            :variant="isEnabled ? 'ok' : 'default'"
-            :disabled="!isEnabled && false"
-            @click="emit('machineOn')"
-            class="machOnBtn"
-          >ON</MachineBtn>
-        </div>
-      </Gate>
+      <div class="statusItem">
+        <span class="statusDot" :class="{ on: isEnabled }"></span>
+        <span class="statusLabel">ENABLED</span>
+      </div>
+      <div class="statusItem">
+        <span class="statusDot" :class="{ on: isHomed }"></span>
+        <span class="statusLabel">HOMED</span>
+      </div>
     </div>
   </div>
 </template>
@@ -111,6 +106,7 @@ const estopLabel = computed(() => props.isEstop ? "Reset" : "E-Stop");
   display: flex;
   align-items: center;
   gap: var(--gap-tight);
+  flex-shrink: 0;
 }
 .headerIcon {
   opacity: var(--opacity-muted);
@@ -123,14 +119,14 @@ const estopLabel = computed(() => props.isEstop ? "Reset" : "E-Stop");
   opacity: var(--opacity-muted);
 }
 
-.safetyBtnsGate {
+.safetyBtns {
+  display: flex;
+  gap: var(--gap-controls);
   flex: 1;
 }
-.safetyBtns {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--gap-controls);
-  height: 100%;
+.btnGate {
+  flex: 1;
+  display: flex;
 }
 .safetyBtn {
   display: flex;
@@ -138,7 +134,7 @@ const estopLabel = computed(() => props.isEstop ? "Reset" : "E-Stop");
   align-items: center;
   justify-content: center;
   gap: var(--gap-tight);
-  min-height: 80px;
+  flex: 1;
 }
 .btnLabel {
   font-size: var(--fs-xs);
@@ -149,14 +145,11 @@ const estopLabel = computed(() => props.isEstop ? "Reset" : "E-Stop");
 .statusBar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: var(--gap-controls);
-  border-radius: var(--radius-lg);
-  background: color-mix(in oklab, var(--bg) 80%, transparent);
-}
-.statusDots {
-  display: flex;
   gap: var(--gap-section);
+  padding: var(--gap-tight) var(--gap-controls);
+  background: color-mix(in oklab, var(--bg) 80%, transparent);
+  border-radius: var(--radius-lg);
+  flex-shrink: 0;
 }
 .statusItem {
   display: flex;
@@ -179,17 +172,5 @@ const estopLabel = computed(() => props.isEstop ? "Reset" : "E-Stop");
   font-size: var(--fs-2xs);
   font-family: var(--font-mono);
   opacity: var(--opacity-muted);
-}
-
-.machOnGate {
-  flex-shrink: 0;
-}
-.machOnBtns {
-  display: flex;
-  gap: 1px;
-}
-.machOnBtn {
-  font-size: var(--fs-2xs);
-  font-weight: var(--fw-bold);
 }
 </style>
