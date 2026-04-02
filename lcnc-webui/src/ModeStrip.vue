@@ -236,26 +236,26 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
         </MachineBtn>
       </div>
 
-      <!-- Setup: touch-off + homing + go-to -->
-      <div class="setupGrid">
-        <template v-for="(letter, i) in axes" :key="letter">
-          <MachineInput gate="touchoff" type="number" :step="STEP_DEFAULT" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" @keydown.enter="emit('setAxis', i, touchoff[i] ?? 0)" class="setupInput" />
-          <MachineBtn type="zero" size="xs" @click="emit('setAxis', i, touchoff[i] ?? 0)">Set {{ letter }}</MachineBtn>
-          <MachineBtn :type="homedJoints[i] ? 'unhome' : 'home'" size="xs" @click="homedJoints[i] ? emit('unhomeAxis', i) : emit('homeAxis', i)">{{ homedJoints[i] ? 'Unhome' : 'Home' }} {{ letter }}</MachineBtn>
-        </template>
-        <MachineBtn type="zero" size="xs" class="spanAll" @click="emit('setAll', [...touchoff])">Set All</MachineBtn>
-        <MachineBtn :type="isHomed ? 'unhome' : 'home'" size="xs" class="spanAll" @click="isHomed ? emit('unhomeAll') : emit('homeAll')">{{ isHomed ? 'Unhome' : 'Home All' }}</MachineBtn>
-        <MachineBtn type="goTo" size="xs" @click="emit('goToG30')">G30</MachineBtn>
-        <MachineBtn type="goTo" size="xs" @click="emit('goToHome')">Home Pos</MachineBtn>
-        <MachineBtn type="goTo" size="xs" @click="emit('goToZero')">Zero</MachineBtn>
-      </div>
-
-      <!-- WCS selector -->
-      <div class="wcsCol">
-        <label v-for="g in g5xOptions" :key="g" class="wcsRadio">
-          <MachineRadio gate="touchoff" name="wcs" :value="g" :modelValue="g5xLabel" @update:modelValue="(v: string | number | undefined) => { if (v != null) emit('setG5x', String(v)) }" />
-          <span>{{ g }}</span>
-        </label>
+      <!-- Setup section: WCS + touch-off + homing + go-to -->
+      <div class="setupSection">
+        <div class="setupGrid">
+          <template v-for="(letter, i) in axes" :key="letter">
+            <MachineInput gate="touchoff" type="number" :step="STEP_DEFAULT" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" @keydown.enter="emit('setAxis', i, touchoff[i] ?? 0)" class="setupInput" />
+            <MachineBtn type="zero" size="xs" @click="emit('setAxis', i, touchoff[i] ?? 0)">Set {{ letter }}</MachineBtn>
+            <MachineBtn :type="homedJoints[i] ? 'unhome' : 'home'" size="xs" @click="homedJoints[i] ? emit('unhomeAxis', i) : emit('homeAxis', i)">{{ homedJoints[i] ? 'Unhome' : 'Home' }} {{ letter }}</MachineBtn>
+          </template>
+          <MachineBtn type="zero" size="xs" class="spanAll" @click="emit('setAll', [...touchoff])">Set All</MachineBtn>
+          <MachineBtn :type="isHomed ? 'unhome' : 'home'" size="xs" class="spanAll" @click="isHomed ? emit('unhomeAll') : emit('homeAll')">{{ isHomed ? 'Unhome' : 'Home All' }}</MachineBtn>
+          <MachineBtn type="goTo" size="xs" @click="emit('goToG30')">G30</MachineBtn>
+          <MachineBtn type="goTo" size="xs" @click="emit('goToHome')">Home Pos</MachineBtn>
+          <MachineBtn type="goTo" size="xs" @click="emit('goToZero')">Zero</MachineBtn>
+        </div>
+        <div class="wcsCol">
+          <label v-for="g in g5xOptions" :key="g" class="wcsRadio">
+            <MachineRadio gate="touchoff" name="wcs" :value="g" :modelValue="g5xLabel" @update:modelValue="(v: string | number | undefined) => { if (v != null) emit('setG5x', String(v)) }" />
+            <span>{{ g }}</span>
+          </label>
+        </div>
       </div>
     </div>
   </div>
@@ -336,6 +336,13 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
 }
 .stepCol, .wcsCol {
   justify-content: flex-start;
+}
+.setupSection {
+  display: flex;
+  gap: var(--gap-section);
+  height: 100%;
+  border-left: 1px solid var(--border-subtle);
+  padding-left: var(--gap-section);
 }
 .wcsRadio {
   display: flex;

@@ -189,7 +189,7 @@ const overridesActive = computed(() =>
   gap: var(--gap-tight);
 }
 .statusCol + .statusCol {
-  border-left: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
+  border-left: 1px solid var(--border-subtle);
   padding-left: var(--gap-controls);
   margin-left: var(--gap-controls);
 }

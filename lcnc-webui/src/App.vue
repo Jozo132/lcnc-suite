@@ -1528,7 +1528,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
 
 .strip {
   display: grid;
-  grid-template-columns: 1fr 2fr 1fr;
+  grid-template-columns: auto 1fr auto;
   height: 250px;
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
@@ -1537,6 +1537,10 @@ watch(isHomed, (nowHomed, wasHomed) => {
   overflow: hidden;
   padding: var(--gap-controls);
   gap: var(--gap-controls);
+}
+.strip > * + * {
+  border-left: 1px solid var(--border-subtle);
+  padding-left: var(--gap-controls);
 }
 
 .hdr {

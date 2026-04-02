@@ -70,30 +70,20 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
   <div class="controlsStrip">
     <!-- LEFT: Overrides -->
     <Gate gate="override" class="ovrSection">
-      <div class="ovrList">
-        <div class="ovrItem">
-          <div class="ovrHead">
-            <span class="ovrName">FEED (F)</span>
-            <span class="ovrVal" :class="{ warn: feedSlider !== 100 }">{{ feedSlider }}%</span>
-          </div>
-          <MachineSlider gate="feedOverride" :modelValue="feedSlider" @update:model-value="onFeedSlider(Number($event))" @change="emit('feedChange')" :min="0" :max="maxFeedOverride" :step="STEP_OVERRIDE" :disabled="!feedOvrEnabled" class="ovrSlider" />
-        </div>
-
-        <div class="ovrItem">
-          <div class="ovrHead">
-            <span class="ovrName">SPINDLE (S)</span>
-            <span class="ovrVal" :class="{ warn: spindleSlider !== 100 }">{{ spindleSlider }}%</span>
-          </div>
-          <MachineSlider gate="spindleOverride" :modelValue="spindleSlider" @update:model-value="onSpindleSlider(Number($event))" @change="emit('spindleSliderChange')" :min="minSpindleOverride" :max="maxSpindleOverride" :step="STEP_OVERRIDE" :disabled="!spindleOvrEnabled" class="ovrSlider" />
-        </div>
-
-        <div class="ovrItem">
-          <div class="ovrHead">
-            <span class="ovrName">RAPID (R)</span>
-            <span class="ovrVal" :class="{ warn: rapidSlider !== 100 }">{{ rapidSlider }}%</span>
-          </div>
-          <MachineSlider gate="rapidOverride" :modelValue="rapidSlider" @update:model-value="onRapidSlider(Number($event))" @change="emit('rapidChange')" :min="25" :max="100" :step="STEP_RAPID_OVERRIDE" class="ovrSlider" />
-        </div>
+      <div class="ovrCol">
+        <span class="ovrVal" :class="{ warn: feedSlider !== 100 }">{{ feedSlider }}%</span>
+        <MachineSlider gate="feedOverride" :modelValue="feedSlider" @update:model-value="onFeedSlider(Number($event))" @change="emit('feedChange')" :min="0" :max="maxFeedOverride" :step="STEP_OVERRIDE" :disabled="!feedOvrEnabled" class="vSlider" />
+        <span class="ovrLabel">Feed</span>
+      </div>
+      <div class="ovrCol">
+        <span class="ovrVal" :class="{ warn: spindleSlider !== 100 }">{{ spindleSlider }}%</span>
+        <MachineSlider gate="spindleOverride" :modelValue="spindleSlider" @update:model-value="onSpindleSlider(Number($event))" @change="emit('spindleSliderChange')" :min="minSpindleOverride" :max="maxSpindleOverride" :step="STEP_OVERRIDE" :disabled="!spindleOvrEnabled" class="vSlider" />
+        <span class="ovrLabel">Spindle</span>
+      </div>
+      <div class="ovrCol">
+        <span class="ovrVal" :class="{ warn: rapidSlider !== 100 }">{{ rapidSlider }}%</span>
+        <MachineSlider gate="rapidOverride" :modelValue="rapidSlider" @update:model-value="onRapidSlider(Number($event))" @change="emit('rapidChange')" :min="25" :max="100" :step="STEP_RAPID_OVERRIDE" class="vSlider" />
+        <span class="ovrLabel">Rapid</span>
       </div>
     </Gate>
 
@@ -155,41 +145,34 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
 /* ── Overrides ── */
 .ovrSection {
   display: flex;
-  flex-direction: column;
-  gap: var(--gap-controls);
+  gap: var(--gap-section);
 }
-.ovrList {
+.ovrCol {
   display: flex;
   flex-direction: column;
-  gap: var(--gap-controls);
-  flex: 1;
+  align-items: center;
+  gap: var(--gap-tight);
+  height: 100%;
   justify-content: center;
 }
-.ovrItem {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-micro);
-}
-.ovrHead {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-}
-.ovrName {
-  font-size: var(--fs-2xs);
-  font-family: var(--font-mono);
-  opacity: var(--opacity-muted);
-}
 .ovrVal {
-  font-size: var(--fs-sm);
   font-family: var(--font-mono);
-  font-weight: var(--fw-bold);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-semibold);
 }
 .ovrVal.warn {
   color: var(--warn);
 }
-.ovrSlider {
-  width: 100%;
+.ovrLabel {
+  font-size: var(--fs-2xs);
+  opacity: var(--opacity-muted);
+  white-space: nowrap;
+}
+.vSlider {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  flex: 1;
+  min-height: 0;
 }
 
 /* ── Right column: Tool + Spindle + Coolant stacked ── */
@@ -197,6 +180,8 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
   display: flex;
   flex-direction: column;
   gap: var(--gap-tight);
+  border-left: 1px solid var(--border-subtle);
+  padding-left: var(--gap-controls);
 }
 
 /* Tool */

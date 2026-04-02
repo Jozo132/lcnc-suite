@@ -10,6 +10,7 @@
   --fg: #213547;
   --panel: #f5f5f5;
   --border: rgba(0,0,0,0.12);
+  --border-subtle: color-mix(in oklab, var(--border) 50%, transparent);
   --button-bg: #f9f9f9;
 
   /* Semantic accent colors */
@@ -89,6 +90,7 @@
     --fg: #e6edf3;
     --panel: #121821;
     --border: rgba(255,255,255,0.12);
+    --border-subtle: color-mix(in oklab, var(--border) 50%, transparent);
     --button-bg: #1a1a1a;
   }
 }
@@ -107,6 +109,7 @@
   --fg: #e6edf3;
   --panel: #121821;
   --border: rgba(255,255,255,0.12);
+  --border-subtle: color-mix(in oklab, var(--border) 50%, transparent);
   --button-bg: #1a1a1a;
 }
 
@@ -116,6 +119,7 @@
   --fg: #000000;
   --panel: #f0f0f0;
   --border: rgba(0,0,0,0.45);
+  --border-subtle: color-mix(in oklab, var(--border) 50%, transparent);
   --button-bg: #ffffff;
   --ok: #0a7a0a;
   --err: #a00018;
@@ -133,6 +137,7 @@
   --fg: #ffffff;
   --panel: #0a0a0a;
   --border: rgba(255,255,255,0.45);
+  --border-subtle: color-mix(in oklab, var(--border) 50%, transparent);
   --button-bg: #111111;
   --ok: #33dd33;
   --err: #ff4444;
