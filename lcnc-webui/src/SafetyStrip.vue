@@ -63,8 +63,8 @@ const overridesActive = computed(() =>
 </script>
 
 <template>
-  <div class="safetyStrip">
-    <div class="safetyBtns">
+  <div class="safetyStrip stack-controls">
+    <div class="safetyBtns row-controls">
       <Gate gate="always" class="btnGate">
         <MachineBtn
           type="arm"
@@ -109,7 +109,7 @@ const overridesActive = computed(() =>
     </div>
 
     <!-- Machine Status Detail -->
-    <div class="statusDetail">
+    <div class="statusDetail scroll-thin">
       <div class="statusCols">
         <div class="statusCol">
           <div class="statusRow"><span class="label-muted md">E-Stop</span><span class="val-status md" :class="isEstop ? 'bad' : 'ok'"><span class="stable-width"><span :class="{ alt: !isEstop }">TRUE</span><span :class="{ alt: isEstop }">FALSE</span></span></span></div>
@@ -135,9 +135,6 @@ const overridesActive = computed(() =>
 
 <style scoped>
 .safetyStrip {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-controls);
   height: 100%;
   width: 280px;
   flex-shrink: 0;
@@ -145,8 +142,6 @@ const overridesActive = computed(() =>
 }
 
 .safetyBtns {
-  display: flex;
-  gap: var(--gap-controls);
   flex-shrink: 0;
 }
 .btnGate {

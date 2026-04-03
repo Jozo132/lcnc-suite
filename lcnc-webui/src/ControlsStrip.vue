@@ -139,10 +139,10 @@ onBeforeUnmount(() => _previewRo?.disconnect());
     </Gate>
 
     <!-- RIGHT: Tool + Spindle + Coolant -->
-    <div class="rightSection">
+    <div class="rightSection stack-tight">
       <!-- Spindle -->
-      <Gate gate="ready" class="spnBlock">
-        <div class="spDirRow">
+      <Gate gate="ready" class="spnBlock stack-controls">
+        <div class="spDirRow row-tight">
           <MachineBtn type="spindleRev" :active="isReverse" @click="emit('spindleRev', rpmInput)">
             <span class="btn-label"><RotateCcw :size="14" /> Rev</span>
           </MachineBtn>
@@ -159,7 +159,7 @@ onBeforeUnmount(() => _previewRo?.disconnect());
           <MachineInput gate="rpmInput" type="number" class="spRpmInput" :value="rpmInput" @input="emit('update:rpmInput', +($event.target as HTMLInputElement).value)" :min="minSpindleSpeed" :max="maxSpindleSpeed" :step="STEP_RPM" />
         </div>
 
-        <div class="spActualGroup">
+        <div class="spActualGroup stack-tight">
           <div class="spActualRow">
             <span class="label-muted md">Actual</span>
             <span class="val-status md mono">{{ fmtRpm(spindleActual) }}</span>
@@ -188,8 +188,8 @@ onBeforeUnmount(() => _previewRo?.disconnect());
 
     <!-- RIGHT-MOST: Tool -->
     <div class="toolBlock">
-      <div class="toolControls">
-        <div class="toolInputRow">
+      <div class="toolControls stack-controls">
+        <div class="toolInputRow row-tight">
           <span class="label-muted md toolLabel">Tool #</span>
           <MachineInput gate="rpmInput" type="number" class="toolNumInput"
             :value="toolNumber"
@@ -200,7 +200,7 @@ onBeforeUnmount(() => _previewRo?.disconnect());
           <MachineBtn type="toolUnload" :disabled="probing" @click="emit('unloadTool')">Unload</MachineBtn>
         </div>
 
-        <div class="toolActionRow">
+        <div class="toolActionRow row-tight">
           <MachineBtn type="mdi" :disabled="probing" @click="emit('measureAuto')">Measure</MachineBtn>
           <MachineBtn type="manage" @click="emit('openToolTable')">Table</MachineBtn>
         </div>
@@ -282,9 +282,6 @@ onBeforeUnmount(() => _previewRo?.disconnect());
 
 /* ── Right column: Tool + Spindle + Coolant stacked ── */
 .rightSection {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-tight);
   border-left: 1px solid var(--border-subtle);
   padding-left: var(--gap-controls);
 }
@@ -292,13 +289,6 @@ onBeforeUnmount(() => _previewRo?.disconnect());
 /* Spindle */
 .spnBlock {
   flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-controls);
-}
-.spDirRow {
-  display: flex;
-  gap: var(--gap-tight);
 }
 .spRpmRow {
   display: flex;
@@ -306,11 +296,6 @@ onBeforeUnmount(() => _previewRo?.disconnect());
   gap: var(--gap-controls);
 }
 .spRpmInput { flex: 1; }
-.spActualGroup {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-tight);
-}
 .spActualRow {
   display: flex;
   justify-content: space-between;
@@ -334,12 +319,6 @@ onBeforeUnmount(() => _previewRo?.disconnect());
   align-items: stretch;
 }
 
-.toolControls {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-controls);
-}
-
 .toolPreviewFrame {
   align-self: stretch;
   flex: 1;
@@ -353,9 +332,7 @@ onBeforeUnmount(() => _previewRo?.disconnect());
 }
 
 .toolInputRow {
-  display: flex;
   align-items: stretch;
-  gap: var(--gap-tight);
 }
 
 .toolLabel {
@@ -367,8 +344,6 @@ onBeforeUnmount(() => _previewRo?.disconnect());
 }
 
 .toolActionRow {
-  display: flex;
-  gap: var(--gap-tight);
 }
 
 .toolActionRow :deep(.b) {

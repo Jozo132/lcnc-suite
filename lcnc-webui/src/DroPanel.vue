@@ -50,7 +50,7 @@ function setAll() {
 
 <template>
   <div class="stack-sections container">
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub">Work Position ({{ g5xLabel }})</div>
       <div class="grid">
         <template v-for="(letter, i) in axes" :key="'w' + letter">
@@ -64,7 +64,7 @@ function setAll() {
 
     <div class="sep"></div>
 
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub">Machine Position</div>
       <div class="grid">
         <template v-for="(letter, i) in axes" :key="'m' + letter">
@@ -82,17 +82,11 @@ function setAll() {
 .container {
 }
 
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-controls);
-}
-
 .grid {
   display: grid;
   grid-template-columns: 1fr 90px minmax(70px, 110px) minmax(70px, 110px);
-  column-gap: var(--gap-section);
-  row-gap: var(--gap-section);
+  column-gap: var(--gap-controls);
+  row-gap: var(--gap-controls);
   align-items: stretch;
 }
 

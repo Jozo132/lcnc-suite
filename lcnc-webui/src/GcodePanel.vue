@@ -511,7 +511,7 @@ async function saveEdit() {
           <MachineBtn v-if="currentSubdir" type="inline" class="backBtn" @click="navigateUp">..</MachineBtn>
           <span class="browserPath">{{ currentSubdir || '/' }}</span>
         </div>
-        <div class="fileList">
+        <div class="fileList scroll-thin">
           <div v-for="entry in files" :key="entry.name" class="fileItem"
                :class="{ directory: entry.type === 'directory', activeItem: entry.type === 'file' && entry.path === activeFile }"
                @click="entry.type === 'directory' ? navigateInto(entry) : selectFile(entry)">

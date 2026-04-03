@@ -1409,7 +1409,7 @@ const halStats = computed(() => ({
   opacity: var(--opacity-disabled);
 }
 .settings {
-  padding: var(--gap-section) 14px 14px;
+  padding: var(--gap-section);
   height: 100%;
   display: flex;
   flex-direction: column;
