@@ -1639,7 +1639,7 @@ watch(viewerGcode, (newGcode) => {
   flex-shrink: 0;
   padding: var(--gap-controls);
   gap: var(--gap-controls);
-  overflow-x: auto;
+  overflow: hidden;
 }
 .strip > * + * {
   border-left: 1px solid var(--border-subtle);

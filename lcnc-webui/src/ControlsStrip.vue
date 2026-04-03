@@ -90,6 +90,20 @@ const currentToolData = computed(() =>
   tools.value.find(t => t.T === props.currentTool) ?? null
 );
 
+const TYPE_LABELS: Record<string, string> = {
+  endmill: "End Mill", ball: "Ball", bullnose: "Bull Nose", drill: "Drill",
+  chamfer: "Chamfer", countersink: "C/Sink", dovetail: "Dovetail",
+  facemill: "Face Mill", lollipop: "Lollipop", slotmill: "Slot Mill",
+  threadmill: "Thread Mill", formmill: "Form Mill", radiusmill: "Radius Mill",
+  tapered: "Tapered", probe: "Probe", tap: "Tap", engraver: "Engraver", other: "Other",
+};
+
+const toolTypeLabel = computed(() => {
+  const t = currentToolData.value?.type;
+  if (!t) return "---";
+  return TYPE_LABELS[t] || t;
+});
+
 // ─── Preview frame sizing ────────────────────────────────────
 const previewFrameRef = ref<HTMLElement | null>(null);
 const previewSize = reactive({ w: 0, h: 0 });
@@ -210,12 +224,24 @@ onBeforeUnmount(() => _previewRo?.disconnect());
             <span class="val-status md mono">T{{ currentTool }}</span>
           </div>
           <div class="spActualRow">
+            <span class="label-muted md">Pocket</span>
+            <span class="val-status md mono">{{ currentToolData?.P ?? '---' }}</span>
+          </div>
+          <div class="spActualRow">
             <span class="label-muted md">Diameter</span>
             <span class="val-status md mono">{{ toolDiameter != null ? toolDiameter.toFixed(3) : '---' }}</span>
           </div>
           <div class="spActualRow">
             <span class="label-muted md">Z Offset</span>
             <span class="val-status md mono">{{ toolLength != null ? toolLength.toFixed(3) : '---' }}</span>
+          </div>
+          <div class="spActualRow">
+            <span class="label-muted md">Type</span>
+            <span class="val-status md">{{ toolTypeLabel }}</span>
+          </div>
+          <div class="spActualRow">
+            <span class="label-muted md">Description</span>
+            <span class="val-status md toolDesc">{{ currentToolData?.description || '---' }}</span>
           </div>
         </div>
       </div>
@@ -244,7 +270,8 @@ onBeforeUnmount(() => _previewRo?.disconnect());
   display: flex;
   gap: var(--gap-controls);
   height: 100%;
-  flex-shrink: 0;
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
 }
 
@@ -312,6 +339,8 @@ onBeforeUnmount(() => _previewRo?.disconnect());
 /* ── Tool ── */
 .toolBlock {
   display: flex;
+  flex: 1;
+  min-width: 0;
   gap: var(--gap-controls);
   border-left: 1px solid var(--border-subtle);
   padding-left: var(--gap-controls);
@@ -364,5 +393,12 @@ onBeforeUnmount(() => _previewRo?.disconnect());
   flex-direction: column;
   gap: var(--gap-tight);
   flex: 1;
+}
+
+.toolDesc {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 </style>
