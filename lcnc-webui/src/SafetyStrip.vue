@@ -78,7 +78,7 @@ const overridesActive = computed(() =>
           block
         >
           <component :is="armed ? LockOpen : Lock" :size="18" />
-          <span class="btnLabel">{{ armed ? 'Armed' : 'Arm' }}</span>
+          <span class="btn-label-sm">{{ armed ? 'Armed' : 'Arm' }}</span>
         </MachineBtn>
       </Gate>
 
@@ -92,7 +92,7 @@ const overridesActive = computed(() =>
           block
         >
           <TriangleAlert :size="18" />
-          <span class="btnLabel">{{ estopLabel }}</span>
+          <span class="btn-label-sm">{{ estopLabel }}</span>
         </MachineBtn>
       </Gate>
 
@@ -105,7 +105,7 @@ const overridesActive = computed(() =>
           block
         >
           <Power :size="18" />
-          <span class="btnLabel">{{ isEnabled ? 'On' : 'Off' }}</span>
+          <span class="btn-label-sm">{{ isEnabled ? 'On' : 'Off' }}</span>
         </MachineBtn>
       </Gate>
     </div>
@@ -114,21 +114,21 @@ const overridesActive = computed(() =>
     <div class="statusDetail">
       <div class="statusCols">
         <div class="statusCol">
-          <div class="statusRow"><span class="k">E-Stop</span><span class="v" :class="isEstop ? 'bad' : 'ok'">{{ isEstop ? 'TRUE' : 'FALSE' }}</span></div>
-          <div class="statusRow"><span class="k">Enabled</span><span class="v" :class="isEnabled ? 'ok' : 'muted'">{{ isEnabled ? 'TRUE' : 'FALSE' }}</span></div>
-          <div class="statusRow"><span class="k">Homed</span><span class="v" :class="isHomed ? 'ok' : 'bad'">{{ isHomed ? 'TRUE' : 'FALSE' }}</span></div>
-          <div class="statusRow"><span class="k">Overrides</span><span class="v" :class="overridesActive ? 'warn' : ''">{{ overridesActive ? 'ACTIVE' : '---' }}</span></div>
+          <div class="statusRow"><span class="label-muted">E-Stop</span><span class="val-status" :class="isEstop ? 'bad' : 'ok'">{{ isEstop ? 'TRUE' : 'FALSE' }}</span></div>
+          <div class="statusRow"><span class="label-muted">Enabled</span><span class="val-status" :class="isEnabled ? 'ok' : 'muted'">{{ isEnabled ? 'TRUE' : 'FALSE' }}</span></div>
+          <div class="statusRow"><span class="label-muted">Homed</span><span class="val-status" :class="isHomed ? 'ok' : 'bad'">{{ isHomed ? 'TRUE' : 'FALSE' }}</span></div>
+          <div class="statusRow"><span class="label-muted">Overrides</span><span class="val-status" :class="overridesActive ? 'warn' : ''">{{ overridesActive ? 'ACTIVE' : '---' }}</span></div>
         </div>
         <div class="statusCol">
-          <div class="statusRow"><span class="k">Mode</span><span class="v">{{ modeLabel }}</span></div>
-          <div class="statusRow"><span class="k">Interp</span><span class="v">{{ interpLabel }}</span></div>
-          <div class="statusRow"><span class="k">Motion</span><span class="v">{{ isTeleop ? 'WORLD' : 'JOINT' }}</span></div>
-          <div class="statusRow"><span class="k">Elapsed</span><span class="v mono">{{ elapsed }}</span></div>
+          <div class="statusRow"><span class="label-muted">Mode</span><span class="val-status">{{ modeLabel }}</span></div>
+          <div class="statusRow"><span class="label-muted">Interp</span><span class="val-status">{{ interpLabel }}</span></div>
+          <div class="statusRow"><span class="label-muted">Motion</span><span class="val-status">{{ isTeleop ? 'WORLD' : 'JOINT' }}</span></div>
+          <div class="statusRow"><span class="label-muted">Elapsed</span><span class="v mono">{{ elapsed }}</span></div>
         </div>
       </div>
       <div class="codesRow">
-        <span class="codesValue">{{ gcodes }}</span>
-        <span class="codesValue">{{ mcodes }}</span>
+        <span class="codes-value">{{ gcodes }}</span>
+        <span class="codes-value">{{ mcodes }}</span>
       </div>
     </div>
   </div>
@@ -147,7 +147,6 @@ const overridesActive = computed(() =>
   display: flex;
   gap: var(--gap-controls);
   flex-shrink: 0;
-  flex-shrink: 0;
 }
 .btnGate {
   flex: 1;
@@ -162,12 +161,6 @@ const overridesActive = computed(() =>
   gap: var(--gap-tight);
   flex: 1;
 }
-.btnLabel {
-  font-size: var(--fs-xs);
-  font-weight: var(--fw-bold);
-  text-transform: uppercase;
-}
-
 /* ── Status detail ── */
 .statusDetail {
   flex: 1;
@@ -198,22 +191,6 @@ const overridesActive = computed(() =>
   align-items: baseline;
   gap: var(--gap-controls);
 }
-.k {
-  font-size: var(--fs-base);
-  opacity: var(--opacity-muted);
-  white-space: nowrap;
-}
-.v {
-  font-size: var(--fs-base);
-  font-weight: var(--fw-semibold);
-  text-align: right;
-}
-.v.ok { color: var(--ok); }
-.v.bad { color: var(--danger); }
-.v.warn { color: var(--warn); }
-.v.muted { opacity: var(--opacity-muted); }
-.v.mono { font-family: var(--font-mono); }
-
 .codesRow {
   display: flex;
   flex-direction: column;
@@ -221,12 +198,5 @@ const overridesActive = computed(() =>
   margin-top: var(--gap-tight);
   padding-top: var(--gap-tight);
   border-top: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
-}
-.codesValue {
-  font-size: var(--fs-base);
-  font-family: var(--font-mono);
-  opacity: var(--opacity-muted);
-  word-break: break-all;
-  line-height: 1.4;
 }
 </style>

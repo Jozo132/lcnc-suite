@@ -71,21 +71,21 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
     <!-- LEFT: Overrides -->
     <Gate gate="override" class="ovrSection">
       <div class="ovrCol">
-        <span class="ovrVal" :class="{ warn: feedSlider !== 100 }">{{ feedSlider }}%</span>
+        <span class="val-mono" :class="{ warn: feedSlider !== 100 }">{{ feedSlider }}%</span>
         <MachineSlider gate="feedOverride" :modelValue="feedSlider" @update:model-value="onFeedSlider(Number($event))" @change="emit('feedChange')" :min="0" :max="maxFeedOverride" :step="STEP_OVERRIDE" :disabled="!feedOvrEnabled" class="vSlider" />
-        <span class="ovrLabel">Feed</span>
+        <span class="label-muted">Feed</span>
         <MachineBtn type="overrideReset" @click="emit('overridePreset', 'feed', 100)">Reset</MachineBtn>
       </div>
       <div class="ovrCol">
-        <span class="ovrVal" :class="{ warn: spindleSlider !== 100 }">{{ spindleSlider }}%</span>
+        <span class="val-mono" :class="{ warn: spindleSlider !== 100 }">{{ spindleSlider }}%</span>
         <MachineSlider gate="spindleOverride" :modelValue="spindleSlider" @update:model-value="onSpindleSlider(Number($event))" @change="emit('spindleSliderChange')" :min="minSpindleOverride" :max="maxSpindleOverride" :step="STEP_OVERRIDE" :disabled="!spindleOvrEnabled" class="vSlider" />
-        <span class="ovrLabel">Spindle</span>
+        <span class="label-muted">Spindle</span>
         <MachineBtn type="overrideReset" @click="emit('overridePreset', 'spindle', 100)">Reset</MachineBtn>
       </div>
       <div class="ovrCol">
-        <span class="ovrVal" :class="{ warn: rapidSlider !== 100 }">{{ rapidSlider }}%</span>
+        <span class="val-mono" :class="{ warn: rapidSlider !== 100 }">{{ rapidSlider }}%</span>
         <MachineSlider gate="rapidOverride" :modelValue="rapidSlider" @update:model-value="onRapidSlider(Number($event))" @change="emit('rapidChange')" :min="25" :max="100" :step="STEP_RAPID_OVERRIDE" class="vSlider" />
-        <span class="ovrLabel">Rapid</span>
+        <span class="label-muted">Rapid</span>
         <MachineBtn type="overrideReset" @click="emit('overridePreset', 'rapid', 100)">Reset</MachineBtn>
       </div>
     </Gate>
@@ -96,40 +96,40 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
       <Gate gate="ready" class="spnBlock">
         <div class="spDirRow">
           <MachineBtn type="spindleRev" :active="isReverse" @click="emit('spindleRev', rpmInput)">
-            <span class="btnContent"><RotateCcw :size="14" /> Rev</span>
+            <span class="btn-label"><RotateCcw :size="14" /> Rev</span>
           </MachineBtn>
           <MachineBtn type="spindleStop" :active="isSpinning" :disabled="!isSpinning" @click="emit('spindleStop')">
-            <span class="btnContent"><Square :size="14" /> Stop</span>
+            <span class="btn-label"><Square :size="14" /> Stop</span>
           </MachineBtn>
           <MachineBtn type="spindleFwd" :active="isForward" @click="emit('spindleFwd', rpmInput)">
-            <span class="btnContent"><RotateCw :size="14" /> Fwd</span>
+            <span class="btn-label"><RotateCw :size="14" /> Fwd</span>
           </MachineBtn>
         </div>
 
         <div class="spRpmRow">
-          <span class="spFieldLabel">Speed</span>
+          <span class="label-muted">Speed</span>
           <MachineInput gate="rpmInput" type="number" class="spRpmInput" :value="rpmInput" @input="emit('update:rpmInput', +($event.target as HTMLInputElement).value)" :min="minSpindleSpeed" :max="maxSpindleSpeed" :step="STEP_RPM" />
-          <span class="spUnit">RPM</span>
+          <span class="label-muted">RPM</span>
         </div>
 
         <div class="spActualGroup">
           <div class="spActualRow">
-            <span class="spFieldLabel">Actual</span>
-            <span class="spActualValue">{{ formatRpm(spindleActual) }} <span class="spUnit">RPM</span></span>
+            <span class="label-muted">Actual</span>
+            <span class="val-mono lg">{{ formatRpm(spindleActual) }} <span class="label-muted">RPM</span></span>
           </div>
           <div class="spActualRow">
-            <span class="spFieldLabel">Cmd</span>
-            <span class="spCommandedValue">{{ formatRpm(spindleSpeed) }} <span class="spUnit">RPM</span></span>
+            <span class="label-muted">Cmd</span>
+            <span class="val-status mono muted">{{ formatRpm(spindleSpeed) }} <span class="label-muted">RPM</span></span>
           </div>
           <div class="spActualRow">
-            <span class="spFieldLabel">Dir</span>
-            <span class="spDirValue" :class="{ ok: isSpinning }">
+            <span class="label-muted">Dir</span>
+            <span class="val-status" :class="{ ok: isSpinning }">
               {{ isForward ? "FWD" : isReverse ? "REV" : "OFF" }}
             </span>
           </div>
           <div v-if="spindleLoad != null" class="spActualRow">
-            <span class="spFieldLabel">Load</span>
-            <span class="spActualValue">{{ Math.round(spindleLoad) }}%</span>
+            <span class="label-muted">Load</span>
+            <span class="val-mono lg">{{ Math.round(spindleLoad) }}%</span>
           </div>
         </div>
       </Gate>
@@ -166,19 +166,6 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
   height: 100%;
   justify-content: center;
 }
-.ovrVal {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-}
-.ovrVal.warn {
-  color: var(--warn);
-}
-.ovrLabel {
-  font-size: var(--fs-2xs);
-  opacity: var(--opacity-muted);
-  white-space: nowrap;
-}
 .vSlider {
   flex: 1;
   min-height: 0;
@@ -204,26 +191,12 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
   display: flex;
   gap: var(--gap-tight);
 }
-.btnContent {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-tight);
-}
 .spRpmRow {
   display: flex;
   align-items: center;
   gap: var(--gap-controls);
 }
-.spFieldLabel {
-  font-size: var(--fs-xs);
-  opacity: var(--opacity-muted);
-  min-width: 40px;
-}
 .spRpmInput { flex: 1; }
-.spUnit {
-  font-size: var(--fs-xs);
-  opacity: var(--opacity-muted);
-}
 .spActualGroup {
   display: flex;
   flex-direction: column;
@@ -234,23 +207,6 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
   justify-content: space-between;
   align-items: center;
 }
-.spActualValue {
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  font-weight: var(--fw-bold);
-}
-.spCommandedValue {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  opacity: var(--opacity-muted);
-}
-.spDirValue {
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-  opacity: var(--opacity-muted);
-}
-.spDirValue.ok { color: var(--ok); opacity: 1; }
-
 /* Coolant */
 .coolBlock {
   flex-shrink: 0;

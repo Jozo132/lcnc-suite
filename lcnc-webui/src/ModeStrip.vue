@@ -221,15 +221,15 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
 
       <!-- Speed (vertical slider) -->
       <div class="speedCol">
-        <span class="colVal">{{ (jogVel * 60).toFixed(0) }}</span>
+        <span class="val-mono">{{ (jogVel * 60).toFixed(0) }}</span>
         <MachineSlider gate="jogSpeed" :disabled="isDisabled" :min="minJogVel" :max="maxJogVel" :step="0.1" :modelValue="jogVel" @update:modelValue="(v: number | undefined) => { if (v != null) emit('update:jogVel', v) }" class="vSlider" />
-        <span class="colLabel">{{ linearUnit }}/min</span>
+        <span class="label-muted">{{ linearUnit }}/min</span>
         <MachineBtn type="overrideReset" @click="emit('resetJogVel')">Reset</MachineBtn>
       </div>
 
       <!-- Step increments + mode -->
       <div class="stepCol">
-        <label v-for="opt in incrementOptions" :key="opt.value" class="stepRadio">
+        <label v-for="opt in incrementOptions" :key="opt.value" class="radio-label">
           <MachineRadio gate="jogIncrement" name="jogStep" :value="opt.value" :modelValue="jogIncrement" @update:modelValue="(v: string | number | undefined) => { if (v != null) emit('update:jogIncrement', Number(v)) }" />
           <span>{{ opt.label }}</span>
         </label>
@@ -253,7 +253,7 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
           <MachineBtn type="goTo" size="xs" @click="emit('goToZero')">Zero</MachineBtn>
         </div>
         <div class="wcsCol">
-          <label v-for="g in g5xOptions" :key="g" class="wcsRadio">
+          <label v-for="g in g5xOptions" :key="g" class="radio-label">
             <MachineRadio gate="touchoff" name="wcs" :value="g" :modelValue="g5xLabel" @update:modelValue="(v: string | number | undefined) => { if (v != null) emit('setG5x', String(v)) }" />
             <span>{{ g }}</span>
           </label>
@@ -322,16 +322,6 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
   flex: 1;
   min-height: 0;
 }
-.colVal {
-  font-family: var(--font-mono);
-  font-size: var(--fs-sm);
-  font-weight: var(--fw-semibold);
-}
-.colLabel {
-  font-size: var(--fs-2xs);
-  opacity: var(--opacity-muted);
-  white-space: nowrap;
-}
 .stepCol, .wcsCol {
   justify-content: flex-start;
 }
@@ -342,15 +332,6 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
   border-left: 1px solid var(--border-subtle);
   padding-left: var(--gap-section);
 }
-.wcsRadio {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-tight);
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  cursor: pointer;
-  white-space: nowrap;
-}
 .setupGrid {
   display: grid;
   grid-template-columns: 60px 1fr 1fr;
@@ -360,13 +341,4 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
 }
 .setupInput { width: 100%; }
 .spanAll { grid-column: 1 / -1; }
-.stepRadio {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-tight);
-  font-family: var(--font-mono);
-  font-size: var(--fs-base);
-  cursor: pointer;
-  white-space: nowrap;
-}
 </style>

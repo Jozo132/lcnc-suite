@@ -651,6 +651,36 @@ label:has(input:disabled, select:disabled) {
 .row-controls   { display: flex; gap: var(--gap-controls); align-items: center; }
 .row-tight      { display: flex; gap: var(--gap-tight); align-items: center; }
 
+/* ── Display utilities ── */
+
+/* Monospace value (slider readouts, override %, RPM) */
+.val-mono       { font-family: var(--font-mono); font-size: var(--fs-sm); font-weight: var(--fw-semibold); }
+.val-mono.lg    { font-size: var(--fs-xl); font-weight: var(--fw-bold); }
+.val-mono.warn  { color: var(--warn); }
+
+/* Muted label (section headers, units, field labels) */
+.label-muted    { font-size: var(--fs-2xs); opacity: var(--opacity-muted); white-space: nowrap; }
+
+/* Status key/value pairs (safety detail, spindle readouts) */
+.val-status        { font-size: var(--fs-sm); font-weight: var(--fw-semibold); text-align: right; }
+.val-status.ok     { color: var(--ok); }
+.val-status.bad    { color: var(--danger); }
+.val-status.warn   { color: var(--warn); }
+.val-status.muted  { opacity: var(--opacity-muted); }
+.val-status.mono   { font-family: var(--font-mono); }
+
+/* Radio button label row (jog increments, WCS selector) */
+.radio-label    { display: flex; align-items: center; gap: var(--gap-tight); font-family: var(--font-mono); font-size: var(--fs-base); cursor: pointer; white-space: nowrap; }
+
+/* Button inner content (icon + text aligned) */
+.btn-label      { display: flex; align-items: center; gap: var(--gap-tight); }
+
+/* Safety button label */
+.btn-label-sm   { font-size: var(--fs-xs); font-weight: var(--fw-semibold); text-transform: uppercase; }
+
+/* Active G/M code display */
+.codes-value    { font-size: var(--fs-2xs); font-family: var(--font-mono); opacity: var(--opacity-muted); word-break: break-all; line-height: 1.4; }
+
 .viewTabs {
   flex-wrap: wrap;
 }
