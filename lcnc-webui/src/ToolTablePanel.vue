@@ -365,7 +365,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
 </script>
 
 <template>
-  <div class="container">
+  <div class="container stack-controls">
     <!-- Hidden file input for import (works via triggerImport / header button) -->
     <input ref="importInputRef" type="file" accept=".json" @change="onImportFileSelect" hidden />
 
@@ -613,12 +613,9 @@ defineExpose({ openAdd, fetchTools, triggerImport });
 
 <style scoped>
 .container {
-  display: flex;
-  flex-direction: column;
   height: 100%;
   position: relative;
   padding: var(--gap-section) 14px 14px;
-  gap: var(--gap-controls);
 }
 
 .header {

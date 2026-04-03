@@ -383,8 +383,8 @@ async function saveEdit() {
 </script>
 
 <template>
-  <div class="container" @dragover.prevent="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
-    <div class="header">
+  <div class="container stack-controls" @dragover.prevent="onDragOver" @dragleave="onDragLeave" @drop.prevent="onDrop">
+    <div class="header stack-tight">
       <div class="headerActions">
           <MachineBtn type="fileOp" class="actionBtn" @click="enterEdit" :disabled="!activeFile || editing">
             Edit
@@ -410,7 +410,7 @@ async function saveEdit() {
         <div v-if="gcodeStats">
           <div class="statsAnchor">
           <MachineBtn type="inline" class="actionBtn" @click.stop="showStats = !showStats">Stats</MachineBtn>
-          <div class="popover statsPopover" :class="{ open: showStats }" @click.stop>
+          <div class="popover statsPopover stack-controls" :class="{ open: showStats }" @click.stop>
             <div class="popHeader"><span class="popTitle">Program Stats</span><MachineBtn type="close" @click="showStats = false">&times;</MachineBtn></div>
             <!-- Donut chart -->
             <div class="donutRow" v-if="donutSegments.length > 0">
@@ -426,7 +426,7 @@ async function saveEdit() {
                   transform="rotate(-90 50 50)"
                 />
               </svg>
-              <div class="donutLegend">
+              <div class="donutLegend stack-tight">
                 <div v-for="seg in donutSegments" :key="seg.label" class="legendItem">
                   <span class="legendDot" :style="{ background: seg.color }"></span>
                   <span>{{ seg.label }}</span>
@@ -483,7 +483,7 @@ async function saveEdit() {
     </div>
 
     <!-- Program control -->
-    <div class="controlRow">
+    <div class="row-tight">
       <MachineBtn type="start" class="ctrlBtn" @click="onStartClick" :disabled="!activeFile || editing">
         <Play :size="14" class="ctrlIcon" /> {{ selectedLine && selectedLine > 1 ? `Start L${selectedLine}` : 'Start' }}
       </MachineBtn>
@@ -656,26 +656,17 @@ async function saveEdit() {
 
 <style scoped>
 .container {
-  display: flex;
-  flex-direction: column;
   height: 100%;
-  gap: var(--gap-controls);
 }
 
 .header {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-tight);
   padding: 8px 12px;
   background: color-mix(in oklab, var(--panel) 50%, transparent);
   border: 1px solid var(--border);
   border-radius: var(--radius-xl);
 }
 
-.controlRow {
-  display: flex;
-  gap: var(--gap-tight);
-}
+/* .controlRow — uses row-tight utility */
 
 .ctrlBtn {
   flex: 1;
@@ -770,9 +761,6 @@ async function saveEdit() {
 }
 
 .statsPopover.open {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-controls);
   right: 0;
   top: 100%;
   margin-top: var(--gap-tight);
@@ -814,9 +802,6 @@ async function saveEdit() {
 }
 
 .donutLegend {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-tight);
   font-size: var(--fs-sm);
 }
 

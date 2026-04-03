@@ -563,8 +563,8 @@ function fmtR(key: string): string {
 
     <!-- ═══ OUTSIDE CORNERS VIEW ═══ -->
     <template v-if="probeView === 'outside'">
-      <div class="gridSection">
-      <div class="section">
+      <div class="gridSection stack-sections">
+      <div class="stack-controls">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap">
           <MachineBtn
@@ -652,8 +652,8 @@ function fmtR(key: string): string {
 
     <!-- ═══ INSIDE CORNERS VIEW ═══ -->
     <template v-else-if="probeView === 'inside'">
-      <div class="gridSection">
-      <div class="section">
+      <div class="gridSection stack-sections">
+      <div class="stack-controls">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap">
           <MachineBtn
@@ -741,8 +741,8 @@ function fmtR(key: string): string {
 
     <!-- ═══ BOSS / POCKET VIEW ═══ -->
     <template v-else-if="probeView === 'boss'">
-      <div class="gridSection">
-      <div class="section">
+      <div class="gridSection stack-sections">
+      <div class="stack-controls">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap bossGrid">
           <MachineBtn
@@ -834,8 +834,8 @@ function fmtR(key: string): string {
 
     <!-- ═══ EDGE ANGLE VIEW ═══ -->
     <template v-else-if="probeView === 'angle'">
-      <div class="gridSection">
-      <div class="section">
+      <div class="gridSection stack-sections">
+      <div class="stack-controls">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap angleGrid">
           <MachineBtn
@@ -937,9 +937,9 @@ function fmtR(key: string): string {
 
     <!-- ═══ CALIBRATE VIEW ═══ -->
     <template v-else-if="probeView === 'cal'">
-      <div class="gridSection">
+      <div class="gridSection stack-sections">
       <!-- Round calibration: buttons + diameter -->
-      <div class="calSection">
+      <div class="stack-tight">
         <div class="sub">Round Hole</div>
         <div class="calRow">
           <div class="calBtnPair">
@@ -966,7 +966,7 @@ function fmtR(key: string): string {
               </svg>
             </MachineBtn>
           </div>
-          <div class="calParamStacked">
+          <div class="calParamStacked stack-tight">
             <div class="calParamRow">
               <label title="Known diameter of the calibration ring or pocket. Used by calibration routines to compute the probe tip offset. Use a precision ring gauge for best results. (#3033)">Diameter</label>
               <MachineInput gate="probeParam" type="number" v-model.number="params.calDiameter" min="0" :step="STEP_DEFAULT" @change="saveParams" />
@@ -976,7 +976,7 @@ function fmtR(key: string): string {
       </div>
 
       <!-- Rect calibration: buttons + x/y width -->
-      <div class="calSection">
+      <div class="stack-tight">
         <div class="sub">Rectangular Pocket</div>
         <div class="calRow">
           <div class="calBtnPair">
@@ -1003,7 +1003,7 @@ function fmtR(key: string): string {
               </svg>
             </MachineBtn>
           </div>
-          <div class="calParamStacked">
+          <div class="calParamStacked stack-tight">
             <div class="calParamRow">
               <label title="Known X width of a rectangular calibration reference block. (#3034)">X Width</label>
               <MachineInput gate="probeParam" type="number" v-model.number="params.xCalWidth" min="0" :step="STEP_DEFAULT" @change="saveParams" />
@@ -1017,7 +1017,7 @@ function fmtR(key: string): string {
       </div>
 
       <!-- Calibrate on axis selector -->
-      <div class="section">
+      <div class="stack-controls">
         <div class="calParamTitle">Calibrate on:</div>
         <div class="calAxisRow">
           <MachineBtn type="probe" class="calAxisBtn" muted :selected="calAxis === 0" @click="calAxis = 0">Avg XY</MachineBtn>
@@ -1030,8 +1030,8 @@ function fmtR(key: string): string {
 
     <!-- ═══ RIDGE / VALLEY VIEW ═══ -->
     <template v-else-if="probeView === 'ridge'">
-      <div class="gridSection">
-      <div class="section">
+      <div class="gridSection stack-sections">
+      <div class="stack-controls">
         <div class="sub">Probe Operation</div>
         <div class="gridWrap bossGrid">
           <MachineBtn
@@ -1112,7 +1112,7 @@ function fmtR(key: string): string {
 
     <!-- ─── Surface Map ─── -->
     <template v-else>
-      <div class="section">
+      <div class="stack-controls">
         <div class="sub">Scan Grid</div>
         <div class="paramGrid twoCol">
           <label title="Scan grid minimum X bound in work coordinates. Must be less than X Max. Defines the left edge of the probing area. (#3050)">X0</label>
@@ -1158,7 +1158,7 @@ function fmtR(key: string): string {
     <div class="sep"></div>
 
     <!-- Parameters (shared across views) -->
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub">Parameters</div>
       <div class="paramGrid twoCol">
         <label title="Tool number of the probe. Must match the tool loaded in the spindle before any probing operation. (#3014)">Probe Tool #</label>
@@ -1199,7 +1199,7 @@ function fmtR(key: string): string {
     <div class="sep"></div>
 
     <!-- Probe Results (PB-style feedback) -->
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub">Probe Results</div>
       <div class="probeResultsGrid">
         <div class="prCell"><span class="label">X-</span><span class="prVal">{{ fmtR("x_minus") }}</span></div>
@@ -1256,11 +1256,7 @@ function fmtR(key: string): string {
   margin-left: auto;
 }
 
-.section {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-controls);
-}
+/* .section — uses stack-controls utility */
 
 .workpiece {
   fill: color-mix(in oklab, var(--fg) 12%, var(--bg));
@@ -1284,9 +1280,6 @@ function fmtR(key: string): string {
 /* Fixed-height section so grid + params don't shift when switching tabs */
 .gridSection {
   height: 360px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-section);
 }
 
 /* Grids (centered) */
@@ -1307,11 +1300,7 @@ function fmtR(key: string): string {
 }
 
 /* Calibration rows */
-.calSection {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-tight);
-}
+/* .calSection — uses stack-tight utility */
 
 .calRow {
   display: flex;
@@ -1328,9 +1317,6 @@ function fmtR(key: string): string {
 }
 
 .calParamStacked {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-tight);
   align-self: center;
 }
 

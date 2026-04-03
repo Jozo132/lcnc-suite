@@ -1387,7 +1387,7 @@ watch(viewerGcode, (newGcode) => {
               <MachineBtn type="close" @click="messagesDialogOpen = false; markMessagesRead()">&times;</MachineBtn>
             </div>
           </div>
-          <div class="messagesBody scroll-thin">
+          <div class="messagesBody stack-tight scroll-thin">
             <div v-for="msg in messages" :key="msg.id" class="msgItem" :class="msgKindClass(msg.kind)">
               <span class="msgTime">{{ msgFormatTime(msg.ts) }}</span>
               <span class="msgKind">{{ msgKindLabel(msg.kind) }}</span>
@@ -1425,7 +1425,7 @@ watch(viewerGcode, (newGcode) => {
         <div class="dialog">
           <div class="dialogTitle">{{ macroParamDialog.macro.name }}</div>
           <div class="dialogBody">
-            <div class="macroParamFields">
+            <div class="stack-controls">
               <div v-for="p in macroParamDialog.macro.params" :key="p.name" class="macroParamRow">
                 <label class="macroParamLabel">{{ p.label || p.name }}</label>
                 <input
@@ -1741,11 +1741,7 @@ watch(viewerGcode, (newGcode) => {
 }
 
 /* ---- Macro param dialog ---- */
-.macroParamFields {
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-controls);
-}
+/* .macroParamFields — uses stack-controls utility */
 .macroParamRow {
   display: flex;
   align-items: center;
@@ -1774,9 +1770,6 @@ watch(viewerGcode, (newGcode) => {
 .messagesBody {
   overflow-y: auto;
   max-height: 60vh;
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-tight);
   padding: var(--gap-controls);
 }
 .msgItem {

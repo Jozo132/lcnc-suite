@@ -1053,7 +1053,7 @@ const halStats = computed(() => ({
 
             <div class="stack-controls macroSettingsList">
               <div v-for="(m, idx) in macros" :key="m.id" class="macroSettingsItem">
-                <div class="macroSettingsInfo">
+                <div class="macroSettingsInfo stack-micro">
                   <span class="macroSettingsName">{{ m.name }}</span>
                   <code class="macroSettingsCmd">{{ m.command }}</code>
                 </div>
@@ -1813,9 +1813,6 @@ const halStats = computed(() => ({
 .macroSettingsInfo {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--gap-micro);
 }
 .macroSettingsName {
   font-weight: var(--fw-semibold);
