@@ -38,6 +38,7 @@ defineProps<{
   color: var(--fg);
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, opacity 0.15s;
+  overflow: hidden;
 }
 .b:hover:not(:disabled) { background: var(--hl-hover); }
 .b:active:not(:disabled) { background: var(--hl-active); }
