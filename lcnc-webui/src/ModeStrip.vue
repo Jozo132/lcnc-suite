@@ -319,14 +319,8 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
   justify-content: center;
 }
 .vSlider {
-  writing-mode: vertical-lr;
-  direction: rtl;
   flex: 1;
   min-height: 0;
-  /* Override global height: 6px — with vertical writing-mode,
-     height is track LENGTH (must stretch), width is track THICKNESS */
-  height: auto;
-  width: 6px;
 }
 .colVal {
   font-family: var(--font-mono);

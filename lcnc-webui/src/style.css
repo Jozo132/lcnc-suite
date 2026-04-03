@@ -261,6 +261,16 @@ input[type="range"]::-moz-range-thumb:hover {
   transform: scale(1.2);
 }
 
+/* Vertical slider — writing-mode rotates the coordinate system so
+   height becomes track LENGTH and width becomes track THICKNESS.
+   Override global height: 6px which would constrain the track to 6px tall. */
+.vSlider {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  height: auto;
+  width: 6px;
+}
+
 input[type="number"],
 input[type="text"],
 select {
