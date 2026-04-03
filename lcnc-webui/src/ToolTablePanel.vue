@@ -688,7 +688,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
 .editDialog {
   min-width: 500px;
   max-width: 620px;
-  max-height: 80vh;
+  max-height: 90%;
 }
 
 .editBody {
