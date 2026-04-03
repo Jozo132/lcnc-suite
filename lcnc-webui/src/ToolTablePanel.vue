@@ -2,6 +2,7 @@
 import { ref, computed, watch, onMounted } from "vue";
 import { send, lastReply, connected } from "./lcncWs";
 import { loadMachineDefaults, STEP_DEFAULT, type ToolChangeMode } from "./defaults";
+import { TOOL_TYPE_LABELS, toolTypeLabel } from "./toolTypes";
 import { Pencil, Trash2 } from "lucide-vue-next";
 import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
@@ -52,36 +53,7 @@ const searchText = ref("");
 const sortKey = ref<"T" | "D" | "Z">("T");
 const sortAsc = ref(true);
 
-const TOOL_TYPES = [
-  "endmill", "ball", "bullnose", "drill", "chamfer", "countersink",
-  "dovetail", "facemill", "lollipop", "slotmill", "threadmill",
-  "formmill", "radiusmill", "tapered", "probe", "tap", "engraver", "other",
-];
-
-const typeLabels: Record<string, string> = {
-  endmill: "End Mill",
-  ball: "Ball",
-  bullnose: "Bull Nose",
-  drill: "Drill",
-  chamfer: "Chamfer",
-  countersink: "C/Sink",
-  dovetail: "Dovetail",
-  facemill: "Face Mill",
-  lollipop: "Lollipop",
-  slotmill: "Slot Mill",
-  threadmill: "Thread Mill",
-  formmill: "Form Mill",
-  radiusmill: "Radius Mill",
-  tapered: "Tapered",
-  probe: "Probe",
-  tap: "Tap",
-  engraver: "Engraver",
-  other: "Other",
-};
-
-function typeLabel(t: string) {
-  return typeLabels[t] || t || "-";
-}
+const TOOL_TYPES = Object.keys(TOOL_TYPE_LABELS);
 
 const filteredTools = computed(() => {
   let list = tools.value;
@@ -94,7 +66,7 @@ const filteredTools = computed(() => {
       `T${t.T}`.toLowerCase().includes(q) ||
       (t.description || "").toLowerCase().includes(q) ||
       (t.remark || "").toLowerCase().includes(q) ||
-      typeLabel(t.type).toLowerCase().includes(q) ||
+      toolTypeLabel(t.type).toLowerCase().includes(q) ||
       (t.material || "").toLowerCase().includes(q)
     );
   }
@@ -460,7 +432,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
                 <label>Type</label>
                 <MachineSelect gate="toolEdit" v-model="editForm.type">
                   <option value="">-</option>
-                  <option v-for="tt in TOOL_TYPES" :key="tt" :value="tt">{{ typeLabel(tt) }}</option>
+                  <option v-for="tt in TOOL_TYPES" :key="tt" :value="tt">{{ toolTypeLabel(tt) }}</option>
                 </MachineSelect>
                 <label>Description</label>
                 <MachineInput gate="toolEdit" type="text" v-model="editForm.description" />
@@ -544,7 +516,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
             <div class="importList scroll-thin">
               <div v-for="t in importPreview" :key="t.T" class="importRow">
                 <span class="importT mono">T{{ t.T }}</span>
-                <span class="importType">{{ typeLabel(t.type) }}</span>
+                <span class="importType">{{ toolTypeLabel(t.type) }}</span>
                 <span class="importDia mono">Ø{{ fmtNum(t.D, 2) }}</span>
                 <span class="importDesc">{{ t.description || '-' }}</span>
               </div>
@@ -571,7 +543,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
             <th class="colType">
               <MachineSelect gate="toolSearch" class="filterSelect" v-model="filterType">
                 <option value="">Type</option>
-                <option v-for="tt in TOOL_TYPES" :key="tt" :value="tt">{{ typeLabel(tt) }}</option>
+                <option v-for="tt in TOOL_TYPES" :key="tt" :value="tt">{{ toolTypeLabel(tt) }}</option>
               </MachineSelect>
             </th>
             <th class="colSm">Flutes</th>
@@ -594,7 +566,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
             <td class="colSm mono">{{ tool.P }}</td>
             <td class="colNum mono">{{ fmtNum(tool.D) }}</td>
             <td class="colNum mono">{{ fmtNum(tool.Z, 6) }}</td>
-            <td class="colType">{{ typeLabel(tool.type) }}</td>
+            <td class="colType">{{ toolTypeLabel(tool.type) }}</td>
             <td class="colSm mono">{{ tool.flutes ?? "-" }}</td>
             <td class="colDesc" :title="tool.description">{{ tool.description || tool.remark || "-" }}</td>
             <td class="colAction">

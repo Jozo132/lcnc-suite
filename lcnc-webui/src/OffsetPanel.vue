@@ -223,11 +223,11 @@ function clearAll() {
 
 .colName { width: 60px; }
 
-.offLabel {
-  text-align: left !important;
+.tableWrap td.offLabel {
+  text-align: left;
   font-weight: var(--fw-semibold);
   color: color-mix(in oklab, var(--fg) 80%, transparent);
-  font-family: var(--font-sans) !important;
+  font-family: var(--font-sans);
 }
 
 .activeRow .offLabel {
@@ -243,9 +243,9 @@ tbody tr {
   cursor: pointer;
 }
 
-.auxRow {
+tbody tr.auxRow {
   border-top: 1px solid color-mix(in oklab, var(--fg) 10%, transparent);
-  cursor: default !important;
+  cursor: default;
 }
 
 .auxLabel {

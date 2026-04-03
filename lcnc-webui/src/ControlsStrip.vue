@@ -9,6 +9,7 @@ import ToolPreview from "./ToolPreview.vue";
 import { RotateCw, RotateCcw, Square } from "lucide-vue-next";
 import { STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE, type MacroDef } from "./defaults";
 import { send, lastReply, connected } from "./lcncWs";
+import { toolTypeLabel } from "./toolTypes";
 
 const props = defineProps<{
   feedSlider: number;
@@ -90,19 +91,7 @@ const currentToolData = computed(() =>
   tools.value.find(t => t.T === props.currentTool) ?? null
 );
 
-const TYPE_LABELS: Record<string, string> = {
-  endmill: "End Mill", ball: "Ball", bullnose: "Bull Nose", drill: "Drill",
-  chamfer: "Chamfer", countersink: "C/Sink", dovetail: "Dovetail",
-  facemill: "Face Mill", lollipop: "Lollipop", slotmill: "Slot Mill",
-  threadmill: "Thread Mill", formmill: "Form Mill", radiusmill: "Radius Mill",
-  tapered: "Tapered", probe: "Probe", tap: "Tap", engraver: "Engraver", other: "Other",
-};
-
-const toolTypeLabel = computed(() => {
-  const t = currentToolData.value?.type;
-  if (!t) return "---";
-  return TYPE_LABELS[t] || t;
-});
+const toolTypeLbl = computed(() => toolTypeLabel(currentToolData.value?.type));
 
 // ─── Preview frame sizing ────────────────────────────────────
 const previewFrameRef = ref<HTMLElement | null>(null);
@@ -237,7 +226,7 @@ onBeforeUnmount(() => _previewRo?.disconnect());
           </div>
           <div class="spActualRow">
             <span class="label-muted md">Type</span>
-            <span class="val-status md">{{ toolTypeLabel }}</span>
+            <span class="val-status md">{{ toolTypeLbl }}</span>
           </div>
           <div class="spActualRow">
             <span class="label-muted md">Description</span>
