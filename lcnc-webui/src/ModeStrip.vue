@@ -25,7 +25,6 @@ const props = defineProps<{
   jogIncrement: number;
   minJogVel: number;
   iniIncrements: number[] | null;
-  isTeleop: boolean;
   isHomed: boolean;
   jogDisabled: boolean;
   touchoff: number[];
@@ -37,7 +36,7 @@ const emit = defineEmits<{
   (e: "update:jogVel", v: number): void;
   (e: "update:angularJogVel", v: number): void;
   (e: "update:jogIncrement", v: number): void;
-  (e: "toggleTeleop"): void;
+
   (e: "homeAll"): void;
   (e: "unhomeAll"): void;
   (e: "homeAxis", joint: number): void;
@@ -249,9 +248,6 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
           <MachineRadio gate="jogIncrement" name="jogStep" :value="opt.value" :modelValue="jogIncrement" @update:modelValue="(v: string | number | undefined) => { if (v != null) emit('update:jogIncrement', Number(v)) }" />
           <span>{{ opt.label }}</span>
         </label>
-        <MachineBtn type="manage" size="xs" :disabled="isDisabled" :active="isTeleop" @click="emit('toggleTeleop')">
-          {{ isTeleop ? "World" : "Joint" }}
-        </MachineBtn>
       </div>
 
       <!-- Setup section: WCS + touch-off + homing + go-to -->

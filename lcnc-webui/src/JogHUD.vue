@@ -22,7 +22,6 @@ const props = defineProps<{
   jogIncrement: number;
   minJogVel: number;
   iniIncrements: number[] | null;
-  isTeleop: boolean;
   isHomed: boolean;
   disabled?: boolean;
 }>();
@@ -31,7 +30,7 @@ const emit = defineEmits<{
   (e: "update:jogVel", vel: number): void;
   (e: "update:angularJogVel", vel: number): void;
   (e: "update:jogIncrement", val: number): void;
-  (e: "toggleTeleop"): void;
+
 }>();
 
 const extraAxes = computed(() => {
@@ -190,19 +189,6 @@ function stopJog(s: Sector, e?: PointerEvent) {
     <div class="controlGrid">
       <!-- Mode row -->
       <div class="k">Mode</div>
-      <MachineBtn
-        type="manage"
-        size="xs"
-        :disabled="disabled"
-        :active="isTeleop"
-        @click="emit('toggleTeleop')"
-        :title="isTeleop ? 'Switch to Joint mode' : (isHomed ? 'Switch to World mode' : 'Home all axes first')"
-      >
-        {{ isTeleop ? "World" : "Joint" }}
-      </MachineBtn>
-      <span v-if="!isHomed" class="modeHint">Home first</span>
-      <span v-else></span>
-
       <!-- Linear speed row -->
       <div class="k">{{ abcAxes.length > 0 ? 'Linear' : 'Speed' }}</div>
       <MachineSlider

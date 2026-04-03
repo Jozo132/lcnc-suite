@@ -812,9 +812,7 @@ function unhomeAxis(joint: number) {
   fire({ cmd: "unhome", joint });
 }
 
-function toggleTeleop() {
-  fire(isTeleop.value ? { cmd: "teleop_disable" } : { cmd: "teleop_enable" });
-}
+
 
 function cycleStart() {
   fire({ cmd: "cycle_start" });
@@ -1096,12 +1094,7 @@ watch(viewerGcode, (newGcode) => {
   gcodeStats.value = newGcode?.stats ?? null;
 });
 
-/** Auto-switch to teleop after all joints home (standard LinuxCNC UI behavior) */
-watch(isHomed, (nowHomed, wasHomed) => {
-  if (nowHomed && !wasHomed && armed.value) {
-    send({ cmd: "teleop_enable" });
-  }
-});
+
 </script>
 
 <template>
@@ -1174,7 +1167,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
               :jogVel="jogVel"
               :angularJogVel="angularJogVel"
               :isHomed="isHomed"
-              :isTeleop="isTeleop"
               :maxJogVel="maxJogVel"
               :maxAngularJogVel="maxAngularJogVel"
               :minAngularJogVel="minAngularJogVel"
@@ -1193,7 +1185,7 @@ watch(isHomed, (nowHomed, wasHomed) => {
               @update:jogVel="jogVel = $event"
               @update:angularJogVel="angularJogVel = $event"
               @update:jogIncrement="jogIncrement = $event"
-              @toggleTeleop="toggleTeleop"
+
               @homeAll="homeAll"
               @unhomeAll="unhomeAll"
               @setAxis="setAxis"
@@ -1430,7 +1422,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
         :jogIncrement="jogIncrement"
         :minJogVel="minJogVel"
         :iniIncrements="iniIncrements"
-        :isTeleop="isTeleop"
         :isHomed="isHomed"
         :jogDisabled="!permissions.jog"
         :touchoff="touchoff"
@@ -1440,7 +1431,6 @@ watch(isHomed, (nowHomed, wasHomed) => {
         @update:angularJogVel="angularJogVel = $event"
         @update:jogIncrement="jogIncrement = $event"
         @resetJogVel="jogVel = defaultJogVel"
-        @toggleTeleop="toggleTeleop"
         @homeAll="homeAll"
         @unhomeAll="unhomeAll"
         @homeAxis="homeAxis"

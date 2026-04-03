@@ -2096,6 +2096,8 @@ def handle_command(msg: Dict[str, Any], armed: bool):
         if cmd == "unhome_all":
             require_armed(armed)
             set_mode(linuxcnc.MODE_MANUAL)
+            CMD.teleop_enable(0)  # unhome requires joint mode
+            CMD.wait_complete()
             CMD.unhome(-1)  # -1 unhomes all axes
             return {"ok": True}
 
@@ -2110,21 +2112,9 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             require_armed(armed)
             joint = int(msg.get("joint", -1))
             set_mode(linuxcnc.MODE_MANUAL)
+            CMD.teleop_enable(0)  # unhome requires joint mode
+            CMD.wait_complete()
             CMD.unhome(joint)
-            return {"ok": True}
-
-        if cmd == "teleop_enable":
-            require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
-            CMD.teleop_enable(1)
-            CMD.wait_complete()
-            return {"ok": True}
-
-        if cmd == "teleop_disable":
-            require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
-            CMD.teleop_enable(0)
-            CMD.wait_complete()
             return {"ok": True}
 
         if cmd == "cycle_start":

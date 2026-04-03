@@ -38,9 +38,6 @@ export type WsCommand =
   // Homing
   | { cmd: "home_all" }
   | { cmd: "unhome_all" }
-  // Teleop
-  | { cmd: "teleop_enable" }
-  | { cmd: "teleop_disable" }
   // Program execution
   | { cmd: "cycle_start" }
   | { cmd: "auto_run"; line: number; spindle_dir?: string; spindle_speed?: number }
