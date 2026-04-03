@@ -207,6 +207,15 @@ fieldset:disabled textarea {
   opacity: var(--opacity-disabled) !important;
   cursor: not-allowed;
 }
+/* Legend children are exempt from fieldset:disabled per HTML spec —
+   restore opacity so Arm/E-Stop are never visually dimmed.
+   Only matches controls inside an enabled inner Gate (gate="always"),
+   so Machine On (inside disabled <Gate gate="safety">) stays dimmed. */
+fieldset:disabled > legend fieldset:not([disabled]) button,
+fieldset:disabled > legend fieldset:not([disabled]) input {
+  opacity: 1 !important;
+  cursor: pointer;
+}
 
 input[type="range"] {
   -webkit-appearance: none;
