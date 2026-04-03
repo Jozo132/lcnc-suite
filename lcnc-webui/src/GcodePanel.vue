@@ -536,14 +536,12 @@ async function saveEdit() {
 
     <!-- Program control -->
     <div class="controlRow">
-      <div class="row-tight">
-        <MachineBtn type="start" class="ctrlBtn" @click="onStartClick" :disabled="!activeFile || editing">
-          <Play :size="14" class="ctrlIcon" /> {{ selectedLine && selectedLine > 1 ? `Start L${selectedLine}` : 'Start' }}
-        </MachineBtn>
-        <MachineBtn type="step" class="ctrlBtn" @click="emit('cycleStep')" :disabled="!activeFile || editing">
-          <SkipForward :size="14" class="ctrlIcon" /> Step
-        </MachineBtn>
-      </div>
+      <MachineBtn type="start" class="ctrlBtn" @click="onStartClick" :disabled="!activeFile || editing">
+        <Play :size="14" class="ctrlIcon" /> {{ selectedLine && selectedLine > 1 ? `Start L${selectedLine}` : 'Start' }}
+      </MachineBtn>
+      <MachineBtn type="step" class="ctrlBtn" @click="emit('cycleStep')" :disabled="!activeFile || editing">
+        <SkipForward :size="14" class="ctrlIcon" /> Step
+      </MachineBtn>
       <MachineBtn :type="isPaused ? 'resume' : 'pause'" class="ctrlBtn"
         @click="isPaused ? emit('cycleResume') : emit('cyclePause')">
         <span class="stable-width"><span :class="{ alt: isPaused }"><Pause :size="14" class="ctrlIcon" /> Pause</span><span :class="{ alt: !isPaused }"><Play :size="14" class="ctrlIcon" /> Resume</span></span>
@@ -728,7 +726,7 @@ async function saveEdit() {
 
 .controlRow {
   display: flex;
-  gap: var(--gap-controls);
+  gap: var(--gap-tight);
 }
 
 .ctrlBtn {
@@ -814,7 +812,7 @@ async function saveEdit() {
 .headerActions {
   display: flex;
   align-items: center;
-  gap: var(--gap-controls);
+  gap: var(--gap-tight);
   flex-shrink: 0;
 }
 

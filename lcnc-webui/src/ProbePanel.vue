@@ -13,7 +13,6 @@ const props = defineProps<{
   probedPosition: number[] | null;
   workPos: number[];
   probeResults: Record<string, number> | null;
-  g5xLabel: string;
   eoffsetZ: number | null;
   eoffsetEnabled: boolean;
   compMethod: number | null;  // 0=nearest, 1=linear, 2=cubic
@@ -26,7 +25,6 @@ const emit = defineEmits<{
   (e: "abort"): void;
   (e: "listProbeMacros"): void;
   (e: "setProbeVars", vars: Record<string, number>): void;
-  (e: "setG5x", gcode: string): void;
   (e: "getProbeResults"): void;
   (e: "loadSurfaceToViewer"): void;
   (e: "setCompensation", enable: boolean): void;
@@ -34,7 +32,6 @@ const emit = defineEmits<{
   (e: "clearSurfaceMap"): void;
 }>();
 
-const g5xOptions = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"];
 
 const can = usePermissions();
 
@@ -545,18 +542,6 @@ function fmtR(key: string): string {
         <MachineBtn type="tab" :selected="probeView === 'angle'" @click="probeView = 'angle'">Angle</MachineBtn>
         <MachineBtn type="tab" :selected="probeView === 'surface'" @click="probeView = 'surface'">Surface</MachineBtn>
         <MachineBtn type="tab" :selected="probeView === 'cal'" @click="probeView = 'cal'">Calibrate</MachineBtn>
-    </div>
-
-    <!-- WCS selector -->
-    <div class="row-tight g5xRow">
-      <MachineBtn
-        v-for="g in g5xOptions"
-        :key="g"
-        type="wcs"
-        muted
-        :selected="g === g5xLabel"
-        @click="emit('setG5x', g)"
-      >{{ g }}</MachineBtn>
     </div>
 
     <!-- Control bar -->
@@ -1294,11 +1279,6 @@ function fmtR(key: string): string {
 .arrowHead {
   fill: var(--ok);
   opacity: 0.8;
-}
-
-/* WCS selector row */
-.g5xRow {
-  flex-wrap: wrap;
 }
 
 /* Fixed-height section so grid + params don't shift when switching tabs */
