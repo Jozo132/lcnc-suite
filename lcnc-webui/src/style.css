@@ -581,13 +581,15 @@ label:has(input:disabled, select:disabled) {
   min-width: auto;
   text-align: left;
   width: 70vw;
+  max-width: calc(100% - 2 * var(--gap-panel));
+  max-height: calc(100% - 2 * var(--gap-panel));
   height: 70vh;
   display: flex;
   flex-direction: column;
   overflow: clip;
 }
 
-.dialog.lg.dialog-full { height: 75vh; }
+.dialog.lg.dialog-full { height: 90%; }
 
 .dialogHeader {
   display: flex;
