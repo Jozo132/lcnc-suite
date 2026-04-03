@@ -138,16 +138,14 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - XY + Z jogging with diagonal support and World/Joint mode toggle
 - Configurable keyboard shortcuts with dedicated Settings tab: master enable/disable toggle, jog sub-toggle, click-to-capture rebindable key bindings for all actions (jog, E-Stop, cycle start, abort), duplicate detection, visual key highlights
 - Gamepad jogging (Xbox/PS/standard) with proportional analog sticks, D-pad discrete jog, dead man switch, 12 configurable button actions, deadzone visualization
-- Sidebar spindle popover (FWD/REV/STOP, RPM input, live actual speed, override slider)
-- Feed, spindle, and rapid override popovers with sliders and presets
+- Bottom action strip with jog wheel, speed slider, step increments, touch-off/homing grid, WCS selector, override sliders, spindle controls (FWD/REV/STOP, RPM, actual speed, load), coolant toggles, tool management (load/unload/measure, metadata, 2D preview)
 - MDI command interface with persistent history
 - G-code file browser with drag-and-drop upload
 - G-code viewer with syntax highlighting, inline editor with save, program controls, progress bar, and run-from-line
 - G-code context help: hover any G/M-code token for instant tooltip, click to open searchable reference dialog
 - Single-block step mode
 - Optional stop / block delete toggles
-- 3D machine visualization with Three.js (colorized toolpath, backplot, HUD overlays, STL machine model with per-part coloring/opacity)
-- HUD overlay pills on 3D viewer: jog, gcode, spindle, override, and setup controls
+- 3D machine visualization with Three.js (colorized toolpath, backplot, STL machine model with per-part coloring/opacity)
 - 9-layer visibility/opacity control: backplot, toolpath, machine, workpiece, bounds, work zero, HUD, surface, tool
 - Probe panel with 7 views: Outside/Inside Corners (3x3 grid), Boss/Pocket, Ridge/Valley, Edge Angle, Calibrate (round/rect), and Surface Scan
 - Probe results grid (X/Y/Z probed, diameter, width, center, edge angle) from real-time DEBUG EVAL messages
@@ -161,7 +159,7 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - HAL inspector built into Settings tab (tree view with search, live pin values)
 - Server-authoritative settings with multi-client sync (probe, toolsetter, gamepad, keyboard, macros, machine, camera, MDI settings shared across all connected UIs)
 - 5 theme modes (auto/light/dark/high-contrast light/high-contrast dark)
-- Responsive auto-layout (1–4 panels based on viewport) with portrait and landscape modes
+- Responsive auto-layout (content panels + bottom action strip) with portrait and landscape modes
 - Connected clients display with IP and armed status
 - Dynamic connection label (local vs. LAN hostname)
 - Error/message panel with persistent log (survives reload), unread count badge, per-message and bulk copy to clipboard, date+time timestamps
@@ -1015,36 +1013,41 @@ lcnc-suite/
 │       └── *.stl              # STL mesh files for machine components
 ├── lcnc-webui/                # Reference Vue 3 UI
 │   ├── src/
-│   │   ├── App.vue            # Root component, state, layout, sidebar popovers
-│   │   ├── permissions.ts     # Centralized button permission system
+│   │   ├── App.vue            # Root component, state, layout, action strip
+│   │   ├── permissions.ts     # Centralized permission system (11 classes)
+│   │   ├── machineControls.ts # Machine controls catalog (BUTTON_TYPES + INPUT_GATES)
 │   │   ├── defaults.ts        # Persistent settings (section registry, server sync)
 │   │   ├── lcnc.ts            # LinuxCNC constants and WsCommand types
 │   │   ├── lcncWs.ts          # WebSocket client with heartbeat
 │   │   ├── lcncApi.ts         # REST API helpers (file ops, settings)
+│   │   ├── format.ts          # Shared formatters (coordinates, RPM, time, size)
+│   │   ├── toolTypes.ts       # Tool type labels (18 types)
+│   │   ├── gcodeHighlight.ts  # G-code syntax tokenizer + highlighter
 │   │   ├── useGamepad.ts      # Gamepad polling composable (analog + buttons)
 │   │   ├── gcodeReference.ts  # G/M-code reference data + lookup map
 │   │   ├── main.ts            # App bootstrap with settings migration
 │   │   ├── style.css          # Global styles, design tokens, theme vars
+│   │   ├── Gate.vue           # Permission gate (<fieldset :disabled>)
+│   │   ├── MachineBtn.vue     # Catalog-aware button (wraps Btn.vue)
+│   │   ├── MachineInput.vue   # Catalog-aware input (+ Toggle/Slider/Select/Radio/Color)
+│   │   ├── SafetyStrip.vue    # Sidebar safety + status display
+│   │   ├── ModeStrip.vue      # Action strip: jog, speed, touch-off, homing, WCS
+│   │   ├── ControlsStrip.vue  # Action strip: overrides, spindle, coolant, tool
 │   │   ├── TabPanel.vue       # Tab selector for content panels
 │   │   ├── Toolbar.vue        # 3D viewer toolbar (view presets, layer toggles)
 │   │   ├── ThreeViewer.vue    # 3D machine visualization (Three.js)
 │   │   ├── ManualPanel.vue    # DRO + jogging + MDI (consolidated)
 │   │   ├── DroPanel.vue       # Digital readout with G5x, zero, home
 │   │   ├── JogPanel.vue       # Jog wheel + speed/increment controls
-│   │   ├── JogButton.vue      # Press-and-hold jog button with pointer capture
 │   │   ├── GcodePanel.vue     # G-code viewer + editor + program controls
 │   │   ├── GcodeReferenceDialog.vue # Searchable G/M-code reference dialog
 │   │   ├── ProbePanel.vue     # Probe operations + calibration + results
 │   │   ├── ToolTablePanel.vue # Tool table editor with library metadata
+│   │   ├── ToolPreview.vue    # 2D tool side-view preview (Three.js)
+│   │   ├── OffsetPanel.vue    # WCS offset table editor (G54–G59.3)
 │   │   ├── CameraViewer.vue   # Camera feed with SVG overlay (MJPEG)
 │   │   ├── SettingsPanel.vue  # Application settings (sub-tabbed)
-│   │   ├── GamepadLiveInput.vue # Live gamepad axis/button visualization
-│   │   ├── DebugTab.vue       # Debug/diagnostics tab
-│   │   ├── JogHUD.vue         # Jog overlay on 3D viewer
-│   │   ├── GcodeHUD.vue       # G-code overlay on 3D viewer
-│   │   ├── SpindleHUD.vue     # Spindle overlay on 3D viewer
-│   │   ├── OverrideHUD.vue    # Override overlay on 3D viewer
-│   │   └── SetupHUD.vue       # Setup/homing overlay on 3D viewer
+│   │   └── DebugTab.vue       # Debug/diagnostics tab
 │   └── package.json
 ├── subroutines/               # G-code subroutines (bundled)
 │   ├── probe_basic/           # Probing routines (from kcjengr/probe_basic, GPL v3)
