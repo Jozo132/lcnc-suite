@@ -370,7 +370,7 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
 }
 .setupGrid {
   display: grid;
-  grid-template-columns: 60px 1fr 1fr;
+  grid-template-columns: 80px 1fr 1fr;
   gap: var(--gap-tight);
   align-content: center;
   height: 100%;
