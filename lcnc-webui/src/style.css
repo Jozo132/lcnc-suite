@@ -730,6 +730,7 @@ label:has(input:disabled, select:disabled) {
 .val-status.warn   { color: var(--warn); }
 .val-status.muted  { opacity: var(--opacity-muted); }
 .val-status.mono   { font-family: var(--font-mono); }
+.mono { font-family: var(--font-mono); }
 
 /* Radio button label row (jog increments, WCS selector) */
 .radio-label    { display: flex; align-items: center; gap: var(--gap-tight); font-family: var(--font-mono); font-size: var(--fs-base); cursor: pointer; white-space: nowrap; }

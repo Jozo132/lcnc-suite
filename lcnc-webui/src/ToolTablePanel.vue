@@ -823,10 +823,6 @@ defineExpose({ openAdd, fetchTools, triggerImport });
   text-align: center;
 }
 
-.mono {
-  font-family: var(--font-mono);
-}
-
 .emptyState {
   padding: 24px;
   text-align: center;
