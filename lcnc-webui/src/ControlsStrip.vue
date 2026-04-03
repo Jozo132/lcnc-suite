@@ -1,11 +1,14 @@
 <script setup lang="ts">
+import { ref, reactive, computed, watch, onMounted, onBeforeUnmount } from "vue";
 import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineSlider from "./MachineSlider.vue";
 import MachineInput from "./MachineInput.vue";
 import MachineToggle from "./MachineToggle.vue";
+import ToolPreview from "./ToolPreview.vue";
 import { RotateCw, RotateCcw, Square } from "lucide-vue-next";
 import { STEP_RPM, STEP_OVERRIDE, STEP_RAPID_OVERRIDE, type MacroDef } from "./defaults";
+import { send, lastReply, connected } from "./lcncWs";
 
 const props = defineProps<{
   feedSlider: number;
@@ -67,6 +70,47 @@ function formatRpm(val: number | null): string {
 function onFeedSlider(v: number) { emit('update:feedSlider', v); }
 function onSpindleSlider(v: number) { emit('update:spindleSlider', v); }
 function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
+
+// ─── Tool table for preview ──────────────────────────────────
+const tools = ref<Record<string, any>[]>([]);
+
+function fetchTools() { send({ cmd: "get_tool_table" }); }
+
+watch(lastReply, (reply) => {
+  if (reply?.ok && Array.isArray(reply.tools)) {
+    tools.value = reply.tools;
+  }
+}, { flush: "sync" });
+
+onMounted(fetchTools);
+watch(connected, (val) => { if (val) setTimeout(fetchTools, 300); });
+watch(() => props.currentTool, fetchTools);
+
+const currentToolData = computed(() =>
+  tools.value.find(t => t.T === props.currentTool) ?? null
+);
+
+// ─── Preview frame sizing ────────────────────────────────────
+const previewFrameRef = ref<HTMLElement | null>(null);
+const previewSize = reactive({ w: 0, h: 0 });
+let _previewRo: ResizeObserver | null = null;
+
+onMounted(() => {
+  _previewRo = new ResizeObserver(entries => {
+    for (const e of entries) {
+      previewSize.h = Math.floor(e.contentRect.height);
+      previewSize.w = Math.floor(e.contentRect.width);
+    }
+  });
+  if (previewFrameRef.value) _previewRo.observe(previewFrameRef.value);
+});
+
+watch(previewFrameRef, (el, old) => {
+  if (old) _previewRo?.unobserve(old);
+  if (el) _previewRo?.observe(el);
+});
+
+onBeforeUnmount(() => _previewRo?.disconnect());
 </script>
 
 <template>
@@ -143,35 +187,53 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
 
     <!-- RIGHT-MOST: Tool -->
     <div class="toolBlock">
-      <div class="toolInputRow">
-        <span class="label-muted md">Tool #</span>
-        <MachineInput gate="rpmInput" type="number" class="toolNumInput"
-          :value="toolNumber"
-          @input="emit('update:toolNumber', +($event.target as HTMLInputElement).value)"
-          @change="emit('saveToolNumber')"
-          :min="1" />
-        <MachineBtn type="mdi" :disabled="probing" @click="emit('loadTool')">Load</MachineBtn>
-        <MachineBtn type="toolUnload" :disabled="probing" @click="emit('unloadTool')">Unload</MachineBtn>
+      <div class="toolControls">
+        <div class="toolInputRow">
+          <span class="label-muted md toolLabel">Tool #</span>
+          <MachineInput gate="rpmInput" type="number" class="toolNumInput"
+            :value="toolNumber"
+            @input="emit('update:toolNumber', +($event.target as HTMLInputElement).value)"
+            @change="emit('saveToolNumber')"
+            :min="1" />
+          <MachineBtn type="mdi" :disabled="probing" @click="emit('loadTool')">Load</MachineBtn>
+          <MachineBtn type="toolUnload" :disabled="probing" @click="emit('unloadTool')">Unload</MachineBtn>
+        </div>
+
+        <div class="toolActionRow">
+          <MachineBtn type="mdi" :disabled="probing" @click="emit('measureAuto')">Measure</MachineBtn>
+          <MachineBtn type="manage" @click="emit('openToolTable')">Table</MachineBtn>
+        </div>
+
+        <div class="toolStats">
+          <div class="spActualRow">
+            <span class="label-muted md">Current Tool</span>
+            <span class="val-status md mono">T{{ currentTool }}</span>
+          </div>
+          <div class="spActualRow">
+            <span class="label-muted md">Diameter</span>
+            <span class="val-status md mono">{{ toolDiameter != null ? toolDiameter.toFixed(3) : '---' }}</span>
+          </div>
+          <div class="spActualRow">
+            <span class="label-muted md">Z Offset</span>
+            <span class="val-status md mono">{{ toolLength != null ? toolLength.toFixed(3) : '---' }}</span>
+          </div>
+        </div>
       </div>
 
-      <div class="toolActionRow">
-        <MachineBtn type="mdi" :disabled="probing" @click="emit('measureAuto')">Measure</MachineBtn>
-        <MachineBtn type="manage" @click="emit('openToolTable')">Table</MachineBtn>
-      </div>
-
-      <div class="toolStats">
-        <div class="spActualRow">
-          <span class="label-muted md">Current Tool</span>
-          <span class="val-status md mono">T{{ currentTool }}</span>
-        </div>
-        <div class="spActualRow">
-          <span class="label-muted md">Diameter</span>
-          <span class="val-status md mono">{{ toolDiameter != null ? toolDiameter.toFixed(3) : '---' }}</span>
-        </div>
-        <div class="spActualRow">
-          <span class="label-muted md">Z Offset</span>
-          <span class="val-status md mono">{{ toolLength != null ? toolLength.toFixed(3) : '---' }}</span>
-        </div>
+      <div v-if="currentToolData && currentTool > 0" ref="previewFrameRef" class="toolPreviewFrame">
+        <ToolPreview v-if="previewSize.w > 0"
+          :diameter="currentToolData.D || 0"
+          :length="Math.abs(currentToolData.Z) || 0"
+          :fluteLength="currentToolData.flute_length || Math.abs(currentToolData.Z || 0) * 0.6"
+          :shaftDiameter="currentToolData.shoulder_diameter || undefined"
+          :toolType="currentToolData.type || undefined"
+          :cornerRadius="currentToolData.corner_radius || undefined"
+          :taperAngle="currentToolData.taper_angle || undefined"
+          :pointAngle="currentToolData.point_angle || undefined"
+          :tipDiameter="currentToolData.tip_diameter || undefined"
+          :bodyLength="currentToolData.body_length || undefined"
+          :width="previewSize.w" :height="previewSize.h"
+        />
       </div>
     </div>
   </div>
@@ -250,16 +312,38 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
 /* ── Tool ── */
 .toolBlock {
   display: flex;
-  flex-direction: column;
   gap: var(--gap-controls);
   border-left: 1px solid var(--border-subtle);
   padding-left: var(--gap-controls);
+  align-items: stretch;
+}
+
+.toolControls {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-controls);
+}
+
+.toolPreviewFrame {
+  align-self: stretch;
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: var(--gap-controls);
 }
 
 .toolInputRow {
   display: flex;
   align-items: stretch;
   gap: var(--gap-tight);
+}
+
+.toolLabel {
+  align-self: center;
 }
 
 .toolNumInput {
@@ -279,5 +363,6 @@ function onRapidSlider(v: number) { emit('update:rapidSlider', v); }
   display: flex;
   flex-direction: column;
   gap: var(--gap-tight);
+  flex: 1;
 }
 </style>
