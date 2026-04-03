@@ -138,9 +138,9 @@ defineProps<{
   border-radius: var(--radius-md);
   transition: opacity 0.15s, background 0.15s;
 }
-.b-icon:hover:not(:disabled) { opacity: 0.8; background: color-mix(in oklab, var(--fg) 10%, transparent); }
+.b-icon:hover:not(:disabled) { opacity: var(--opacity-secondary); background: color-mix(in oklab, var(--fg) 10%, transparent); }
 .b-icon:active:not(:disabled) { opacity: 1; }
-.b-icon:disabled { opacity: 0.3; cursor: not-allowed; }
+.b-icon:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 
 /* ---- Inline button ---- */
 .b-inline {

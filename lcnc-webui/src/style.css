@@ -53,8 +53,16 @@
   --fw-bold: 700;
 
   /* Opacity */
-  --opacity-muted: 0.6;   /* secondary/dimmed text, sample counts, waiting states */
+  --opacity-subtle: 0.3;    /* separators, faint visual dividers */
   --opacity-disabled: 0.4;
+  --opacity-muted: 0.6;     /* secondary/dimmed text, sample counts, waiting states */
+  --opacity-secondary: 0.8; /* dialog body text, syntax comments, icon hover */
+
+  /* Syntax highlighting */
+  --syntax-mcode: #c586c0;
+  --syntax-coord: #4ec9b0;
+  --syntax-param: #9cdcfe;
+  --syntax-comment: #6a9955;
 
   /* Highlight tiers (fg mixed into button-bg) */
   --hl-hover: color-mix(in oklab, var(--fg) 12%, var(--button-bg));
@@ -522,7 +530,7 @@ label:has(input:disabled, select:disabled) {
 .sep {
   height: 1px;
   background: var(--border);
-  opacity: 0.3;
+  opacity: var(--opacity-subtle);
   flex-shrink: 0;
 }
 
@@ -616,7 +624,7 @@ label:has(input:disabled, select:disabled) {
   font-size: var(--fs-lg);
   margin-bottom: var(--gap-controls);
   line-height: 1.5;
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
 }
 
 .dialogActions {
@@ -628,10 +636,10 @@ label:has(input:disabled, select:disabled) {
 
 /* G-code syntax highlighting tokens */
 .token-gcode, .tok-gcode { color: var(--info); font-weight: var(--fw-semibold); }
-.token-mcode, .tok-mcode { color: #c586c0; font-weight: var(--fw-semibold); }
-.token-coord, .tok-coord { color: #4ec9b0; }
-.token-param, .tok-param { color: #9cdcfe; }
-.token-comment, .tok-comment { color: #6a9955; opacity: 0.8; }
+.token-mcode, .tok-mcode { color: var(--syntax-mcode); font-weight: var(--fw-semibold); }
+.token-coord, .tok-coord { color: var(--syntax-coord); }
+.token-param, .tok-param { color: var(--syntax-param); }
+.token-comment, .tok-comment { color: var(--syntax-comment); opacity: var(--opacity-secondary); }
 .token-text, .tok-text { color: var(--fg); }
 
 /* ---- Code viewer (shared by GcodePanel, MDI history) ---- */
