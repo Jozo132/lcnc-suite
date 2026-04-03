@@ -2066,7 +2066,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 return blocked
 
             axis = int(msg.get("axis"))
-            vel = float(msg.get("vel", 0.0))
+            vel = abs(float(msg.get("vel", 0.0)))  # speed only; distance carries direction
             dist = float(msg.get("distance", 0.0))
             set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
@@ -2084,7 +2084,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
-                CMD.jog(linuxcnc.JOG_INCREMENT, jf, int(entry["axis"]), float(entry["vel"]), float(entry["distance"]))
+                CMD.jog(linuxcnc.JOG_INCREMENT, jf, int(entry["axis"]), abs(float(entry["vel"])), float(entry["distance"]))
             return {"ok": True}
 
         if cmd == "home_all":
