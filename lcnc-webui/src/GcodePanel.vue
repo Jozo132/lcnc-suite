@@ -491,26 +491,31 @@ async function saveEdit() {
     <!-- Run from line confirmation dialog -->
     <div v-if="showRunDialog" class="dialogOverlay" @click.self="showRunDialog = false">
       <div class="dialog md runDialog">
-        <div class="dialogTitle">Run from Line {{ selectedLine }}</div>
-        <div class="dialogBody">
-          Lines 1–{{ (selectedLine ?? 1) - 1 }} will be interpreted but motion suppressed.
-          Arc commands (G2/G3) before the start line may cause
-          radius errors and abort the run.
+        <div class="dialogHeader">
+          <span class="dialogTitle">Run from Line {{ selectedLine }}</span>
+          <MachineBtn type="close" @click="showRunDialog = false">&times;</MachineBtn>
         </div>
-
-        <div class="dialogSection">
-          <div class="sub">Spindle Preset</div>
-          <div class="spindleBtnRow">
-            <MachineBtn type="tab" class="optBtn" :selected="dialogSpindleDir === 'off'"
-                    @click="dialogSpindleDir = 'off'">Off</MachineBtn>
-            <MachineBtn type="tab" class="optBtn" :selected="dialogSpindleDir === 'forward'"
-                    @click="dialogSpindleDir = 'forward'">FWD</MachineBtn>
-            <MachineBtn type="tab" class="optBtn" :selected="dialogSpindleDir === 'reverse'"
-                    @click="dialogSpindleDir = 'reverse'">REV</MachineBtn>
+        <div class="dialogContent">
+          <div class="dialogBody">
+            Lines 1–{{ (selectedLine ?? 1) - 1 }} will be interpreted but motion suppressed.
+            Arc commands (G2/G3) before the start line may cause
+            radius errors and abort the run.
           </div>
-          <div v-if="dialogSpindleDir !== 'off'" class="rpmRow">
-            <label>RPM</label>
-            <MachineInput gate="displaySettingNum" type="number" v-model.number="dialogSpindleSpeed" min="0" :step="STEP_RPM" />
+
+          <div class="dialogSection">
+            <div class="sub">Spindle Preset</div>
+            <div class="spindleBtnRow">
+              <MachineBtn type="tab" class="optBtn" :selected="dialogSpindleDir === 'off'"
+                      @click="dialogSpindleDir = 'off'">Off</MachineBtn>
+              <MachineBtn type="tab" class="optBtn" :selected="dialogSpindleDir === 'forward'"
+                      @click="dialogSpindleDir = 'forward'">FWD</MachineBtn>
+              <MachineBtn type="tab" class="optBtn" :selected="dialogSpindleDir === 'reverse'"
+                      @click="dialogSpindleDir = 'reverse'">REV</MachineBtn>
+            </div>
+            <div v-if="dialogSpindleDir !== 'off'" class="rpmRow">
+              <label>RPM</label>
+              <MachineInput gate="displaySettingNum" type="number" v-model.number="dialogSpindleSpeed" min="0" :step="STEP_RPM" />
+            </div>
           </div>
         </div>
 
