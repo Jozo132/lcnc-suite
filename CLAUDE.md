@@ -28,6 +28,10 @@ Gateway connects to LinuxCNC via Python bindings (`linuxcnc.stat`, `linuxcnc.com
 - `ToolTablePanel.vue` — Tool table with load/delete dialogs, STL upload, 2D preview
 - `ToolPreview.vue` — Small orthographic Three.js canvas for tool side-view preview
 - `toolGeometry.ts` — Shared tool geometry utilities (vertex colors, fallback cylinder)
+- `toolTypes.ts` — Shared TOOL_TYPE_LABELS map (18 types) + toolTypeLabel() function
+- `format.ts` — Shared formatters (fmtCoord, fmtNum, fmtCell, fmtOffset, fmtRpm, fmtElapsed, fmtDuration, fmtDist, fmtSize)
+- `gcodeHighlight.ts` — G-code syntax tokenizer + highlighter (shared by GcodePanel + MDI history)
+- `OffsetPanel.vue` — WCS offset table editor (G54–G59.3), inline cell editing, auxiliary rows (G92, Tool, Comp)
 - `CameraViewer.vue` — Camera tab with MJPEG feed, SVG crosshair/circle/grid overlay, floating toolbar
 - `SettingsPanel.vue` — Sub-tabbed settings (3D Viewer | Machine | Toolsetter | Display | Camera | Macros | Gamepad | Keyboard | HAL | Debug)
 - `Gate.vue` — Permission gate wrapper: `<fieldset :disabled="!allow">` with `#exempt` slot
@@ -59,67 +63,15 @@ Left column (150px) with three sections:
 
 ## Safety System — Three Layers
 
-### HAL E-Stop Chain
+### Safety Layers
 
-`lcnc_webui.hal` inserts two AND gates and a heartbeat watchdog into the e-stop loop:
+1. **Disconnect handler** — armed client disconnects → immediate `jog_stop` + `abort`
+2. **Heartbeat watchdog** — client heartbeat timeout (3s) → auto-disarm + abort
+3. **HAL watchdog** — `lcnc_webui.hal` AND gates + watchdog (0.5s timeout) → ESTOP
 
-```
-user-enable-out ──┐
-                  AND2.0 ──┐
-connected ────────┘        AND2.1 ──► emc-enable-in
-watchdog.ok ───────────────┘
-```
+HAL heartbeat runs in an independent asyncio task (`_heartbeat_loop`), decoupled from status processing. Two concurrent paths per client: command path (always responsive) and status path (can be slow without affecting safety). Additional: server-authoritative arming, backend `require_armed()`, `fire()` 200ms anti-spam, auto-stop jogs on focus loss. Recovery: clear E-Stop → Machine On.
 
-Machine stays enabled only when ALL THREE: user hasn't pressed e-stop, at least one web client is **connected**, AND the gateway heartbeat is alive (watchdog hasn't tripped). When any condition drops, LinuxCNC enters **ESTOP** (task_state=1).
-
-### Layer Behavior
-
-| Trigger | Gateway action | `connected` pin | LinuxCNC state |
-|---------|---------------|----------------|----------------|
-| Armed client, normal operation | heartbeat toggles at 30Hz | TRUE | ON |
-| Clients connected, **none armed** | heartbeat toggles at 30Hz | TRUE | **ON** |
-| Last client disconnects | 3s grace period: heartbeat keeps toggling | TRUE (grace) | **ON** |
-| Grace period expires, no reconnect | pins drop | FALSE | **OFF** |
-| Page refresh (reconnect within 3s) | grace cancelled on reconnect | TRUE | **ON** |
-| Heartbeat timeout (armed), other clients exist | force-disarm + `abort()` + `jog_stop()` | TRUE | ON |
-| Heartbeat timeout (armed), last client | force-disarm + `abort()` + `jog_stop()` → grace starts | TRUE (grace) | ON |
-| Gateway crashes | watchdog detects socket close → resets all pins | FALSE | **ESTOP** |
-| Gateway freezes | heartbeat stops → watchdog trips after 0.5s | TRUE | **ESTOP** |
-| User presses E-Stop | `CMD.state(ESTOP)` + forces `connected: false` | FALSE (transient) | **ESTOP** |
-
-Recovery: clear E-Stop → Machine On. Motion commands still require `require_armed()`.
-
-### Heartbeat Architecture
-
-The HAL heartbeat runs in an **independent asyncio task** (`_heartbeat_loop`), decoupled from status processing. This prevents `poll_status` delays (NML IPC, HAL reads, WebSocket backpressure) from starving the heartbeat and causing false watchdog trips.
-
-**Two independent concurrent paths per client:**
-1. **Command path** (`ws.receive_text` → `handle_command`): processes E-Stop, abort, jog, MDI — always responsive
-2. **Status path** (`status_loop`): polls LinuxCNC state, sends updates to UI — can be slow without affecting safety
-
-**Failure mode coverage:**
-
-| Failure | Heartbeat | Watchdog | E-Stop | Outcome |
-|---------|-----------|----------|--------|---------|
-| Gateway process crash | stops | trips | N/A | ESTOP |
-| Gateway process freeze (GIL) | stops | trips | N/A | ESTOP |
-| All clients disconnect | grace period | alive during grace | N/A | Machine off after 3s |
-| `poll_status` slow/blocked | keeps toggling | alive | works | Stale display, controls work |
-| WebSocket backpressure | keeps toggling | alive | works | Delayed status, controls work |
-
-**Design trade-off**: a stuck `status_loop` (NML hang, executor blocked) results in frozen UI numbers, but all controls (E-Stop, abort, jog stop) remain functional via the independent command path. This is preferable to false watchdog trips from normal processing delays.
-
-### Pin Semantics
-
-- **`webui-safety.connected`**: TRUE when `bool(clients)` or during disconnect grace period — keeps machine alive; armed state gates motion commands via `require_armed()`, not the HAL pin
-- **`webui-safety.heartbeat`**: toggles every ~33ms (30Hz) via independent `_heartbeat_loop` task while gateway has active clients, or via `_disconnect_grace` during grace period; monitored by `watchdog` component (0.5s timeout)
-- **`watchdog.ok-out`**: TRUE while heartbeat keeps toggling within timeout; FALSE if gateway freezes or stops sending
-
-Additional safety mechanisms:
-- **Server-authoritative arming**: Each WebSocket client independently armed/disarmed; gateway is the source of truth
-- **Backend `require_armed()`**: Every motion command in gateway.py checks armed before executing
-- **Busy gate**: `fire()` 200ms anti-spam cooldown prevents double-execution
-- **Focus loss**: Auto-stop jogs on window blur / tab hidden
+Full layer behavior tables, pin semantics, and failure mode coverage in `safety-permissions.md` memory file.
 
 ### HAL Monitor Component (`webui-monitor`)
 
@@ -224,13 +176,17 @@ Three layers enforce permissions:
 
 ## Key Patterns
 
-- **No hardcoded visual styles** — never invent custom font-size, padding, border-radius, colors, or font-family for new elements. Always inherit from the nearest parent class or global base styles in `style.css`. New CSS should only override layout properties (flex, width, text-align, opacity). If a visual style doesn't exist, extend the existing class hierarchy or global base — never create one-off overrides. For color semantics: machine active states use `--ok` (green), form controls (toggles, radios, checkboxes) use `--info` (blue), danger/abort uses `--danger`, warnings use `--warn`. Always match existing patterns (e.g. `.controlBtn.active`, `.coolantToggle.active` in App.vue).
+- **No hardcoded visual styles** — never invent custom font-size, padding, border-radius, colors, opacity, or font-family for new elements. Always inherit from the nearest parent class or global base styles in `style.css`. New CSS should only override layout properties (flex, width, text-align). If a visual style doesn't exist, extend the existing class hierarchy or global base — never create one-off overrides. For color semantics: machine active states use `--ok` (green), form controls (toggles, radios, checkboxes) use `--info` (blue), danger/abort uses `--danger`, warnings use `--warn`.
 - **Spacing tokens** — use `--gap-tight` (4px, grouped toggles), `--gap-controls` (8px, button rows/form fields), `--gap-section` (12px, between sections), `--gap-panel` (20px, major divisions) for all layout gaps. Never hardcode gap/margin values for spacing between elements. Padding inside buttons/inputs is visual and stays hardcoded. Minimum gap between any clickable elements: `--gap-tight` (4px).
+- **Opacity tokens** — `--opacity-subtle` (0.3, separators), `--opacity-disabled` (0.4), `--opacity-muted` (0.6, secondary text), `--opacity-secondary` (0.8, dialog body, syntax comments). Never hardcode opacity values (exception: animation keyframes).
+- **Syntax highlight tokens** — `--syntax-mcode`, `--syntax-coord`, `--syntax-param`, `--syntax-comment` in `:root`. Token classes (`.token-gcode`/`.tok-gcode`, etc.) use these. `.token-gcode` uses `var(--info)`, `.token-text` uses `var(--fg)`.
+- **Shared modules** — `format.ts` (9 formatters: fmtCoord, fmtNum, fmtCell, fmtOffset, fmtRpm, fmtElapsed, fmtDuration, fmtDist, fmtSize), `toolTypes.ts` (TOOL_TYPE_LABELS + toolTypeLabel()), `gcodeHighlight.ts` (tokenizeCode + highlightGcode). Never duplicate formatters or tool type labels in components.
+- **Global utility classes** — `.mono` (font-mono), `.emptyState` (centered muted text), `.statusDot` (8px indicator with `.probing`/`.tripped` states), `.sub` (section heading — no margin, parent flex gap handles spacing), `.sep` (horizontal divider). Always use these instead of scoped equivalents. For horizontal dividers, always use `<div class="sep">` — never manual `border-bottom` as section separators.
 - `defaults.ts` section registry: `registerSection<T>(name, fallback, migrateFn)` + `loadSection`/`saveSection`. All sections are server-synced (no localStorage). Server is the single source of truth. Gateway sends `settings_init` on every WS connect. `sendBeacon` flushes pending saves on page exit. New sections must be added to `_VALID_SETTINGS_SECTIONS` in `gateway.py` and `SERVER_SECTIONS` in `main.ts`.
 - ViewPreset type is duplicated in ThreeViewer.vue and Toolbar.vue — update both when adding presets
 - Camera Z-up: `camera.up.set(0, 0, 1)`, except top view uses `(0, 1, 0)` to avoid gimbal lock
 - ThreeViewer uses ResizeObserver (not window resize) to handle v-show tab switching
-- Dialog overlays use `position: fixed; z-index: 1000` with global `button.primary`/`button.danger` styles
+- **Dialog tiers** — three sizes: `.dialog` (centered confirm), `.dialog.md` (left-aligned structured content, auto-height), `.dialog.lg` (panel dialogs, 70vw×70vh). `.dialog.lg.dialog-full` = 90% height. All dialogs inherit `font-size: var(--fs-base)` from `.dialog` base — never set font-size on dialog body content. Use `.dialogContent` for scrollable body containers (replaces per-dialog body classes). Safety dialogs add `.safetyDialog` (z-index 1010) and omit `@click.self` on overlay.
 - Gateway `tool_change` handler is fire-and-forget (no `CMD.wait_complete()` — blocks heartbeat loop)
 - Toolsetter settings live in SettingsPanel (Toolsetter sub-tab), tool actions in sidebar Tool popover
 - **Tool geometry**: Per-tool STL files in `machine/tools/`, loaded via `STLLoader`. Fallback: simple cylinder from diameter + length. Vertex colors split cutter (gold) / shaft (silver) by `flute_length` / `shoulder_length` Z thresholds. STL origin convention: tool tip at (0,0,0), extends in +Z.
@@ -241,9 +197,11 @@ Three layers enforce permissions:
 
 Before writing or modifying ANY CSS or interactive element, verify ALL items:
 
-**Spacing** — `gap`/`row-gap`/`column-gap`/`margin` between siblings MUST use tokens: `--gap-tight` (4px), `--gap-controls` (8px), `--gap-section` (12px), `--gap-panel` (20px). Never hardcode. No double-layer padding (parent + child both adding padding).
+**Spacing** — `gap`/`row-gap`/`column-gap`/`margin` between siblings MUST use tokens: `--gap-tight` (4px), `--gap-controls` (8px), `--gap-section` (12px), `--gap-panel` (20px). Never hardcode. No double-layer spacing (parent flex gap + child margin-bottom on `.sub` headings, etc.). Grid cell gaps use `--gap-controls` or `--gap-tight` — never `--gap-section` for internal grid spacing.
 
 **Layout** — Use `stack-*` / `row-*` utility classes from `style.css` for flex layout. Never write `display: flex; flex-direction: column; gap: var(--gap-*)` directly in component CSS. Component-scoped CSS should only add non-layout properties (height, overflow, position, flex, min-height). Classes: `stack-panel` (20px), `stack-sections` (12px), `stack-controls` (8px), `stack-tight` (4px), `stack-micro` (2px), `row-controls` (8px), `row-tight` (4px).
+
+**Opacity** — Use tokens: `--opacity-subtle` (0.3), `--opacity-disabled` (0.4), `--opacity-muted` (0.6), `--opacity-secondary` (0.8). Never hardcode opacity values except in animation keyframes.
 
 **Typography** — `font-size` → `--fs-*` tokens. `border-radius` → `--radius-*` tokens. `font-family` → `var(--font-mono)` or `var(--font-sans)`. Never hardcode any of these.
 
@@ -251,7 +209,7 @@ Before writing or modifying ANY CSS or interactive element, verify ALL items:
 
 **Permission gates** — Use `MachineBtn`/`MachineInput`/etc. catalog components for all interactive elements — they self-gate from the catalog. Wrap sections in `<Gate :allow="can.X">` for fieldset-level gating. Never use `<Btn>` directly in templates. Individual `:disabled="!can.X"` is only correct for: JogButton props (internal JS guard) and elements with tighter permissions than the parent Gate. Never use `:class="{ inactive: !can.X }"` for permission gating.
 
-**Global patterns** — Form elements inherit from `style.css` base (component CSS only adds layout). Tables → `.dataTable`. Dialogs → `.dialogOverlay` + `.dialog` + `.dialog-full`. Close buttons → `.btn-icon`. Check existing components before creating new CSS.
+**Global patterns** — Form elements inherit from `style.css` base (component CSS only adds layout). Tables → `.dataTable`. Dialogs → `.dialogOverlay` + `.dialog` + `.dialog-full`. Close buttons → `.btn-icon`. Empty states → `.emptyState`. Status dots → `.statusDot`. Section headings → `.sub`. Horizontal dividers → `<div class="sep">`. Monospace → `.mono`. Scrollable containers → add `.scroll-thin`. Check existing components before creating new CSS.
 
 **New patterns** — If the needed style doesn't exist globally, STOP and tell the user: "This pattern doesn't exist in our global styles. We should add it to style.css first." Never create one-off scoped styles for reusable patterns.
 
