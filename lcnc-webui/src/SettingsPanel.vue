@@ -877,13 +877,13 @@ const halStats = computed(() => ({
                   </div>
                 </div>
               </div>
-              <Gate gate="idle" class="macroEditActions">
+              <div class="macroEditActions">
                 <MachineBtn type="dialogCancel" @click="editingMacro = null">Cancel</MachineBtn>
                 <MachineBtn type="dialogConfirm" @click="saveMacro" :disabled="!editingMacro.name.trim() || !editingMacro.command.trim()">Save</MachineBtn>
-              </Gate>
+              </div>
             </div>
 
-            <MachineBtn v-if="!editingMacro && macros.length < 20" type="manage" @click="addMacro">Add Macro</MachineBtn>
+            <MachineBtn v-if="!editingMacro && macros.length < 20" type="inline" @click="addMacro">Add Macro</MachineBtn>
 
           </div>
         </div>

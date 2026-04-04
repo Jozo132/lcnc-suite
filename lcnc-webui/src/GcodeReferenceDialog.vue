@@ -4,7 +4,6 @@ import { GCODE_REFERENCE, GCODE_GROUPS, type GcodeEntry } from "./gcodeReference
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import MachineSelect from "./MachineSelect.vue";
-import Gate from "./Gate.vue";
 
 const props = defineProps<{ open: boolean; initialSearch?: string }>();
 const emit = defineEmits<{ (e: "close"): void }>();
@@ -52,7 +51,7 @@ function toggleSort(key: "code" | "name") {
         <span class="dialogTitle">G-code Reference</span>
         <MachineBtn type="close" @click="emit('close')">&times;</MachineBtn>
       </div>
-      <Gate gate="idle" class="stack-controls refContent">
+      <div class="stack-controls refContent">
         <MachineInput
           gate="search"
           type="text"
@@ -98,7 +97,7 @@ function toggleSort(key: "code" | "name") {
           {{ filtered.length }} {{ filtered.length === 1 ? 'code' : 'codes' }}
           <span v-if="filterGroup"> in {{ filterGroup }}</span>
         </div>
-      </Gate>
+      </div>
     </div>
   </div>
 </template>

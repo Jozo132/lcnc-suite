@@ -118,7 +118,7 @@ export const INPUT_DEFS = {
   jogAxis:         { gate: 'jog' },
   mdiText:         { gate: 'ready' },
   touchoff:        { gate: 'zero',     mono: true, align: 'right' },
-  rpmInput:        { gate: 'ready',    mono: true, align: 'right' },
+  rpmInput:        { gate: 'always',   mono: true, align: 'right' },
   coolant:         { gate: 'ready' },
 
   // Override sliders
@@ -127,8 +127,8 @@ export const INPUT_DEFS = {
   rapidOverride:   { gate: 'override' },
 
   // Probe parameters
-  probeParam:      { gate: 'ready',    mono: true, align: 'right' },
-  scanParam:       { gate: 'ready',    mono: true, align: 'right' },
+  probeParam:      { gate: 'always',   mono: true, align: 'right' },
+  scanParam:       { gate: 'always',   mono: true, align: 'right' },
 
   // Toolsetter parameters
   toolsetterParam: { gate: 'always',   mono: true, align: 'right' },
@@ -136,30 +136,30 @@ export const INPUT_DEFS = {
   // Tool table editing
   toolEdit:        { gate: 'idle' },
   toolEditNum:     { gate: 'idle',     mono: true, align: 'right' },
-  toolSearch:      { gate: 'idle' },
+  toolSearch:      { gate: 'always' },
 
   // 3D Viewer settings
-  viewerSetting:   { gate: 'idle' },
-  viewerSettingNum:{ gate: 'idle',     mono: true, align: 'right', size: 'sm' },
-  cameraSetting:   { gate: 'idle' },
+  viewerSetting:   { gate: 'always' },
+  viewerSettingNum:{ gate: 'always',   mono: true, align: 'right', size: 'sm' },
+  cameraSetting:   { gate: 'always' },
 
   // Display settings
-  displaySetting:  { gate: 'idle' },
-  displaySettingNum:{ gate: 'idle',    mono: true, align: 'right' },
+  displaySetting:  { gate: 'always' },
+  displaySettingNum:{ gate: 'always',  mono: true, align: 'right' },
 
   // Macro editing
-  macroEdit:       { gate: 'idle' },
+  macroEdit:       { gate: 'always' },
 
   // Keyboard/gamepad config
-  inputConfig:     { gate: 'idle' },
+  inputConfig:     { gate: 'always' },
 
   // Program toggles
   optionalStop:    { gate: 'override' },
   blockDelete:     { gate: 'override' },
 
   // Color pickers (used by MachineColor)
-  viewerColor:     { gate: 'idle' },
-  cameraColor:     { gate: 'idle' },
+  viewerColor:     { gate: 'always' },
+  cameraColor:     { gate: 'always' },
 
   // Offset editing
   offsetEdit:      { gate: 'zero',     mono: true, align: 'right' },

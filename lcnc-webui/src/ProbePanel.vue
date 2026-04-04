@@ -202,9 +202,8 @@ function loadParams() {
 
 function saveParams() {
   saveProbeDefaults({ ...params.value, autoZero: autoZero.value });
-  // Sync to var file (and best-effort MDI) on every change
-  const varMap = buildVarMap(autoZero.value ? 0 : 1);
-  emit("setProbeVars", varMap);
+  // Sync to var file when machine is ready (execution functions also sync before each probe)
+  if (can.value.ready) emit("setProbeVars", buildVarMap(autoZero.value ? 0 : 1));
 }
 
 /** Sync cal offset from DEBUG EVAL messages (emitted by cal subroutines and reset). */
