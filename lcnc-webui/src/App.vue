@@ -1405,12 +1405,12 @@ watch(viewerGcode, (newGcode) => {
 
       <!-- Program stats dialog -->
       <div v-if="statsDialogOpen && gcodeStats" class="dialogOverlay" @click.self="statsDialogOpen = false">
-        <div class="dialog lg statsDialog">
+        <div class="dialog md statsDialog">
           <div class="dialogHeader">
             <span class="dialogTitle">Program Stats</span>
             <MachineBtn type="close" @click="statsDialogOpen = false">&times;</MachineBtn>
           </div>
-          <div class="statsBody stack-sections scroll-thin">
+          <div class="dialogContent stack-sections scroll-thin">
             <div v-if="donutSegments.length > 0" class="donutRow">
               <svg class="donut" viewBox="0 0 100 100">
                 <circle class="donutBg" cx="50" cy="50" r="40" />
@@ -1872,17 +1872,8 @@ watch(viewerGcode, (newGcode) => {
 
 /* ---- Stats dialog ---- */
 .statsDialog {
-  width: auto;
   min-width: 340px;
   max-width: 480px;
-  height: auto;
-  max-height: calc(100% - 2 * var(--gap-panel));
-}
-
-.statsBody {
-  flex: 1;
-  min-height: 0;
-  padding: var(--gap-section);
 }
 
 .statsGrid {
