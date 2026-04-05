@@ -558,7 +558,6 @@ const maxFeedOverride = computed(() => {
 // Spindle state
 const spindleSpeed = computed(() => st.value.spindle_speed ?? null);
 const spindleActual = computed(() => st.value.spindle_speed_actual ?? null);
-const spindleLoad = computed(() => st.value.spindle_load ?? null);
 const spindleDirection = computed(() => st.value.spindle_direction ?? null);
 
 // Spindle popover state
@@ -1662,9 +1661,6 @@ watch(viewerGcode, (newGcode) => {
         :isReverse="isReverse"
         :isSpinning="isSpinning"
         :rpmInput="rpmInput"
-        :spindleActual="spindleActual"
-        :spindleSpeed="spindleSpeed"
-        :spindleLoad="spindleLoad"
         :minSpindleSpeed="minSpindleSpeed"
         :maxSpindleSpeed="maxSpindleSpeed"
         :floodOn="floodOn"
@@ -1680,8 +1676,6 @@ watch(viewerGcode, (newGcode) => {
       <ToolStrip
         :toolNumber="toolNumber"
         :currentTool="st.tool_number ?? 0"
-        :toolDiameter="st.tool_diameter ?? null"
-        :toolLength="st.tool_length ?? null"
         :probing="!!st.probing"
         :probeInput="st.probe_input === true"
         :probeTripped="st.probe_tripped === true"

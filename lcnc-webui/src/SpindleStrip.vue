@@ -5,16 +5,12 @@ import MachineInput from "./MachineInput.vue";
 import MachineToggle from "./MachineToggle.vue";
 import { RotateCw, RotateCcw, Square } from "lucide-vue-next";
 import { STEP_RPM } from "./defaults";
-import { fmtRpm } from "./format";
 
 const props = defineProps<{
   isForward: boolean;
   isReverse: boolean;
   isSpinning: boolean;
   rpmInput: number;
-  spindleActual: number | null;
-  spindleSpeed: number | null;
-  spindleLoad: number | null;
   minSpindleSpeed: number;
   maxSpindleSpeed: number;
   floodOn: boolean;
@@ -47,30 +43,14 @@ const emit = defineEmits<{
         </MachineBtn>
       </div>
 
-      <div class="spRpmRow">
-        <span class="label-muted md">Speed</span>
+      <div class="spRpmRow row-tight">
+        <span class="label-muted md spRpmLabel">Speed</span>
         <MachineInput gate="stripInput" type="number" class="spRpmInput" :value="rpmInput" @input="emit('update:rpmInput', +($event.target as HTMLInputElement).value)" :min="minSpindleSpeed" :max="maxSpindleSpeed" :step="STEP_RPM" />
       </div>
 
-      <div class="spActualGroup inset-panel stack-tight">
-        <div class="spActualRow">
-          <span class="label-muted md">Actual</span>
-          <span class="val-status md mono">{{ fmtRpm(spindleActual) }}</span>
-        </div>
-        <div class="spActualRow">
-          <span class="label-muted md">Commanded</span>
-          <span class="val-status md mono muted">{{ fmtRpm(spindleSpeed) }}</span>
-        </div>
-        <div class="spActualRow">
-          <span class="label-muted md">Direction</span>
-          <span class="val-status md" :class="{ ok: isSpinning }"><span class="stable-width"><span :class="{ alt: !isForward }">FWD</span><span :class="{ alt: !isReverse }">REV</span><span :class="{ alt: isForward || isReverse }">OFF</span></span></span>
-        </div>
-        <div v-if="spindleLoad != null" class="spActualRow">
-          <span class="label-muted md">Load</span>
-          <span class="val-status md mono">{{ Math.round(spindleLoad) }}%</span>
-        </div>
-      </div>
     </Gate>
+
+    <div class="sep"></div>
 
     <div class="coolBlock">
       <div class="sub">Coolant</div>
@@ -87,16 +67,12 @@ const emit = defineEmits<{
   flex: 1;
 }
 .spRpmRow {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-controls);
+  align-items: stretch;
+}
+.spRpmLabel {
+  align-self: center;
 }
 .spRpmInput { flex: 1; }
-.spActualRow {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-}
 .coolBlock {
   display: flex;
   flex-direction: column;
