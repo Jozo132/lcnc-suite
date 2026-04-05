@@ -123,11 +123,11 @@ watch(settingsVersion, () => { loadTsParams(); });
     <!-- Tool Change Position (G30) -->
     <div class="sub span" title="G30 tool change position — where the machine moves before a tool change (M6). Read-only, set in the LinuxCNC var file. (#5181–#5183)">Tool Change Position (G30)</div>
     <label>X</label>
-    <span class="readonlyVal mono">{{ g30X != null ? g30X.toFixed(3) : '—' }}</span>
+    <span class="mono">{{ g30X != null ? g30X.toFixed(3) : '—' }}</span>
     <label>Y</label>
-    <span class="readonlyVal mono">{{ g30Y != null ? g30Y.toFixed(3) : '—' }}</span>
+    <span class="mono">{{ g30Y != null ? g30Y.toFixed(3) : '—' }}</span>
     <label>Z</label>
-    <span class="readonlyVal mono">{{ g30Z != null ? g30Z.toFixed(3) : '—' }}</span>
+    <span class="mono">{{ g30Z != null ? g30Z.toFixed(3) : '—' }}</span>
     <div class="row-tight span">
       <MachineBtn type="inline" @click="setG30">Set Current Position</MachineBtn>
       <MachineBtn type="inline" @click="loadG30" :disabled="g30Loading">Refresh</MachineBtn>
@@ -199,7 +199,7 @@ watch(settingsVersion, () => { loadTsParams(); });
     <MachineInput gate="toolsetterParam" type="number" v-model.number="tsParams.finderDiffZ" :step="STEP_DEFAULT" @change="saveTsParams" />
     <span></span><span></span>
     <label title="Probe tool number, shared with the Probing tab. Must match the tool loaded in the spindle before any probe operation. (#3014)">Probe Tool #</label>
-    <span class="readonlyVal mono spanRow">T{{ probeTool }}</span>
+    <span class="mono spanRow">T{{ probeTool }}</span>
 
     <div class="sep span"></div>
 
@@ -212,10 +212,6 @@ watch(settingsVersion, () => { loadTsParams(); });
 .spanRow { grid-column: 2 / -1; }
 .tsPanel > .sep { margin: var(--gap-controls) 0; }
 .tsPanel > .sub { margin-top: var(--gap-tight); }
-.readonlyVal {
-  font-weight: var(--fw-semibold);
-  opacity: var(--opacity-muted);
-}
 .toggleGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
