@@ -1516,7 +1516,7 @@ watch(viewerGcode, (newGcode) => {
           </div>
           <div class="dialogActions">
             <MachineBtn type="abort" @click="send({ cmd: 'abort' })" />
-            <MachineBtn type="dialogReady" @click="confirmToolChange">Confirm</MachineBtn>
+            <MachineBtn type="dialogBase" @click="confirmToolChange">Confirm</MachineBtn>
           </div>
         </div>
       </div>
