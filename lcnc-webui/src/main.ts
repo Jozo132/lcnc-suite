@@ -56,7 +56,7 @@ async function bootstrap() {
     const tsRaw = localStorage.getItem("lcnc-toolsetter-params");
     if (tsRaw && !serverSettings.toolsetter) {
       const tsLocal = JSON.parse(tsRaw);
-      delete tsLocal.toolNumber; // toolNumber lives in App.vue sidebar
+      delete tsLocal.toolNumber; // toolNumber lives in App.vue
       serverSettings.toolsetter = tsLocal;
       migrations.push(saveSettingsSection("toolsetter", tsLocal));
     }

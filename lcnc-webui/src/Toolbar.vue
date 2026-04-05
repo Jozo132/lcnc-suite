@@ -209,7 +209,7 @@ function commitOffset(axis: number) {
   emit("update:workpieceOffset", [...localOffset] as Vec3);
 }
 
-// Click-to-toggle popovers (matching sidebar pattern)
+// Click-to-toggle popovers
 const openPill = ref<string | null>(null);
 
 function togglePill(name: string) {

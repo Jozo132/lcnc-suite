@@ -7,8 +7,11 @@ import Toolbar from "./Toolbar.vue";
 import TabPanel from "./TabPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
 import SafetyStrip from "./SafetyStrip.vue";
-import ControlsStrip from "./ControlsStrip.vue";
 import JogStrip from "./JogStrip.vue";
+import SetupStrip from "./SetupStrip.vue";
+import OverridesStrip from "./OverridesStrip.vue";
+import SpindleStrip from "./SpindleStrip.vue";
+import ToolStrip from "./ToolStrip.vue";
 import SettingsPanel from "./SettingsPanel.vue";
 import ToolTablePanel from "./ToolTablePanel.vue";
 import ProbePanel from "./ProbePanel.vue";
@@ -494,11 +497,6 @@ function setOverridePreset(type: "feed" | "spindle" | "rapid", percent: number) 
   else if (type === "spindle") { spindleSlider.value = percent; onSpindleSliderChange(); }
   else { rapidSlider.value = percent; onRapidChange(); }
 }
-function resetAllOverrides() {
-  feedSlider.value = 100; onFeedChange();
-  spindleSlider.value = 100; onSpindleSliderChange();
-  rapidSlider.value = 100; onRapidChange();
-}
 
 // Machine native unit (from INI [TRAJ]LINEAR_UNITS — static, not affected by G20/G21)
 const linearUnit = computed(() => st.value.linear_units ?? "mm");
@@ -519,17 +517,9 @@ const minJogVel = computed(() => {
   return (v != null && Number.isFinite(v) && v > 0) ? v : 0.1;
 });
 // Angular (rotary) jog velocity from INI [DISPLAY]
-const maxAngularJogVel = computed(() => {
-  const v = st.value.max_angular_jog_velocity;
-  return (v != null && Number.isFinite(v) && v > 0) ? v : 60; // 60 deg/s default
-});
 const defaultAngularJogVel = computed(() => {
   const v = st.value.default_angular_jog_velocity;
   return (v != null && Number.isFinite(v) && v > 0) ? v : 10;
-});
-const minAngularJogVel = computed(() => {
-  const v = st.value.min_angular_jog_velocity;
-  return (v != null && Number.isFinite(v) && v > 0) ? v : 0.1;
 });
 
 const iniIncrements = computed<number[] | null>(() => {
@@ -635,15 +625,6 @@ const macroParamDialog = ref<{ macro: MacroDef; values: Record<string, string> }
 
 provide("updateMacros", (macros: MacroDef[]) => { userMacros.value = macros; });
 
-function executeMacro(m: MacroDef) {
-  if (m.params.length === 0) {
-    fire({ cmd: "mdi", text: m.command });
-  } else {
-    const values: Record<string, string> = {};
-    for (const p of m.params) values[p.name] = p.default;
-    macroParamDialog.value = { macro: m, values };
-  }
-}
 
 function substituteMacro(command: string, values: Record<string, string>): string {
   let cmd = command;
@@ -1598,7 +1579,7 @@ watch(viewerGcode, (newGcode) => {
     </Gate><!-- /content (outer gate) -->
 
     <!-- ══ Bottom Action Strip — default-deny Gate, SafetyStrip exempt ══ -->
-    <Gate gate="safety" class="strip bordered-panel">
+    <Gate gate="safety" class="strip bordered-panel scroll-thin">
       <template #exempt>
       <SafetyStrip
         :armed="armed"
@@ -1628,38 +1609,37 @@ watch(viewerGcode, (newGcode) => {
       <JogStrip
         :axes="axes"
         :jogVel="jogVel"
-        :angularJogVel="angularJogVel"
         :linearUnit="linearUnit"
         :maxJogVel="maxJogVel"
-        :maxAngularJogVel="maxAngularJogVel"
-        :minAngularJogVel="minAngularJogVel"
         :jogIncrement="jogIncrement"
         :minJogVel="minJogVel"
         :iniIncrements="iniIncrements"
-        :isHomed="isHomed"
         :jogDisabled="!permissions.jog"
-        :touchoff="touchoff"
-        :homedJoints="homedJoints"
-        :g5xLabel="g5xLabel"
         @update:jogVel="jogVel = $event"
-        @update:angularJogVel="angularJogVel = $event"
         @update:jogIncrement="jogIncrement = $event"
         @resetJogVel="jogVel = defaultJogVel"
+      />
+
+      <SetupStrip
+        :axes="axes"
+        :touchoff="touchoff"
+        :homedJoints="homedJoints"
+        :isHomed="isHomed"
+        :g5xLabel="g5xLabel"
+        @update:touchoff="touchoff = $event"
         @homeAll="homeAll"
         @unhomeAll="unhomeAll"
         @homeAxis="homeAxis"
         @unhomeAxis="unhomeAxis"
         @setAxis="setAxis"
         @setAll="setAll"
-        @update:touchoff="touchoff = $event"
         @setG5x="setG5x"
         @goToG30="fire({ cmd: 'mdi', text: 'O<go_to_g30> CALL' })"
         @goToHome="fire({ cmd: 'mdi', text: 'O<go_to_home> CALL' })"
         @goToZero="fire({ cmd: 'mdi', text: 'O<go_to_zero> CALL' })"
       />
 
-
-      <ControlsStrip
+      <OverridesStrip
         :feedSlider="feedSlider"
         :spindleSlider="spindleSlider"
         :rapidSlider="rapidSlider"
@@ -1668,6 +1648,16 @@ watch(viewerGcode, (newGcode) => {
         :maxFeedOverride="maxFeedOverride"
         :minSpindleOverride="minSpindleOverride"
         :maxSpindleOverride="maxSpindleOverride"
+        @update:feedSlider="feedSlider = $event"
+        @update:spindleSlider="spindleSlider = $event"
+        @update:rapidSlider="rapidSlider = $event"
+        @feedChange="onFeedChange"
+        @spindleSliderChange="onSpindleSliderChange"
+        @rapidChange="onRapidChange"
+        @overridePreset="setOverridePreset"
+      />
+
+      <SpindleStrip
         :isForward="isForward"
         :isReverse="isReverse"
         :isSpinning="isSpinning"
@@ -1679,6 +1669,15 @@ watch(viewerGcode, (newGcode) => {
         :maxSpindleSpeed="maxSpindleSpeed"
         :floodOn="floodOn"
         :mistOn="mistOn"
+        @spindleFwd="spindleForward"
+        @spindleRev="spindleReverse"
+        @spindleStop="spindleStop"
+        @update:rpmInput="rpmInput = $event"
+        @toggleFlood="toggleFlood"
+        @toggleMist="toggleMist"
+      />
+
+      <ToolStrip
         :toolNumber="toolNumber"
         :currentTool="st.tool_number ?? 0"
         :toolDiameter="st.tool_diameter ?? null"
@@ -1686,21 +1685,6 @@ watch(viewerGcode, (newGcode) => {
         :probing="!!st.probing"
         :probeInput="st.probe_input === true"
         :probeTripped="st.probe_tripped === true"
-        :userMacros="userMacros"
-        @update:feedSlider="feedSlider = $event"
-        @update:spindleSlider="spindleSlider = $event"
-        @update:rapidSlider="rapidSlider = $event"
-        @feedChange="onFeedChange"
-        @spindleSliderChange="onSpindleSliderChange"
-        @rapidChange="onRapidChange"
-        @overridePreset="setOverridePreset"
-        @resetAllOverrides="resetAllOverrides"
-        @spindleFwd="spindleForward"
-        @spindleRev="spindleReverse"
-        @spindleStop="spindleStop"
-        @update:rpmInput="rpmInput = $event"
-        @toggleFlood="toggleFlood"
-        @toggleMist="toggleMist"
         @update:toolNumber="toolNumber = $event"
         @saveToolNumber="saveToolNumber"
         @measureAuto="measureAuto"
@@ -1709,7 +1693,6 @@ watch(viewerGcode, (newGcode) => {
         @abort="send({ cmd: 'abort' })"
         @simTrip="send({ cmd: 'simulate_probe_trip' })"
         @openToolTable="toolTableDialogOpen = true"
-        @executeMacro="executeMacro"
       />
     </Gate><!-- /strip -->
 
@@ -1758,7 +1741,8 @@ watch(viewerGcode, (newGcode) => {
   flex-shrink: 0;
   padding: var(--gap-controls);
   gap: var(--gap-controls);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 .strip > * + * {
   border-left: 1px solid var(--border-subtle);

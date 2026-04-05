@@ -1,11 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive, type Component } from "vue";
+import { computed, reactive, ref, onMounted, onUnmounted, type Component } from "vue";
 import { send } from "./lcncWs";
 import { usePermissions } from "./permissions";
 import { INPUT_DEFS } from "./machineControls";
-import { STEP_DEFAULT } from "./defaults";
 import MachineBtn from "./MachineBtn.vue";
-import MachineInput from "./MachineInput.vue";
 import MachineRadio from "./MachineRadio.vue";
 import MachineSlider from "./MachineSlider.vue";
 import {
@@ -17,50 +15,22 @@ import {
 const props = defineProps<{
   axes: string[];
   jogVel: number;
-  angularJogVel: number;
   linearUnit: string;
   maxJogVel: number;
-  maxAngularJogVel: number;
-  minAngularJogVel: number;
   jogIncrement: number;
   minJogVel: number;
   iniIncrements: number[] | null;
-  isHomed: boolean;
   jogDisabled: boolean;
-  touchoff: number[];
-  homedJoints: boolean[];
-  g5xLabel: string;
 }>();
 
 const emit = defineEmits<{
   (e: "update:jogVel", v: number): void;
-  (e: "update:angularJogVel", v: number): void;
   (e: "update:jogIncrement", v: number): void;
-
-  (e: "homeAll"): void;
-  (e: "unhomeAll"): void;
-  (e: "homeAxis", joint: number): void;
-  (e: "unhomeAxis", joint: number): void;
-  (e: "setAxis", axis: number, value: number): void;
-  (e: "setAll", values: number[]): void;
-  (e: "update:touchoff", values: number[]): void;
-  (e: "setG5x", gcode: string): void;
   (e: "resetJogVel"): void;
-  (e: "goToG30"): void;
-  (e: "goToHome"): void;
-  (e: "goToZero"): void;
 }>();
 
 const can = usePermissions();
 const isDisabled = computed(() => !can.value[INPUT_DEFS.jogWheel.gate] || props.jogDisabled);
-
-const g5xOptions = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"];
-
-function updateTouchoff(axis: number, val: number) {
-  const copy = [...props.touchoff];
-  copy[axis] = val;
-  emit("update:touchoff", copy);
-}
 
 const incrementOptions = computed(() => {
   if (props.iniIncrements && props.iniIncrements.length > 0) {
@@ -86,6 +56,16 @@ const incrementOptions = computed(() => {
     { label: "1", value: 1.0 },
   ];
 });
+
+// ─── XY grid square sizing (aspect-ratio unreliable in flex) ──
+const xyWrapRef = ref<HTMLElement>();
+const xySize = ref(0);
+
+const ro = new ResizeObserver(entries => {
+  for (const e of entries) xySize.value = e.contentRect.height;
+});
+onMounted(() => { if (xyWrapRef.value) ro.observe(xyWrapRef.value); });
+onUnmounted(() => ro.disconnect());
 
 // ─── Jog logic (press-and-hold) ─────────────────────────────
 interface JogDef {
@@ -190,12 +170,11 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
 </script>
 
 <template>
-  <div class="jogStrip">
-    <!-- Jog section -->
-    <div class="stripSection">
-      <div class="sub">Jog</div>
-      <div class="jogContent">
-        <div class="jogBtns">
+  <div class="stripSection">
+    <div class="sub">Jog</div>
+    <div class="jogContent">
+      <div class="jogBtns">
+        <div ref="xyWrapRef" class="xyWrap" :style="xySize ? { width: xySize + 'px' } : undefined">
           <div class="xyGrid">
             <MachineBtn
               v-for="btn in xyBtns"
@@ -211,88 +190,56 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
               @contextmenu.prevent
             ><div :class="['jogInner', btn.dir_class]"><component :is="btn.icon" class="jogIcon" /><span v-if="btn.shortLabel" class="jogLabel">{{ btn.shortLabel }}</span></div></MachineBtn>
           </div>
-
-          <div class="zGrid">
-            <MachineBtn
-              type="jog"
-              class="jogBtn"
-              :active="active.has('Z+')"
-              @pointerdown.prevent="startZJog(1, $event)"
-              @pointerup.prevent="stopZJog(1, $event)"
-              @pointercancel.prevent="stopZJog(1, $event)"
-              @pointerleave.prevent="stopZJog(1, $event)"
-              @contextmenu.prevent
-            ><div class="jogInner jogZUp"><ArrowUp class="jogIcon" /><span class="jogLabel">Z+</span></div></MachineBtn>
-            <MachineBtn
-              type="jog"
-              class="jogBtn"
-              :active="active.has('Z-')"
-              @pointerdown.prevent="startZJog(-1, $event)"
-              @pointerup.prevent="stopZJog(-1, $event)"
-              @pointercancel.prevent="stopZJog(-1, $event)"
-              @pointerleave.prevent="stopZJog(-1, $event)"
-              @contextmenu.prevent
-            ><div class="jogInner jogZDown"><ArrowDown class="jogIcon" /><span class="jogLabel">Z-</span></div></MachineBtn>
-          </div>
         </div>
 
-        <div class="speedCol">
-          <span class="val-mono">{{ (jogVel * 60).toFixed(0) }}</span>
-          <MachineSlider gate="jogSpeed" :disabled="isDisabled" :min="minJogVel" :max="maxJogVel" :step="0.1" :modelValue="jogVel" @update:modelValue="(v: number | undefined) => { if (v != null) emit('update:jogVel', v) }" class="vSlider" />
-          <span class="label-muted">Speed</span>
-          <MachineBtn type="overrideReset" @click="emit('resetJogVel')">Reset</MachineBtn>
-        </div>
-
-        <div class="stepCol">
-          <label v-for="opt in incrementOptions" :key="opt.value" class="radio-label">
-            <MachineRadio gate="jogIncrement" name="jogStep" :value="opt.value" :modelValue="jogIncrement" @update:modelValue="(v: string | number | undefined) => { if (v != null) emit('update:jogIncrement', Number(v)) }" />
-            <span>{{ opt.label }}</span>
-          </label>
+        <div class="zGrid">
+          <MachineBtn
+            type="jog"
+            class="jogBtn"
+            :active="active.has('Z+')"
+            @pointerdown.prevent="startZJog(1, $event)"
+            @pointerup.prevent="stopZJog(1, $event)"
+            @pointercancel.prevent="stopZJog(1, $event)"
+            @pointerleave.prevent="stopZJog(1, $event)"
+            @contextmenu.prevent
+          ><div class="jogInner jogZUp"><ArrowUp class="jogIcon" /><span class="jogLabel">Z+</span></div></MachineBtn>
+          <MachineBtn
+            type="jog"
+            class="jogBtn"
+            :active="active.has('Z-')"
+            @pointerdown.prevent="startZJog(-1, $event)"
+            @pointerup.prevent="stopZJog(-1, $event)"
+            @pointercancel.prevent="stopZJog(-1, $event)"
+            @pointerleave.prevent="stopZJog(-1, $event)"
+            @contextmenu.prevent
+          ><div class="jogInner jogZDown"><ArrowDown class="jogIcon" /><span class="jogLabel">Z-</span></div></MachineBtn>
         </div>
       </div>
-    </div>
 
-    <!-- Setup section: WCS + touch-off + homing + go-to -->
-    <div class="stripSection setupDivider">
-      <div class="sub">Setup</div>
-      <div class="setupContent">
-        <div class="setupGrid">
-          <template v-for="(letter, i) in axes" :key="letter">
-            <MachineInput gate="touchoff" type="number" :step="STEP_DEFAULT" :value="touchoff[i]" @input="updateTouchoff(i, +($event.target as HTMLInputElement).value)" @keydown.enter="emit('setAxis', i, touchoff[i] ?? 0)" class="setupInput" />
-            <MachineBtn type="zero" size="xs" @click="emit('setAxis', i, touchoff[i] ?? 0)">Set {{ letter }}</MachineBtn>
-            <MachineBtn :type="homedJoints[i] ? 'unhome' : 'home'" size="xs" @click="homedJoints[i] ? emit('unhomeAxis', i) : emit('homeAxis', i)"><span class="stable-width"><span :class="{ alt: homedJoints[i] }">Home {{ letter }}</span><span :class="{ alt: !homedJoints[i] }">Unhome {{ letter }}</span></span></MachineBtn>
-          </template>
-          <MachineBtn type="zero" size="xs" class="spanAll" @click="emit('setAll', [...touchoff])">Set All</MachineBtn>
-          <MachineBtn :type="isHomed ? 'unhome' : 'home'" size="xs" class="spanAll" @click="isHomed ? emit('unhomeAll') : emit('homeAll')"><span class="stable-width"><span :class="{ alt: isHomed }">Home All</span><span :class="{ alt: !isHomed }">Unhome</span></span></MachineBtn>
-          <MachineBtn type="goTo" size="xs" @click="emit('goToG30')">G30</MachineBtn>
-          <MachineBtn type="goTo" size="xs" @click="emit('goToHome')">Home Pos</MachineBtn>
-          <MachineBtn type="goTo" size="xs" @click="emit('goToZero')">Zero</MachineBtn>
-        </div>
-        <div class="wcsCol">
-          <label v-for="g in g5xOptions" :key="g" class="radio-label">
-            <MachineRadio gate="touchoff" name="wcs" :value="g" :modelValue="g5xLabel" @update:modelValue="(v: string | number | undefined) => { if (v != null) emit('setG5x', String(v)) }" />
-            <span>{{ g }}</span>
-          </label>
-        </div>
+      <div class="speedCol">
+        <span class="val-mono">{{ (jogVel * 60).toFixed(0) }}</span>
+        <MachineSlider gate="jogSpeed" :disabled="isDisabled" :min="minJogVel" :max="maxJogVel" :step="0.1" :modelValue="jogVel" @update:modelValue="(v: number | undefined) => { if (v != null) emit('update:jogVel', v) }" class="vSlider" />
+        <span class="label-muted">Speed</span>
+        <MachineBtn type="overrideReset" @click="emit('resetJogVel')">Reset</MachineBtn>
+      </div>
+
+      <div class="stepCol">
+        <label v-for="opt in incrementOptions" :key="opt.value" class="radio-label">
+          <MachineRadio gate="jogIncrement" name="jogStep" :value="opt.value" :modelValue="jogIncrement" @update:modelValue="(v: string | number | undefined) => { if (v != null) emit('update:jogIncrement', Number(v)) }" />
+          <span>{{ opt.label }}</span>
+        </label>
       </div>
     </div>
   </div>
 </template>
 
 <style scoped>
-.jogStrip {
-  display: flex;
-  gap: var(--gap-controls);
-  height: 100%;
-  overflow: hidden;
-}
-.setupDivider {
-  border-left: 1px solid var(--border-subtle);
-  padding-left: var(--gap-controls);
-}
-.jogContent, .setupContent {
+.jogContent {
   display: flex;
   gap: var(--gap-section);
+}
+.jogContent > * {
+  flex-shrink: 0;
 }
 
 /* ── Left: XY grid + Z ── */
@@ -303,12 +250,16 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
   align-self: stretch;
 }
 
+.xyWrap {
+  height: 100%;
+  flex-shrink: 0;
+}
 .xyGrid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(3, 1fr);
   gap: var(--gap-tight);
-  aspect-ratio: 1;
+  width: 100%;
   height: 100%;
 }
 
@@ -359,12 +310,11 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
   aspect-ratio: auto;
 }
 
-/* ── Vertical columns ── */
-.speedCol, .stepCol, .wcsCol {
+/* ── Vertical columns ��─ */
+.speedCol, .stepCol {
   display: flex;
   flex-direction: column;
   gap: var(--gap-tight);
-  height: 100%;
 }
 .speedCol {
   align-items: center;
@@ -374,17 +324,7 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
   flex: 1;
   min-height: 0;
 }
-.stepCol, .wcsCol {
+.stepCol {
   justify-content: flex-start;
 }
-.setupGrid {
-  display: grid;
-  grid-template-columns: 80px 1fr 1fr;
-  gap: var(--gap-tight);
-  align-content: center;
-  flex: 1;
-  min-height: 0;
-}
-.setupInput { width: 100%; }
-.spanAll { grid-column: 1 / -1; }
 </style>

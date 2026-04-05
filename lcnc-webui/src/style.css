@@ -739,8 +739,7 @@ label:has(input:disabled, select:disabled) {
   flex-direction: column;
   gap: var(--gap-controls);
   height: 100%;
-  min-width: 0;
-  overflow: hidden;
+  flex-shrink: 0;
 }
 .stripSection > :last-child { flex: 1; min-height: 0; }
 
