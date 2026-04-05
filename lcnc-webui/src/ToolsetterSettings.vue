@@ -108,10 +108,10 @@ watch(settingsVersion, () => { loadTsParams(); });
 </script>
 
 <template>
-  <div class="stack-panel scrollContent scroll-thin">
-    <div class="section">
+  <div class="stack-sections">
+    <div class="stack-controls">
       <div class="sub">Toolsetter Position (G53)</div>
-      <div class="tsGrid">
+      <div class="paramGrid twoCol">
         <label title="X position (G53 machine coordinates) of the toolsetter button center. Jog to the button with no tool, read the machine X position. (#3100)">Touch X</label>
         <MachineInput gate="toolsetterParam" type="number" v-model.number="tsParams.touchX" :step="STEP_DEFAULT" @change="saveTsParams" />
         <label title="Y position (G53 machine coordinates) of the toolsetter button center. Jog to the button with no tool, read the machine Y position. (#3101)">Touch Y</label>
@@ -123,27 +123,27 @@ watch(settingsVersion, () => { loadTsParams(); });
 
     <div class="sep"></div>
 
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub" title="G30 tool change position — where the machine moves before a tool change (M6). Read-only, set in the LinuxCNC var file. (#5181–#5183)">Tool Change Position (G30)</div>
-      <div class="tsGrid">
+      <div class="paramGrid twoCol">
         <label>X</label>
-        <span class="readonlyVal">{{ g30X != null ? g30X.toFixed(3) : '—' }}</span>
+        <span class="readonlyVal mono">{{ g30X != null ? g30X.toFixed(3) : '—' }}</span>
         <label>Y</label>
-        <span class="readonlyVal">{{ g30Y != null ? g30Y.toFixed(3) : '—' }}</span>
+        <span class="readonlyVal mono">{{ g30Y != null ? g30Y.toFixed(3) : '—' }}</span>
         <label>Z</label>
-        <span class="readonlyVal">{{ g30Z != null ? g30Z.toFixed(3) : '—' }}</span>
+        <span class="readonlyVal mono">{{ g30Z != null ? g30Z.toFixed(3) : '—' }}</span>
       </div>
-      <div class="tsBtnRow">
+      <div class="row-tight">
         <MachineBtn type="manage" @click="setG30">Set Current Position</MachineBtn>
-        <MachineBtn type="inline" class="optBtn" @click="loadG30" :disabled="g30Loading">Refresh</MachineBtn>
+        <MachineBtn type="inline" @click="loadG30" :disabled="g30Loading">Refresh</MachineBtn>
       </div>
     </div>
 
     <div class="sep"></div>
 
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub">Probe Settings</div>
-      <div class="tsGrid">
+      <div class="paramGrid twoCol">
         <label title="Feed rate for the initial fast probe approach to the touch plate. Higher values reduce cycle time but lower repeatability. (#3004)">Fast Feed</label>
         <MachineInput gate="toolsetterParam" type="number" v-model.number="tsParams.fastFeed" min="1" :step="STEP_FEED" @change="saveTsParams" />
         <label title="Feed rate for the refined slow measurement pass after retract. Set to 0 to skip the slow pass — faster but less accurate. (#3005)">Slow Feed</label>
@@ -161,15 +161,15 @@ watch(settingsVersion, () => { loadTsParams(); });
 
     <div class="sep"></div>
 
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub">Options</div>
-      <div class="tsToggleGrid">
+      <div class="toggleGrid">
         <MachineToggle gate="toolsetterParam" v-model="tsUseToolTable" label="Use Tool Table" title="When enabled, uses the tool table length to calculate a closer probe start height — faster for known tools. Disable during initial setup or if tool table data is unreliable. (#3103)" />
         <MachineToggle gate="toolsetterParam" v-model="tsGoBackToStart" label="Return to Start" title="After measurement, return to the XYZ position where M600 was called. Disable only if the tool change is at the end of a program. (#3106)" />
         <MachineToggle gate="toolsetterParam" v-model="tsDisablePrePos" label="Skip G30 Pre-Pos" title="Skip the G30 pre-positioning move before traveling to the touch plate. Faster, but risks collision with clamps or fixtures on uncluttered machines only. (#3108)" />
         <MachineToggle gate="toolsetterParam" v-model="tsLastTry" label="Last Try w/o Table" title="On the final retry attempt, ignore tool table offsets and use spindle zero height instead. Provides a fallback for tools with incorrect table entries. (#3110)" />
       </div>
-      <div class="tsGrid">
+      <div class="paramGrid twoCol">
         <label title="Safety clearance between the expected tool tip position and the touch plate when using tool table pre-positioning. Increase for widely varying tool lengths. (#3104)">Tool Min Dist</label>
         <MachineInput gate="toolsetterParam" type="number" v-model.number="tsParams.toolMinDis" min="0" :step="STEP_DEFAULT" @change="saveTsParams" />
         <label title="Number of extra retry attempts if probe contact fails. Each failure pauses for operator correction before retrying. Set to 0 for ATC. (#3109)">Extra Retries</label>
@@ -195,9 +195,9 @@ watch(settingsVersion, () => { loadTsParams(); });
 
     <div class="sep"></div>
 
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub">Diameter Offset</div>
-      <div class="tsGrid">
+      <div class="paramGrid twoCol">
         <label title="Minimum tool diameter that triggers position offset. Tools smaller than this probe on-center. Set to 0 to disable offset for all tools. (#3111)">Min Diameter</label>
         <MachineInput gate="toolsetterParam" type="number" v-model.number="tsParams.offsetDiameter" min="0" :step="STEP_DEFAULT" @change="saveTsParams" />
         <label title="Percentage of tool diameter to offset the probe position. Example: 20% on a large tool offsets the probe position by 20% of the diameter from center. (#3112)">Offset %</label>
@@ -207,11 +207,11 @@ watch(settingsVersion, () => { loadTsParams(); });
 
     <div class="sep"></div>
 
-    <div class="section">
+    <div class="stack-controls">
       <div class="sub">Edge-Finder</div>
-      <div class="tsGrid">
+      <div class="paramGrid twoCol">
         <label title="Probe tool number, shared with the Probing tab. Must match the tool loaded in the spindle before any probe operation. (#3014)">Probe Tool #</label>
-        <span class="readonlyVal">T{{ probeTool }}</span>
+        <span class="readonlyVal mono">T{{ probeTool }}</span>
         <label title="X position (G53) of a secondary edge-finder reference point. Used only when the selected tool matches the probe tool number. (#3113)">Finder X</label>
         <MachineInput gate="toolsetterParam" type="number" v-model.number="tsParams.finderTouchX" :step="STEP_DEFAULT" @change="saveTsParams" />
         <label title="Y position (G53) of a secondary edge-finder reference point. Used only when the selected tool matches the probe tool number. (#3114)">Finder Y</label>
@@ -221,45 +221,41 @@ watch(settingsVersion, () => { loadTsParams(); });
       </div>
     </div>
 
-    <div class="resetRow">
-      <MachineBtn type="reset" @click="emit('resetSection', 'toolsetter')">Reset Toolsetter</MachineBtn>
-    </div>
+    <div class="sep"></div>
+
+    <MachineBtn type="reset" @click="emit('resetSection', 'toolsetter')">Reset Toolsetter</MachineBtn>
   </div>
 </template>
 
 <style scoped>
-/* ─── Toolsetter sub-tab ───── */
-.tsGrid {
+.paramGrid {
   display: grid;
-  grid-template-columns: auto 1fr auto 1fr;
+  grid-template-columns: auto 1fr;
   gap: var(--gap-tight) var(--gap-controls);
   align-items: center;
 }
 
-.tsGrid > label {
+.paramGrid.twoCol {
+  grid-template-columns: auto 1fr auto 1fr;
+}
+
+.paramGrid > label {
   font-size: var(--fs-sm);
   opacity: var(--opacity-muted);
 }
 
-.tsGrid input {
+.paramGrid input {
   max-width: 100px;
 }
 
 .readonlyVal {
-  font-size: var(--fs-base);
-  font-family: var(--font-mono);
   font-weight: var(--fw-semibold);
   opacity: var(--opacity-muted);
 }
 
-.tsToggleGrid {
+.toggleGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--gap-controls);
-}
-
-.tsBtnRow {
-  display: flex;
-  gap: var(--gap-micro);
 }
 </style>

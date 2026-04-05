@@ -14,7 +14,6 @@ import {
   loadMachineDefaults, saveMachineDefaults,
   loadMacrosDefaults, saveMacrosDefaults, extractParams,
   loadCameraDefaults, saveCameraDefaults, type CameraDefaults,
-  saveToolsetterDefaults, TOOLSETTER_FALLBACK,
   loadDisplayDefaults, saveDisplayDefaults, settingsVersion, serverSettingsReady,
   type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir, type SpindleFeedbackUnit,
@@ -28,7 +27,6 @@ import { status } from "./lcncWs";
 import { ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-vue-next";
 import GamepadLiveInput from "./GamepadLiveInput.vue";
 import DebugTab from "./DebugTab.vue";
-import ToolsetterSettings from "./ToolsetterSettings.vue";
 
 
 const themeMode = inject<Ref<ThemeMode>>("themeMode", ref("auto") as Ref<ThemeMode>);
@@ -109,8 +107,6 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{
-  (e: "setProbeVars", vars: Record<string, number>): void;
-  (e: "mdi", text: string): void;
   (e: "setPathOnTop", on: boolean): void;
   (e: "setProjection", proj: Projection): void;
   (e: "setRunFromLine", on: boolean): void;
@@ -122,7 +118,7 @@ const emit = defineEmits<{
 const resetTarget = ref<string | null>(null);
 
 const resetLabels: Record<string, string> = {
-  viewer: "3D Viewer", machine: "Machine", toolsetter: "Toolsetter",
+  viewer: "3D Viewer", machine: "Machine",
   display: "Display", camera: "Camera", gamepad: "Gamepad", keyboard: "Keyboard",
 };
 
@@ -169,10 +165,6 @@ function resetMachine() {
   emit("setRunFromLine", md.runFromLine);
 }
 
-function resetToolsetter() {
-  saveToolsetterDefaults({ ...TOOLSETTER_FALLBACK });
-}
-
 function saveStartFullscreen() {
   saveDisplayDefaults({ ...loadDisplayDefaults(), startFullscreen: startFullscreen.value });
 }
@@ -201,7 +193,7 @@ function resetGamepad() {
 }
 
 const resetActions: Record<string, () => void> = {
-  viewer: resetViewer, machine: resetMachine, toolsetter: resetToolsetter,
+  viewer: resetViewer, machine: resetMachine,
   display: resetDisplay, camera: resetCamera, gamepad: resetGamepad, keyboard: resetKeyboard,
 };
 
@@ -398,7 +390,6 @@ onUnmounted(() => {
 const subTabs = [
   { id: "viewer", label: "3D Viewer" },
   { id: "machine", label: "Machine" },
-  { id: "toolsetter", label: "Toolsetter" },
   { id: "display", label: "Display" },
   { id: "camera", label: "Camera" },
   { id: "macros", label: "Macros" },
@@ -734,16 +725,6 @@ const halStats = computed(() => ({
             <MachineBtn type="reset" @click="resetTarget = 'machine'">Reset Machine</MachineBtn>
           </div>
         </div>
-      </template>
-
-      <template #toolsetter>
-        <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
-        <ToolsetterSettings
-          v-else
-          @setProbeVars="emit('setProbeVars', $event)"
-          @mdi="emit('mdi', $event)"
-          @resetSection="resetTarget = $event"
-        />
       </template>
 
       <template #display>

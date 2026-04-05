@@ -5,7 +5,9 @@ import { fmtNum } from "./format";
 import MachineInput from "./MachineInput.vue";
 import MachineToggle from "./MachineToggle.vue";
 import { usePermissions } from "./permissions";
-import { STEP_DEFAULT, STEP_FEED, loadProbeDefaults, saveProbeDefaults, settingsVersion } from "./defaults";
+import { STEP_DEFAULT, STEP_FEED, loadProbeDefaults, saveProbeDefaults, settingsVersion, serverSettingsReady, saveToolsetterDefaults, TOOLSETTER_FALLBACK } from "./defaults";
+import ToolsetterSettings from "./ToolsetterSettings.vue";
+import Gate from "./Gate.vue";
 import { idwInterp } from "./interpolation";
 
 const props = defineProps<{
@@ -42,7 +44,14 @@ const can = usePermissions();
 const isDev = import.meta.env.DEV;
 
 // ─── Sub-view navigation ──────────────────────────────────────────
-const probeView = ref<"outside" | "inside" | "boss" | "ridge" | "angle" | "cal" | "surface">("outside");
+const probeView = ref<"outside" | "inside" | "boss" | "ridge" | "angle" | "cal" | "surface" | "toolsetter">("outside");
+
+// ─── Toolsetter reset ────────────────────────────────────────────
+const resetTarget = ref<string | null>(null);
+function confirmReset() {
+  resetTarget.value = null;
+  saveToolsetterDefaults({ ...TOOLSETTER_FALLBACK });
+}
 
 // ─── Grid probe operations ────────────────────────────────────────
 type GridOp = {
@@ -620,10 +629,11 @@ function fmtR(key: string): string {
         <MachineBtn type="tab" :selected="probeView === 'angle'" @click="probeView = 'angle'">Angle</MachineBtn>
         <MachineBtn type="tab" :selected="probeView === 'surface'" @click="probeView = 'surface'">Surface</MachineBtn>
         <MachineBtn type="tab" :selected="probeView === 'cal'" @click="probeView = 'cal'">Calibrate</MachineBtn>
+        <MachineBtn type="tab" :selected="probeView === 'toolsetter'" @click="probeView = 'toolsetter'">Toolsetter</MachineBtn>
     </div>
 
-    <!-- Control bar -->
-    <div class="controlBar">
+    <!-- Control bar (hidden for toolsetter view) -->
+    <div v-if="probeView !== 'toolsetter'" class="controlBar">
       <MachineToggle gate="probeParam" v-model="autoZero" label="Auto Zero" @update:model-value="saveParams" />
       <MachineToggle gate="probeParam" v-model="setRotation" label="Set Rotation" />
       <div class="controlBarRight">
@@ -1190,7 +1200,7 @@ function fmtR(key: string): string {
     </template>
 
     <!-- ─── Surface Map ─── -->
-    <template v-else>
+    <template v-else-if="probeView === 'surface'">
       <div class="stack-controls">
         <div class="sub">Scan Grid</div>
         <div class="paramGrid twoCol">
@@ -1234,6 +1244,18 @@ function fmtR(key: string): string {
       </div>
     </template>
 
+    <!-- ═══ TOOLSETTER VIEW ═══ -->
+    <template v-else-if="probeView === 'toolsetter'">
+      <div v-if="!serverSettingsReady" class="emptyState">Waiting for server settings…</div>
+      <ToolsetterSettings
+        v-else
+        @setProbeVars="emit('setProbeVars', $event)"
+        @mdi="emit('mdi', $event)"
+        @resetSection="resetTarget = $event"
+      />
+    </template>
+
+    <template v-if="probeView !== 'toolsetter'">
     <div class="sep"></div>
 
     <!-- Parameters (shared across views) -->
@@ -1298,7 +1320,20 @@ function fmtR(key: string): string {
         <div class="prCell"><span class="label">Y Center</span><span class="prVal">{{ fmtR("y_center") }}</span></div>
       </div>
     </div>
+    </template>
 
+  </div>
+
+  <!-- Toolsetter reset confirmation dialog -->
+  <div v-if="resetTarget" class="dialogOverlay" @click.self="resetTarget = null">
+    <div class="dialog">
+      <div class="dialogTitle danger">Reset Toolsetter</div>
+      <div class="dialogBody">Restore toolsetter settings to defaults? This cannot be undone.</div>
+      <Gate gate="idle" class="dialogActions">
+        <MachineBtn type="dialogCancel" @click="resetTarget = null">Cancel</MachineBtn>
+        <MachineBtn type="dialogDanger" @click="confirmReset">Reset</MachineBtn>
+      </Gate>
+    </div>
   </div>
 
   <!-- Surface map popout dialog -->
