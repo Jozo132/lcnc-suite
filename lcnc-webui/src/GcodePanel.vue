@@ -5,7 +5,7 @@ import { usePermissions } from "./permissions";
 import { loadMachineDefaults, STEP_RPM } from "./defaults";
 import { highlightGcode, type Token } from "./gcodeHighlight";
 import { GCODE_LOOKUP, GCODE_REFERENCE } from "./gcodeReference";
-import { Play, SkipForward, Pause, Square } from "lucide-vue-next";
+import { Play, SkipForward, Pause } from "lucide-vue-next";
 import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
@@ -370,9 +370,7 @@ async function saveEdit() {
         @click="isPaused ? emit('cycleResume') : emit('cyclePause')">
         <span class="stable-width"><span :class="{ alt: isPaused }"><Pause :size="14" class="ctrlIcon" /> Pause</span><span :class="{ alt: !isPaused }"><Play :size="14" class="ctrlIcon" /> Resume</span></span>
       </MachineBtn>
-      <MachineBtn type="abort" class="ctrlBtn" @click="emit('abort')">
-        <Square :size="14" class="ctrlIcon" /> Abort
-      </MachineBtn>
+      <MachineBtn type="abort" class="ctrlBtn" @click="emit('abort')" />
       <div class="row-tight switchToggles">
         <MachineToggle gate="optionalStop" v-model="optionalStopModel" label="M01" />
         <MachineToggle gate="blockDelete" v-model="blockDeleteModel" label="/BD" />

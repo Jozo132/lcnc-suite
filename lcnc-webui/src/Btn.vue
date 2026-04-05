@@ -30,6 +30,10 @@ defineProps<{
 <style scoped>
 /* ---- Base ---- */
 .b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--gap-tight);
   border-radius: var(--radius-xl);
   border: 1px solid var(--border);
   font-weight: var(--fw-medium);

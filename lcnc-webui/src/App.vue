@@ -1343,7 +1343,7 @@ watch(viewerGcode, (newGcode) => {
                   placeholder="G-code command (↑↓ history)"
                 />
                 <MachineBtn type="mdi" @click="handleMdiSend">Send</MachineBtn>
-                <MachineBtn type="abort" @click="send({ cmd: 'abort' })">Abort</MachineBtn>
+                <MachineBtn type="abort" @click="send({ cmd: 'abort' })" />
               </div>
               <div class="mdiHistoryHeader">
                 <span class="sub">History</span>
@@ -1535,7 +1535,7 @@ watch(viewerGcode, (newGcode) => {
             </template>
           </div>
           <div class="dialogActions">
-            <MachineBtn type="abort" @click="send({ cmd: 'abort' })">Cancel</MachineBtn>
+            <MachineBtn type="abort" @click="send({ cmd: 'abort' })" />
             <MachineBtn type="dialogReady" @click="confirmToolChange">Confirm</MachineBtn>
           </div>
         </div>

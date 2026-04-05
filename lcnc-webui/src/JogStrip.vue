@@ -11,7 +11,7 @@ import MachineSlider from "./MachineSlider.vue";
 import {
   ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
   ArrowUpLeft, ArrowUpRight, ArrowDownLeft, ArrowDownRight,
-  CircleStop,
+  Square,
 } from "lucide-vue-next";
 
 const props = defineProps<{
@@ -104,7 +104,7 @@ const xyBtns: JogDef[] = [
   { label: "Y+",   shortLabel: "Y+",   icon: ArrowUp,        axis: 1, dir: 1, dir_class: "jogV" },
   { label: "X+Y+", shortLabel: "",     icon: ArrowUpRight,   axis: 0, dir: 1, axis2: 1, dir2: 1, dir_class: "" },
   { label: "X-",   shortLabel: "X-",   icon: ArrowLeft,      axis: 0, dir: -1, dir_class: "jogH" },
-  { label: "Jog Stop", shortLabel: "Stop", icon: CircleStop,  axis: -1, dir: 1, dir_class: "" },
+  { label: "Jog Stop", shortLabel: "Stop", icon: Square,      axis: -1, dir: 1, dir_class: "" },
   { label: "X+",   shortLabel: "X+",   icon: ArrowRight,     axis: 0, dir: 1, dir_class: "jogH" },
   { label: "X-Y-", shortLabel: "",     icon: ArrowDownLeft,  axis: 0, dir: -1, axis2: 1, dir2: -1, dir_class: "" },
   { label: "Y-",   shortLabel: "Y-",   icon: ArrowDown,      axis: 1, dir: -1, dir_class: "jogV" },

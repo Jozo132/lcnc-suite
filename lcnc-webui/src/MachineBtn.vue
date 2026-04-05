@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, useSlots } from 'vue';
 import Btn from './Btn.vue';
+import { Square } from 'lucide-vue-next';
 import { usePermissions } from './permissions';
 import { BUTTON_TYPES, type ButtonType, type ButtonDef } from './machineControls';
 
@@ -29,9 +30,11 @@ const props = withDefaults(defineProps<{
   variant: undefined,
 });
 
+const slots = useSlots();
 const can = usePermissions();
 const def = computed(() => BUTTON_TYPES[props.type] as ButtonDef);
 const isDisabled = computed(() => !can.value[def.value.gate] || props.disabled);
+const useAbortDefault = computed(() => props.type === 'abort' && !slots.default);
 const resolvedVariant = computed(() => props.variant ?? def.value.variant);
 const resolvedIcon = computed(() => props.icon ?? def.value.icon);
 const resolvedMuted = computed(() => props.muted ?? def.value.muted);
@@ -55,6 +58,7 @@ const resolvedMono = computed(() => props.mono ?? def.value.mono);
     :flashing="flashing"
     :warning="warning"
   >
-    <slot />
+    <template v-if="useAbortDefault"><Square :size="14" /> Abort</template>
+    <slot v-else />
   </Btn>
 </template>

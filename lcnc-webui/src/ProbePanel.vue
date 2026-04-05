@@ -636,10 +636,7 @@ function fmtR(key: string): string {
           <span class="label-muted md mono">{{ probeStatus }}</span>
         </div>
         <MachineBtn v-if="isDev" type="simTrip" @click="emit('simTrip')">Sim Trip</MachineBtn>
-        <MachineBtn
-          type="abort"
-          @click="emit('abort')"
-        >Abort</MachineBtn>
+        <MachineBtn type="abort" @click="emit('abort')" />
       </div>
     </div>
 
