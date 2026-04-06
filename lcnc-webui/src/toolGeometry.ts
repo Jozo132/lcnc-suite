@@ -225,10 +225,17 @@ export function buildToolProfile(
       break;
     }
     case "probe": {
-      const probeR = tipR || r * 0.2;
-      const probeLen = fluteLen || oal * 0.5;
-      pts.push(V(0, 0), V(probeR, 0), V(probeR, probeLen));
-      pts.push(V(shaftR || r, probeLen), V(shaftR || r, oal), V(0, oal));
+      // Full ball at tip (bottom at Y=0, center at Y=ballR) + stylus from center up
+      const ballR = r;
+      const stylusR = shaftR > 0.01 && shaftR < ballR ? shaftR : ballR * 0.5;
+      const arcN = 12;
+      pts.push(V(0, 0));
+      for (let i = 1; i <= arcN; i++) {
+        const a = Math.PI * (i / arcN);  // 0→π full circle profile
+        pts.push(V(ballR * Math.sin(a), ballR - ballR * Math.cos(a)));
+      }
+      // Stylus shaft from ball center (Y=ballR) up to OAL — overlaps ball, that's fine
+      pts.push(V(stylusR, ballR), V(stylusR, oal), V(0, oal));
       break;
     }
     case "formmill": {
