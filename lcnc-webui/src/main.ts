@@ -4,6 +4,7 @@ import App from './App.vue'
 import { fetchSettings, saveSettingsSection } from './lcncApi'
 import { initServerDefaults } from './defaults'
 import { VALID_GATES } from './permissions'
+import { initDragScroll } from './dragScroll'
 
 const SERVER_SECTIONS = ["macros", "machine", "camera", "mdi", "gamepad", "keyboard", "probe", "toolsetter", "display", "viewer", "panels"];
 
@@ -67,6 +68,7 @@ async function bootstrap() {
 
   initServerDefaults(serverSettings, fetchOk);
   createApp(App).mount('#app');
+  initDragScroll();
 
   if (import.meta.env.DEV) {
     function auditElement(el: HTMLElement) {
