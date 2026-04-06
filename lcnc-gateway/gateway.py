@@ -1837,6 +1837,17 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             CMD.state(linuxcnc.STATE_OFF)
             return {"ok": True}
 
+        if cmd == "set_mode":
+            require_armed(armed)
+            blocked = reject_if_auto_running()
+            if blocked:
+                return blocked
+            mode = int(msg.get("mode", 0))
+            if mode not in (linuxcnc.MODE_MANUAL, linuxcnc.MODE_AUTO, linuxcnc.MODE_MDI):
+                return {"ok": False, "error": f"Invalid mode: {mode}"}
+            set_mode(mode)
+            return {"ok": True}
+
         if cmd == "shutdown":
             # No require_armed — confirmation dialog is the safety gate
             print("Shutdown requested via web UI", flush=True)

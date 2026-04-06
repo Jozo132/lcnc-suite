@@ -35,6 +35,7 @@ export type WsCommand =
   | { cmd: "estop_reset" }
   | { cmd: "machine_on" }
   | { cmd: "machine_off" }
+  | { cmd: "set_mode"; mode: number }
   // Homing
   | { cmd: "home_all" }
   | { cmd: "unhome_all" }

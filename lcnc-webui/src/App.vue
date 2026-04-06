@@ -1624,9 +1624,11 @@ watch(viewerGcode, (newGcode) => {
         :minJogVel="minJogVel"
         :iniIncrements="iniIncrements"
         :jogDisabled="!permissions.jog"
+        :taskMode="taskMode"
         @update:jogVel="jogVel = $event"
         @update:jogIncrement="jogIncrement = $event"
         @resetJogVel="jogVel = defaultJogVel"
+        @modeChange="send({ cmd: 'set_mode', mode: $event })"
       />
 
       <SetupStrip

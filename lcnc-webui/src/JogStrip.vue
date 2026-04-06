@@ -7,6 +7,7 @@ import { registerJog, unregisterJog, activeJogKeys, forceStopAllJogs } from "./u
 import MachineBtn from "./MachineBtn.vue";
 import MachineRadio from "./MachineRadio.vue";
 import MachineSlider from "./MachineSlider.vue";
+import { TASK_MODE_MANUAL, TASK_MODE_AUTO, TASK_MODE_MDI } from "./lcnc";
 import {
   ArrowUp, ArrowDown, ArrowLeft, ArrowRight,
   ArrowUpLeft, ArrowUpRight, ArrowDownLeft, ArrowDownRight,
@@ -22,12 +23,14 @@ const props = defineProps<{
   minJogVel: number;
   iniIncrements: number[] | null;
   jogDisabled: boolean;
+  taskMode: number;
 }>();
 
 const emit = defineEmits<{
   (e: "update:jogVel", v: number): void;
   (e: "update:jogIncrement", v: number): void;
   (e: "resetJogVel"): void;
+  (e: "modeChange", mode: number): void;
 }>();
 
 const can = usePermissions();
@@ -248,6 +251,15 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
           <span>{{ opt.label }}</span>
         </label>
       </div>
+
+      <div class="sep modeColSep"></div>
+
+      <div class="modeCol">
+        <span class="label-muted">Mode</span>
+        <label class="radio-label"><MachineRadio gate="modeSelect" name="taskMode" :modelValue="taskMode" :value="TASK_MODE_MANUAL" @update:modelValue="emit('modeChange', TASK_MODE_MANUAL)" /> Manual</label>
+        <label class="radio-label"><MachineRadio gate="modeSelect" name="taskMode" :modelValue="taskMode" :value="TASK_MODE_MDI" @update:modelValue="emit('modeChange', TASK_MODE_MDI)" /> MDI</label>
+        <label class="radio-label"><MachineRadio gate="modeSelect" name="taskMode" :modelValue="taskMode" :value="TASK_MODE_AUTO" @update:modelValue="emit('modeChange', TASK_MODE_AUTO)" /> Auto</label>
+      </div>
     </div>
   </div>
 </template>
@@ -344,6 +356,19 @@ function stopZJog(dir: 1 | -1, e: PointerEvent) {
   min-height: 0;
 }
 .stepCol {
+  justify-content: flex-start;
+}
+
+/* ── Mode column ── */
+.modeColSep {
+  align-self: stretch;
+  width: 0;
+  border-left: 1px solid var(--border-subtle);
+}
+.modeCol {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-tight);
   justify-content: flex-start;
 }
 </style>

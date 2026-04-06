@@ -123,6 +123,9 @@ export const INPUT_DEFS = {
   stripInput:      { gate: 'always',   mono: true, align: 'right', size: 'md' },
   coolant:         { gate: 'ready' },
 
+  // Mode selection
+  modeSelect:      { gate: 'idle' },
+
   // Override sliders
   feedOverride:    { gate: 'override' },
   spindleOverride: { gate: 'override' },
