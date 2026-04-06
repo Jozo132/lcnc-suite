@@ -643,39 +643,11 @@ function macroPreview(): string {
 }
 // @ts-ignore TS6133 — kept for future use
 const toolTableRef = ref<InstanceType<typeof ToolTablePanel> | null>(null);
-const toolNumber = ref(1);
-const TS_TOOL_KEY = "lcnc-tool-number";
-
-function loadToolNumber() {
-  try {
-    const raw = localStorage.getItem(TS_TOOL_KEY);
-    if (raw) { toolNumber.value = parseInt(raw, 10) || 1; }
-  } catch { /* ignore */ }
-}
-loadToolNumber();
-
-function saveToolNumber() {
-  localStorage.setItem(TS_TOOL_KEY, String(toolNumber.value));
-}
-
 function measureAuto() {
-  if (!permissions.value.ready || st.value.probing) return;
-  saveToolNumber();
+  const t = st.value.tool_number;
+  if (!permissions.value.ready || st.value.probing || !t) return;
   send({ cmd: "set_probe_vars", vars: buildToolsetterVarMap() });
-  fire({ cmd: "mdi", text: `T${toolNumber.value} M600` });
-}
-
-function loadTool() {
-  if (!permissions.value.ready || st.value.probing) return;
-  saveToolNumber();
-  const n = toolNumber.value;
-  const mode = loadMachineDefaults().toolChangeMode;
-  if (mode === "m600") {
-    send({ cmd: "set_probe_vars", vars: buildToolsetterVarMap() });
-    fire({ cmd: "mdi", text: `T${n} M600` });
-  } else {
-    fire({ cmd: "mdi", text: `T${n} M6 G43 H${n}` });
-  }
+  fire({ cmd: "mdi", text: `T${t} M600` });
 }
 
 function unloadTool() {
@@ -688,6 +660,22 @@ function unloadTool() {
     fire({ cmd: "mdi", text: "T0 M6 G49" });
   }
 }
+
+// Probe status (used in tool table dialog action bar)
+const probeStatus = computed(() => {
+  if (st.value.probing) return "PROBING";
+  if (st.value.probe_tripped) return "TRIPPED";
+  return "IDLE";
+});
+const probeStatusClass = computed(() => {
+  if (st.value.probing) return "probing";
+  if (st.value.probe_tripped) return "tripped";
+  return "";
+});
+const probeIndicatorClass = computed(() => {
+  if (st.value.probe_input === true) return "tripped";
+  return "";
+});
 
 // Message popover helpers
 function msgKindClass(kind: number): string {
@@ -1366,8 +1354,28 @@ watch(viewerGcode, (newGcode) => {
             <span class="dialogTitle">Tool Table</span>
             <MachineBtn type="close" @click="toolTableDialogOpen = false">&times;</MachineBtn>
           </div>
+          <Gate gate="ready" class="toolDialogActions stack-controls">
+            <div class="toolDialogRow">
+              <div class="row-tight">
+                <MachineBtn type="toolMeasure" :disabled="!!st.probing" @click="measureAuto">Measure Current</MachineBtn>
+                <MachineBtn type="toolUnload" :disabled="!!st.probing" @click="unloadTool">Unload</MachineBtn>
+                <MachineBtn type="abort" @click="send({ cmd: 'abort' })" />
+              </div>
+              <div class="row-tight toolDialogManage">
+                <MachineBtn type="manage" @click="toolTableRef?.openAdd()">+ Add</MachineBtn>
+                <MachineBtn type="manage" @click="toolTableRef?.triggerImport()">Import</MachineBtn>
+                <MachineBtn type="manage" @click="toolTableRef?.fetchTools()">Refresh</MachineBtn>
+              </div>
+            </div>
+            <div class="row-tight">
+              <span class="statusDot" :class="probeIndicatorClass"></span>
+              <span class="label-muted md">Probe</span>
+              <span class="statusDot" :class="probeStatusClass"></span>
+              <span class="label-muted md mono">{{ probeStatus }}</span>
+            </div>
+          </Gate>
           <div class="dialogContent">
-            <ToolTablePanel ref="toolTableRef" :currentTool="st.tool_number ?? null" :iniFilename="st.ini_filename ?? null" />
+            <ToolTablePanel ref="toolTableRef" :currentTool="st.tool_number ?? null" :iniFilename="st.ini_filename ?? null" hideHeader />
           </div>
         </div>
       </div>
@@ -1672,18 +1680,9 @@ watch(viewerGcode, (newGcode) => {
       />
 
       <ToolStrip
-        :toolNumber="toolNumber"
         :currentTool="st.tool_number ?? 0"
-        :probing="!!st.probing"
-        :probeInput="st.probe_input === true"
-        :probeTripped="st.probe_tripped === true"
-        @update:toolNumber="toolNumber = $event"
-        @saveToolNumber="saveToolNumber"
-        @measureAuto="measureAuto"
-        @loadTool="loadTool"
-        @unloadTool="unloadTool"
-        @abort="send({ cmd: 'abort' })"
-        @simTrip="send({ cmd: 'simulate_probe_trip' })"
+        :toolDiameter="st.tool_diameter ?? null"
+        :toolLength="st.tool_length ?? null"
         @openToolTable="toolTableDialogOpen = true"
       />
     </Gate><!-- /strip -->
@@ -1989,5 +1988,22 @@ watch(viewerGcode, (newGcode) => {
   text-align: center;
   opacity: var(--opacity-muted);
 }
+
+.toolDialogActions {
+  padding: var(--gap-controls) var(--gap-panel);
+  flex-shrink: 0;
+}
+
+.toolDialogRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--gap-controls);
+}
+
+.toolDialogManage {
+  margin-left: auto;
+}
+
 
 </style>
