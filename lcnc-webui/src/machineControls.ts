@@ -64,8 +64,8 @@ export const BUTTON_TYPES = {
   // WCS selection
   wcs:            { gate: 'probe',    variant: 'default', size: 'sm' },
 
-  // Zero / touchoff
-  zero:           { gate: 'zero',     variant: 'default', size: 'md' },
+  // Zero / touchoff (sends G10 L20 MDI — needs homed + !eoffset)
+  zero:           { gate: 'probe',    variant: 'default', size: 'md' },
 
   // Macros
   macro:          { gate: 'probe',    variant: 'default', size: 'lg' },
@@ -119,7 +119,7 @@ export const INPUT_DEFS = {
   jogWheel:        { gate: 'jog' },
   jogAxis:         { gate: 'jog' },
   mdiText:         { gate: 'ready' },
-  touchoff:        { gate: 'zero',     mono: true, align: 'right', size: 'md' },
+  touchoff:        { gate: 'probe',    mono: true, align: 'right', size: 'md' },
   stripInput:      { gate: 'always',   mono: true, align: 'right', size: 'md' },
   coolant:         { gate: 'ready' },
 
@@ -169,7 +169,7 @@ export const INPUT_DEFS = {
   cameraColor:     { gate: 'always' },
 
   // Offset editing
-  offsetEdit:      { gate: 'zero',     mono: true, align: 'right' },
+  offsetEdit:      { gate: 'probe',    mono: true, align: 'right' },
 
   // UI-only (always enabled)
   search:          { gate: 'always' },
