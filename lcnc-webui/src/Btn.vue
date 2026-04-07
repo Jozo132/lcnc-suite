@@ -139,6 +139,9 @@ defineProps<{
 
 /* ---- Icon button ---- */
 .b-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   background: none;
   border: none;
   padding: 6px 8px;
