@@ -326,9 +326,11 @@ function loadSurfaceMap() {
   emit("loadSurfaceToViewer");
 }
 
-// ─── 3D surface popout dialog ────────────────────────────────────
-const mapDialogOpen = ref(false);
+// ─── Inline 3D surface viewer ────────────────────────────────────
 const surfaceContainer = ref<HTMLDivElement | null>(null);
+const surfaceViewerActive = computed(() =>
+  probeView.value === 'surface' && (props.surfacePoints?.length ?? 0) > 0
+);
 
 /** Viridis-like colormap (simplified 5-stop) */
 function viridis(t: number): [number, number, number] {
@@ -549,10 +551,15 @@ function render3DSurface(pts: [number, number, number][]) {
       zLabel.position.copy(arrowOrigin).add(new THREE.Vector3(0, 0, arrowLen + arrowLen * 0.15));
       scene.add(zLabel);
 
-      // Camera position
-      const maxDim = Math.max(xRange, yRange);
-      camera.position.set(maxDim * 0.8, -maxDim * 0.8, maxDim * 0.8);
-      controls.target.set(0, 0, 0);
+      // Zoom to fit — compute bounding box of all scene objects
+      const box = new THREE.Box3().setFromObject(scene);
+      const center = box.getCenter(new THREE.Vector3());
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      const fov = camera.fov * (Math.PI / 180);
+      const dist = sphere.radius / Math.sin(fov / 2) * 1.1;
+      const dir = new THREE.Vector3(1, -1, 1).normalize();
+      camera.position.copy(center).addScaledVector(dir, dist);
+      controls.target.copy(center);
       controls.update();
 
       let animId = 0;
@@ -586,19 +593,26 @@ function render3DSurface(pts: [number, number, number][]) {
   });
 }
 
-// Render into dialog when it opens or points change
-watch([mapDialogOpen, () => props.surfacePoints], ([open, pts]) => {
-  if (open && pts && pts.length > 0) {
+// Auto-fetch probe results when entering surface tab
+watch(probeView, (view) => {
+  if (view === 'surface' && !props.surfacePoints?.length) {
+    emit('getProbeResults');
+  }
+});
+
+// Render inline viewer when active (surface tab + points exist)
+watch(surfaceViewerActive, (active) => {
+  if (active) {
     emit("getCompGrid");
-    nextTick(() => render3DSurface(pts));
-  } else if (!open) {
+    nextTick(() => render3DSurface(props.surfacePoints!));
+  } else {
     if (_threeCleanup) { _threeCleanup(); _threeCleanup = null; }
   }
 });
 
-// Re-render when comp grid arrives while dialog is open
+// Re-render when comp grid arrives while viewer is active
 watch(() => props.compGrid, () => {
-  if (mapDialogOpen.value && props.surfacePoints && props.surfacePoints.length > 0) {
+  if (surfaceViewerActive.value) {
     nextTick(() => render3DSurface(props.surfacePoints!));
   }
 });
@@ -1234,7 +1248,6 @@ function fmtR(key: string): string {
           <MachineBtn type="probe" :disabled="probing" @click="runSurfaceScan">Start Scan</MachineBtn>
           <MachineBtn type="probe" v-if="!surfaceInViewer" @click="loadSurfaceMap">Load Map</MachineBtn>
           <MachineBtn type="probe" v-else @click="emit('clearSurfaceMap')">Unload Map</MachineBtn>
-          <MachineBtn type="probe" @click="if (!surfacePoints?.length) emit('getProbeResults'); mapDialogOpen = true">3D Inspect</MachineBtn>
           <MachineBtn type="compToggle" :active="eoffsetEnabled" :disabled="probing" @click="toggleComp"><span class="stable-width"><span :class="{ alt: eoffsetEnabled }">Enable Comp</span><span :class="{ alt: !eoffsetEnabled }">Disable Comp</span></span></MachineBtn>
         </div>
 
@@ -1247,6 +1260,8 @@ function fmtR(key: string): string {
             <label v-for="(label, id) in METHOD_LABELS" :key="id"><MachineRadio gate="compMethod" name="compMethod" :value="Number(id)" :modelValue="compMethod ?? 2" @update:modelValue="setMethod(Number(id))" /> {{ label }}</label>
           </span>
         </div>
+
+        <div v-if="surfacePoints?.length" ref="surfaceContainer" class="surface3d span no-drag-scroll"></div>
 
         <div class="sep span"></div>
 
@@ -1380,16 +1395,6 @@ function fmtR(key: string): string {
     </div>
   </div>
 
-  <!-- Surface map popout dialog -->
-    <div v-if="mapDialogOpen" class="dialogOverlay" @click.self="mapDialogOpen = false">
-      <div class="dialog lg dialog-full">
-        <div class="dialogHeader">
-          <span class="dialogTitle">Surface Compensation Map</span>
-          <MachineBtn type="close" @click="mapDialogOpen = false">&times;</MachineBtn>
-        </div>
-        <div ref="surfaceContainer" class="surface3d"></div>
-      </div>
-    </div>
   </div>
 </template>
 
@@ -1654,10 +1659,10 @@ function fmtR(key: string): string {
   gap: var(--gap-tight);
 }
 .surface3d {
-  flex: 1;
-  min-height: 0;
-  border-radius: 0 0 var(--radius-2xl) var(--radius-2xl);
+  height: 350px;
+  border-radius: var(--radius-lg);
   overflow: hidden;
+  touch-action: none;
 }
 
 </style>
