@@ -1717,7 +1717,7 @@ watch(viewerGcode, (newGcode) => {
 
 .viewerPane {
   flex: 1;
-  min-width: 0;
+  min-width: var(--panel-min-w);
   min-height: 0;
 }
 
