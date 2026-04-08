@@ -357,8 +357,11 @@ function render3DSurface(pts: [number, number, number][]) {
   if (!surfaceContainer.value || pts.length < 3) return;
 
   // Dynamic import Three.js (already bundled)
-  import("three").then((THREE) => {
-    import("three/examples/jsm/controls/OrbitControls.js").then(({ OrbitControls }) => {
+  Promise.all([
+    import("three"),
+    import("three/examples/jsm/controls/OrbitControls.js"),
+    import("troika-three-text"),
+  ]).then(([THREE, { OrbitControls }, { Text }]) => {
       // Clean up previous
       if (_threeCleanup) { _threeCleanup(); _threeCleanup = null; }
 
@@ -477,6 +480,8 @@ function render3DSurface(pts: [number, number, number][]) {
       const dotGeom = new THREE.SphereGeometry(Math.min(xRange, yRange) * 0.015, 8, 8);
       const dotMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
       const zScale = Math.min(xRange, yRange) * 0.3;
+      const labels: InstanceType<typeof Text>[] = [];
+      const labelFs = Math.max(xRange, yRange) * 0.03;
       for (const p of pts) {
         const sx = p[0] - xMin - xRange / 2;
         const sy = p[1] - yMin - yRange / 2;
@@ -485,25 +490,19 @@ function render3DSurface(pts: [number, number, number][]) {
         dot.position.set(sx, sy, sz);
         scene.add(dot);
 
-        // Z value text sprite
-        const canvas = document.createElement("canvas");
-        canvas.width = 256; canvas.height = 64;
-        const ctx = canvas.getContext("2d")!;
-        ctx.font = "bold 48px monospace";
-        ctx.fillStyle = fgColor;
-        ctx.strokeStyle = bgColor;
-        ctx.lineWidth = 3;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.strokeText(p[2].toFixed(3), 128, 32);
-        ctx.fillText(p[2].toFixed(3), 128, 32);
-        const tex = new THREE.CanvasTexture(canvas);
-        const spriteMat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
-        const sprite = new THREE.Sprite(spriteMat);
-        const labelScale = Math.max(xRange, yRange) * 0.12;
-        sprite.scale.set(labelScale, labelScale * 0.25, 1);
-        sprite.position.set(sx, sy, sz + zScale * 0.08 + Math.min(xRange, yRange) * 0.025);
-        scene.add(sprite);
+        const lbl = new Text();
+        lbl.text = p[2].toFixed(3);
+        lbl.fontSize = labelFs;
+        lbl.color = fgColor;
+        lbl.anchorX = "center";
+        lbl.anchorY = "middle";
+        lbl.outlineWidth = "4%";
+        lbl.outlineColor = "#000000";
+        lbl.depthWrite = false;
+        lbl.position.set(sx, sy, sz + zScale * 0.08 + Math.min(xRange, yRange) * 0.025);
+        lbl.sync();
+        scene.add(lbl);
+        labels.push(lbl);
       }
 
       // Lighting
@@ -522,34 +521,26 @@ function render3DSurface(pts: [number, number, number][]) {
       scene.add(yArrow);
       scene.add(zArrow);
 
-      function makeAxisLabel(text: string, color: string) {
-        const c = document.createElement("canvas");
-        c.width = 64; c.height = 64;
-        const cx = c.getContext("2d")!;
-        cx.font = "bold 48px sans-serif";
-        cx.textAlign = "center";
-        cx.textBaseline = "middle";
-        cx.strokeStyle = bgColor;
-        cx.lineWidth = 5;
-        cx.strokeText(text, 32, 32);
-        cx.fillStyle = color;
-        cx.fillText(text, 32, 32);
-        const t = new THREE.CanvasTexture(c);
-        const m = new THREE.SpriteMaterial({ map: t, transparent: true, depthTest: false });
-        const s = new THREE.Sprite(m);
-        const ls = arrowLen * 0.35;
-        s.scale.set(ls, ls, 1);
-        return s;
+      const axisFs = arrowLen * 0.35;
+      for (const [text, color, offset] of [
+        ["X", "#ff4444", new THREE.Vector3(arrowLen * 1.15, 0, 0)],
+        ["Y", "#44ff44", new THREE.Vector3(0, arrowLen * 1.15, 0)],
+        ["Z", "#4488ff", new THREE.Vector3(0, 0, arrowLen * 1.15)],
+      ] as [string, string, InstanceType<typeof THREE.Vector3>][]) {
+        const lbl = new Text();
+        lbl.text = text;
+        lbl.fontSize = axisFs;
+        lbl.color = color;
+        lbl.anchorX = "center";
+        lbl.anchorY = "middle";
+        lbl.outlineWidth = "4%";
+        lbl.outlineColor = "#000000";
+        lbl.depthWrite = false;
+        lbl.position.copy(arrowOrigin).add(offset);
+        lbl.sync();
+        scene.add(lbl);
+        labels.push(lbl);
       }
-      const xLabel = makeAxisLabel("X", "#ff4444");
-      xLabel.position.copy(arrowOrigin).add(new THREE.Vector3(arrowLen + arrowLen * 0.15, 0, 0));
-      scene.add(xLabel);
-      const yLabel = makeAxisLabel("Y", "#44ff44");
-      yLabel.position.copy(arrowOrigin).add(new THREE.Vector3(0, arrowLen + arrowLen * 0.15, 0));
-      scene.add(yLabel);
-      const zLabel = makeAxisLabel("Z", "#4488ff");
-      zLabel.position.copy(arrowOrigin).add(new THREE.Vector3(0, 0, arrowLen + arrowLen * 0.15));
-      scene.add(zLabel);
 
       // Zoom to fit — compute bounding box of all scene objects
       const box = new THREE.Box3().setFromObject(scene);
@@ -565,6 +556,7 @@ function render3DSurface(pts: [number, number, number][]) {
       let animId = 0;
       function animate() {
         animId = requestAnimationFrame(animate);
+        for (const lbl of labels) lbl.quaternion.copy(camera.quaternion);
         controls.update();
         renderer.render(scene, camera);
       }
@@ -584,13 +576,13 @@ function render3DSurface(pts: [number, number, number][]) {
       _threeCleanup = () => {
         cancelAnimationFrame(animId);
         ro.disconnect();
+        for (const lbl of labels) lbl.dispose();
         renderer.dispose();
         geom.dispose();
         mat.dispose();
         container.innerHTML = "";
       };
     });
-  });
 }
 
 // Auto-fetch probe results when entering surface tab
