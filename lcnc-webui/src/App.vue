@@ -155,6 +155,7 @@ const contentTabs = [
   { id: "mdi", label: "MDI" },
   { id: "probe", label: "Probing" },
   { id: "offsets", label: "Offsets" },
+  { id: "tools", label: "Tools" },
 ];
 
 const activeTab = ref("gcode");
@@ -593,7 +594,6 @@ const settingsDialogOpen = ref(false);
 const gcodeRefOpen = ref(false);
 const gcodeRefInitialSearch = ref("");
 const messagesDialogOpen = ref(false);
-const toolTableDialogOpen = ref(false);
 
 function closeAllDialogs() {
   settingsDialogOpen.value = false;
@@ -1347,43 +1347,41 @@ watch(viewerGcode, (newGcode) => {
               :rotationXy="st.rotation_xy ?? null"
             />
           </template>
+
+          <template #tools>
+            <div class="toolsTab">
+              <Gate gate="ready" class="toolTabActions stack-controls">
+                <div class="toolTabRow">
+                  <div class="row-tight">
+                    <MachineBtn type="toolMeasure" :disabled="!!st.probing" @click="measureAuto">Measure Current</MachineBtn>
+                    <MachineBtn type="toolUnload" :disabled="!!st.probing" @click="unloadTool">Unload</MachineBtn>
+                    <MachineBtn type="abort" @click="send({ cmd: 'abort' })" />
+                  </div>
+                  <div class="row-tight toolTabManage">
+                    <MachineBtn type="manage" @click="toolTableRef?.openAdd()">+ Add</MachineBtn>
+                    <MachineBtn type="manage" @click="toolTableRef?.triggerImport()">Import</MachineBtn>
+                    <MachineBtn type="manage" @click="toolTableRef?.fetchTools()">Refresh</MachineBtn>
+                  </div>
+                </div>
+                <div class="row-tight">
+                  <span class="statusDot" :class="probeIndicatorClass"></span>
+                  <span class="label-muted md">Probe</span>
+                  <span class="statusDot" :class="probeStatusClass"></span>
+                  <span class="label-muted md mono">{{ probeStatus }}</span>
+                </div>
+              </Gate>
+              <ToolTablePanel
+                ref="toolTableRef"
+                :currentTool="st.tool_number ?? null"
+                :iniFilename="st.ini_filename ?? null"
+                hideHeader
+              />
+            </div>
+          </template>
         </TabPanel>
       </div>
 
       <!-- Dialogs — inside content area so strip stays accessible beneath -->
-
-      <!-- Tool table dialog -->
-      <div v-if="toolTableDialogOpen" class="dialogOverlay" @click.self="toolTableDialogOpen = false">
-        <div class="dialog lg dialog-full">
-          <div class="dialogHeader">
-            <span class="dialogTitle">Tool Table</span>
-            <MachineBtn type="close" @click="toolTableDialogOpen = false">&times;</MachineBtn>
-          </div>
-          <Gate gate="ready" class="toolDialogActions stack-controls">
-            <div class="toolDialogRow">
-              <div class="row-tight">
-                <MachineBtn type="toolMeasure" :disabled="!!st.probing" @click="measureAuto">Measure Current</MachineBtn>
-                <MachineBtn type="toolUnload" :disabled="!!st.probing" @click="unloadTool">Unload</MachineBtn>
-                <MachineBtn type="abort" @click="send({ cmd: 'abort' })" />
-              </div>
-              <div class="row-tight toolDialogManage">
-                <MachineBtn type="manage" @click="toolTableRef?.openAdd()">+ Add</MachineBtn>
-                <MachineBtn type="manage" @click="toolTableRef?.triggerImport()">Import</MachineBtn>
-                <MachineBtn type="manage" @click="toolTableRef?.fetchTools()">Refresh</MachineBtn>
-              </div>
-            </div>
-            <div class="row-tight">
-              <span class="statusDot" :class="probeIndicatorClass"></span>
-              <span class="label-muted md">Probe</span>
-              <span class="statusDot" :class="probeStatusClass"></span>
-              <span class="label-muted md mono">{{ probeStatus }}</span>
-            </div>
-          </Gate>
-          <div class="dialogContent">
-            <ToolTablePanel ref="toolTableRef" :currentTool="st.tool_number ?? null" :iniFilename="st.ini_filename ?? null" hideHeader />
-          </div>
-        </div>
-      </div>
 
       <!-- Settings dialog -->
       <div v-if="settingsDialogOpen" class="dialogOverlay" @click.self="settingsDialogOpen = false">
@@ -1690,7 +1688,7 @@ watch(viewerGcode, (newGcode) => {
         :currentTool="st.tool_number ?? 0"
         :toolDiameter="st.tool_diameter ?? null"
         :toolLength="st.tool_length ?? null"
-        @openToolTable="toolTableDialogOpen = true"
+        @openToolTable="activeTab = 'tools'"
       />
     </Gate><!-- /strip -->
 
@@ -1996,19 +1994,26 @@ watch(viewerGcode, (newGcode) => {
   opacity: var(--opacity-muted);
 }
 
-.toolDialogActions {
-  padding: var(--gap-controls) var(--gap-panel);
+.toolsTab {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.toolTabActions {
+  padding: var(--gap-tight) 0;
   flex-shrink: 0;
 }
 
-.toolDialogRow {
+.toolTabRow {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--gap-controls);
 }
 
-.toolDialogManage {
+.toolTabManage {
   margin-left: auto;
 }
 
