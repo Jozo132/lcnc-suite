@@ -78,6 +78,8 @@ provide("themeMode", themeMode);
 
 applyTheme(themeMode.value);
 
+const isDev = import.meta.env.DEV;
+
 // ─── Fullscreen ──────────────────────────────────────────────────
 const isFullscreen = ref(!!document.fullscreenElement);
 let _fsListenersActive = false;
@@ -1368,6 +1370,7 @@ watch(viewerGcode, (newGcode) => {
                   <span class="label-muted md">Probe</span>
                   <span class="statusDot" :class="probeStatusClass"></span>
                   <span class="label-muted md mono">{{ probeStatus }}</span>
+                  <MachineBtn v-if="isDev" type="simTrip" @click="send({ cmd: 'simulate_probe_trip' })">Sim Trip</MachineBtn>
                 </div>
               </Gate>
               <ToolTablePanel
