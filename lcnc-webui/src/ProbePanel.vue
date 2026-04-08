@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
+import { ref, computed, inject, onMounted, onUnmounted, watch, nextTick, type Ref } from "vue";
 import MachineBtn from "./MachineBtn.vue";
 import { fmtNum } from "./format";
 import MachineInput from "./MachineInput.vue";
@@ -42,6 +42,7 @@ const emit = defineEmits<{
 
 
 const can = usePermissions();
+const themeMode = inject<Ref<string>>("themeMode", ref("auto"));
 const isDev = import.meta.env.DEV;
 
 // ─── Sub-view navigation ──────────────────────────────────────────
@@ -497,7 +498,7 @@ function render3DSurface(pts: [number, number, number][]) {
         lbl.anchorX = "center";
         lbl.anchorY = "middle";
         lbl.outlineWidth = "4%";
-        lbl.outlineColor = "#000000";
+        lbl.outlineColor = bgColor;
         lbl.depthWrite = false;
         lbl.position.set(sx, sy, sz + zScale * 0.08 + Math.min(xRange, yRange) * 0.025);
         lbl.sync();
@@ -534,7 +535,7 @@ function render3DSurface(pts: [number, number, number][]) {
         lbl.anchorX = "center";
         lbl.anchorY = "middle";
         lbl.outlineWidth = "4%";
-        lbl.outlineColor = "#000000";
+        lbl.outlineColor = bgColor;
         lbl.depthWrite = false;
         lbl.position.copy(arrowOrigin).add(offset);
         lbl.sync();
@@ -604,6 +605,13 @@ watch(surfaceViewerActive, (active) => {
 
 // Re-render when comp grid arrives while viewer is active
 watch(() => props.compGrid, () => {
+  if (surfaceViewerActive.value) {
+    nextTick(() => render3DSurface(props.surfacePoints!));
+  }
+});
+
+// Re-render when theme changes while viewer is active
+watch(themeMode, () => {
   if (surfaceViewerActive.value) {
     nextTick(() => render3DSurface(props.surfacePoints!));
   }
