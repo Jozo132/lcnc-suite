@@ -615,12 +615,14 @@ defineExpose({ openAdd, fetchTools, triggerImport });
 <style scoped>
 .container {
   height: 100%;
+  min-height: 0;
   position: relative;
   padding: var(--gap-section);
 }
 
 .container.compact {
   padding: 0;
+  flex: 1;
 }
 
 .header {
