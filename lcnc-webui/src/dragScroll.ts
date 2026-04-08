@@ -40,7 +40,8 @@ function attach(el: HTMLElement) {
       scrollTop: el.scrollTop,
       dragging: false,
     }
-    el.setPointerCapture(e.pointerId)
+    // Don't capture yet — let native scrollbar interaction work.
+    // Capture is deferred to pointermove once the drag threshold is met.
   })
 
   el.addEventListener('pointermove', (e: PointerEvent) => {
@@ -52,6 +53,8 @@ function attach(el: HTMLElement) {
     if (!state.dragging) {
       if (Math.abs(dx) < DRAG_THRESHOLD && Math.abs(dy) < DRAG_THRESHOLD) return
       state.dragging = true
+      // Capture now that we know this is a drag, not a scrollbar click
+      el.setPointerCapture(e.pointerId)
       el.style.cursor = 'grabbing'
       el.style.userSelect = 'none'
     }
