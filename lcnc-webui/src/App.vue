@@ -494,6 +494,17 @@ onUnmounted(() => _stopTimer());
 
 const elapsedDisplay = computed(() => fmtElapsed(programElapsed.value));
 
+/** ---------- system clock ---------- */
+const clockTime = ref('');
+let _clockHandle: ReturnType<typeof setInterval> | null = null;
+function _updateClock() {
+  const now = new Date();
+  clockTime.value = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+_updateClock();
+_clockHandle = setInterval(_updateClock, 1000);
+onUnmounted(() => { if (_clockHandle) clearInterval(_clockHandle); });
+
 /** ---------- display helpers for machine states ---------- */
 // G5x work coordinate system (G54, G55, etc.)
 const g5xLabel = computed(() => {
@@ -1243,6 +1254,7 @@ watch(viewerGcode, (newGcode) => {
     <header class="hdr">
       <div class="title">LinuxCNC WebUI ({{ connLabel }})</div>
       <div class="hdrRight">
+        <div class="pill mono">{{ clockTime }}</div>
         <div class="pill" :title="connectedClients.map(c => c.ip + (c.armed ? ' (armed)' : '')).join('\n')">
           {{ connectedClients.length }} client{{ connectedClients.length !== 1 ? 's' : '' }}
         </div>
