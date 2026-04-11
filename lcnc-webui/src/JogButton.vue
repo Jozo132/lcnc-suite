@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { send } from "./lcncWs";
 import { INPUT_DEFS } from "./machineControls";
 import { usePermissions } from "./permissions";
@@ -37,6 +37,16 @@ const points = computed(() => {
     case 'down-left':  return '50,2 2,98 98,50';
   }
 });
+
+const isHovered = ref(false);
+
+function onPointerEnter(e: PointerEvent) {
+  if (e.pointerType === "mouse") isHovered.value = true;
+}
+function onPointerLeave(e: PointerEvent) {
+  isHovered.value = false;
+  stopJog(e);
+}
 
 function sendStop() {
   if (!props.jogIncrement || props.jogIncrement <= 0) {
@@ -104,12 +114,13 @@ function stopJog(e?: PointerEvent) {
 <template>
   <button
     class="jbtn"
-    :class="[direction, { disabled: isDisabled, active: activeJogKeys.has(label) || active }]"
+    :class="[direction, { disabled: isDisabled, active: activeJogKeys.has(label) || active, hover: isHovered }]"
     :disabled="isDisabled"
+    @pointerenter="onPointerEnter"
+    @pointerleave="onPointerLeave"
     @pointerdown.prevent="startJog"
     @pointerup.prevent="stopJog"
     @pointercancel.prevent="stopJog"
-    @pointerleave.prevent="stopJog"
     @contextmenu.prevent
   >
     <svg class="tri" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet">
@@ -136,13 +147,13 @@ function stopJog(e?: PointerEvent) {
 }
 
 /* Override global button styles — highlight inside the triangle only */
-.jbtn:hover:not(:disabled),
+.jbtn.hover:not(:disabled),
 .jbtn:active:not(:disabled) {
   background: transparent;
   border: none;
 }
 
-.jbtn:hover:not(:disabled) .tri polygon {
+.jbtn.hover:not(:disabled) .tri polygon {
   fill: var(--hl-hover);
 }
 

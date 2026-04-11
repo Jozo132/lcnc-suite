@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { send } from "./lcncWs";
 import JogButton from "./JogButton.vue";
 import MachineBtn from "./MachineBtn.vue";
@@ -129,6 +129,16 @@ const sectors: Sector[] = [
 function spread(deg: number) {
   const lp = labelPos(deg);
   return { path: arcPath(deg), labelX: lp.x, labelY: lp.y };
+}
+
+// ---- Hover state (mouse-only, avoids sticky :hover on touch) ----
+const hoveredSector = ref<string | null>(null);
+function onSectorEnter(s: Sector, e: PointerEvent) {
+  if (e.pointerType === "mouse") hoveredSector.value = s.id;
+}
+function onSectorLeave(s: Sector, e: PointerEvent) {
+  if (hoveredSector.value === s.id) hoveredSector.value = null;
+  stopJog(s, e);
 }
 
 // ---- Jog logic (uses centralized pointer registry) ----
@@ -278,12 +288,13 @@ function stopJog(s: Sector, e?: PointerEvent) {
             v-for="s in sectors"
             :key="s.id"
             class="sector"
-            :class="{ active: isSectorActive(s.id), disabled: !can[INPUT_DEFS.jogWheel.gate] }"
+            :class="{ active: isSectorActive(s.id), hover: hoveredSector === s.id, disabled: !can[INPUT_DEFS.jogWheel.gate] }"
             :d="s.path"
+            @pointerenter="onSectorEnter(s, $event)"
+            @pointerleave="onSectorLeave(s, $event)"
             @pointerdown.prevent="startJog(s, $event)"
             @pointerup.prevent="stopJog(s, $event)"
             @pointercancel.prevent="stopJog(s, $event)"
-            @pointerleave.prevent="stopJog(s, $event)"
             @contextmenu.prevent
           />
           <!-- Center hub -->
@@ -403,7 +414,7 @@ function stopJog(s: Sector, e?: PointerEvent) {
   transition: fill 0.12s, opacity 0.15s;
 }
 
-.sector:hover:not(.disabled) {
+.sector.hover:not(.disabled) {
   fill: var(--hl-hover);
 }
 

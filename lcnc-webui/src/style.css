@@ -207,8 +207,10 @@ button {
   transition: background 0.12s, border-color 0.12s, opacity 0.15s;
 }
 
-button:hover:not(:disabled) {
-  background: var(--hl-hover);
+@media (hover: hover) {
+  button:hover:not(:disabled) {
+    background: var(--hl-hover);
+  }
 }
 
 button:active:not(:disabled) {
