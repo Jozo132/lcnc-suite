@@ -146,8 +146,11 @@ function stopJog(e?: PointerEvent) {
   border-radius: 0;
 }
 
-/* Override global button styles — highlight inside the triangle only */
+/* Override global button styles — highlight inside the triangle only.
+   All highlights are JS-driven classes (no :hover/:active pseudo-classes)
+   to prevent sticky highlights on touchscreens. */
 .jbtn.hover:not(:disabled),
+.jbtn.active:not(:disabled),
 .jbtn:active:not(:disabled) {
   background: transparent;
   border: none;
@@ -155,10 +158,6 @@ function stopJog(e?: PointerEvent) {
 
 .jbtn.hover:not(:disabled) .tri polygon {
   fill: var(--hl-hover);
-}
-
-.jbtn:active:not(:disabled) .tri polygon {
-  fill: var(--hl-active);
 }
 
 .jbtn.active:not(:disabled) .tri polygon {

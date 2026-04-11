@@ -213,8 +213,10 @@ button {
   }
 }
 
-button:active:not(:disabled) {
-  background: var(--hl-active);
+@media (hover: hover) {
+  button:active:not(:disabled) {
+    background: var(--hl-active);
+  }
 }
 
 button:disabled {
