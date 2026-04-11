@@ -430,10 +430,6 @@ onMounted(async () => {
   max-width: 72px;
 }
 
-.sep {
-  margin: var(--gap-tight) 0;
-}
-
 /* ---- Camera pill ---- */
 .camPopover {
   min-width: 180px;

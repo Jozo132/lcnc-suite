@@ -1413,7 +1413,7 @@ function fmtR(key: string): string {
   display: flex;
   align-items: center;
   gap: var(--gap-controls);
-  padding: 6px 0;
+  padding: var(--gap-controls) 0;
 }
 
 .controlBarRight {
@@ -1441,7 +1441,7 @@ function fmtR(key: string): string {
 
 .arrowHead {
   fill: var(--ok);
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
 }
 
 /* Fixed-height section so grid + params don't shift when switching tabs */
@@ -1572,7 +1572,7 @@ function fmtR(key: string): string {
 .crosshairLine {
   stroke: var(--ok);
   stroke-width: 1.5;
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
 }
 
 

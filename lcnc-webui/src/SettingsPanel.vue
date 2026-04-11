@@ -1158,7 +1158,7 @@ const halStats = computed(() => ({
 
 .inputLabel {
   font-size: var(--fs-base);
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
   min-width: 60px;
 }
 
@@ -1193,7 +1193,7 @@ const halStats = computed(() => ({
 
 .colorLabel {
   font-size: var(--fs-base);
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
 }
 
 .opacityList {
@@ -1207,7 +1207,7 @@ const halStats = computed(() => ({
 
 .opacityLabel {
   font-size: var(--fs-base);
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
   min-width: 100px;
 }
 
@@ -1289,13 +1289,13 @@ const halStats = computed(() => ({
   margin-bottom: var(--gap-controls);
   border-radius: var(--radius-md);
   background: color-mix(in oklab, var(--danger) 15%, var(--bg));
-  opacity: 0.9;
+  opacity: var(--opacity-secondary);
 }
 
 .halEmpty {
   text-align: center;
   opacity: var(--opacity-disabled);
-  padding: 40px 0;
+  padding: var(--gap-panel) 0;
 }
 
 .halTreeControls {
@@ -1333,7 +1333,7 @@ const halStats = computed(() => ({
 }
 
 .halGroupHeader:hover {
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
   background: none;
 }
 
@@ -1413,11 +1413,11 @@ const halStats = computed(() => ({
 }
 
 .halUnlinked {
-  opacity: 0.25;
+  opacity: var(--opacity-subtle);
 }
 
 .halSigRow {
-  padding: 4px 0;
+  padding: var(--gap-tight) 0;
   border-bottom: 1px solid color-mix(in oklab, var(--border) 30%, transparent);
 }
 

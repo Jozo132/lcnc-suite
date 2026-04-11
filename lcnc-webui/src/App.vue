@@ -2015,10 +2015,6 @@ watch(viewerGcode, (newGcode) => {
   opacity: var(--opacity-muted);
 }
 
-.mono {
-  font-family: var(--font-mono);
-}
-
 /* ---- Macro param dialog ---- */
 /* .macroParamFields — uses stack-controls utility */
 .macroParamRow {
@@ -2085,7 +2081,7 @@ watch(viewerGcode, (newGcode) => {
 .legendDot {
   width: 8px;
   height: 8px;
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   flex-shrink: 0;
 }
 

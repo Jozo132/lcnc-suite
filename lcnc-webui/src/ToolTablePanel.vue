@@ -843,9 +843,6 @@ defineExpose({ openAdd, fetchTools, triggerImport });
   right: 58px;
 }
 
-.emptyState {
-  padding: var(--gap-panel);
-}
 </style>
 
 <style>

@@ -71,7 +71,7 @@ const buttons = inject<Ref<boolean[]>>("gamepadButtons", ref([]));
   top: 50%;
   left: 50%;
   transform: translate(-50%, -50%);
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   border: 1px dashed color-mix(in oklab, var(--fg) 25%, transparent);
   pointer-events: none;
 }
@@ -80,14 +80,14 @@ const buttons = inject<Ref<boolean[]>>("gamepadButtons", ref([]));
   position: absolute;
   width: 10px;
   height: 10px;
-  border-radius: 50%;
+  border-radius: var(--radius-round);
   background: var(--ok);
   transform: translate(-50%, -50%);
   transition: left 0.05s, top 0.05s;
 }
 
 .gpDot.inside {
-  opacity: 0.35;
+  opacity: var(--opacity-subtle);
 }
 
 .gpBtnGrid {

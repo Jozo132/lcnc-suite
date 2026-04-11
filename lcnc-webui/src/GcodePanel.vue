@@ -476,7 +476,7 @@ async function saveEdit() {
       </div>
 
       <!-- Empty state / drop zone -->
-      <div class="emptyState" v-else :class="{ dragOver }">
+      <div class="emptyState dropTarget" v-else :class="{ dragOver }">
         <svg class="uploadIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="17 8 12 3 7 8"/>
@@ -776,7 +776,7 @@ async function saveEdit() {
   width: 48px;
   height: 48px;
   color: var(--info);
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
 }
 
 .denied .dropIcon {
@@ -787,7 +787,7 @@ async function saveEdit() {
   font-size: var(--fs-lg);
   font-weight: var(--fw-semibold);
   color: var(--info);
-  opacity: 0.9;
+  opacity: var(--opacity-secondary);
 }
 
 .denied .dropText {
@@ -796,7 +796,7 @@ async function saveEdit() {
 
 /* .codeViewer, .codeLine, .lineNumber, .lineContent — global in style.css */
 
-.emptyState {
+.dropTarget {
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -808,7 +808,7 @@ async function saveEdit() {
   transition: border-color 0.2s, background 0.2s, opacity 0.2s;
 }
 
-.emptyState.dragOver {
+.dropTarget.dragOver {
   border-color: var(--info);
   background: color-mix(in oklab, var(--info) 8%, var(--panel));
   opacity: 1;
@@ -918,7 +918,7 @@ async function saveEdit() {
 }
 
 .gcodeTooltipDesc {
-  opacity: 0.8;
+  opacity: var(--opacity-secondary);
 }
 
 </style>
