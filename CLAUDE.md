@@ -46,12 +46,12 @@ Gateway connects to LinuxCNC via Python bindings (`linuxcnc.stat`, `linuxcnc.com
 - `defaults.ts` — Server-synced settings with section registry pattern (no localStorage)
 - `main.ts` — Vue app entry point with settings migration
 - `style.css` — Global styles, theme vars, design tokens
-- `SafetyStrip.vue` — Sidebar safety controls: Arm/Disarm, E-Stop, Machine On/Off, status display
-- `JogStrip.vue` — Sidebar jog controls: jog wheel, speed slider, step increments
-- `SetupStrip.vue` — Sidebar setup: DRO display, axis touchoff, homing grid, WCS selector
-- `OverridesStrip.vue` — Sidebar overrides: Feed/Spindle/Rapid override sliders
-- `SpindleStrip.vue` — Sidebar spindle: FWD/REV/STOP, RPM input, actual speed, coolant toggles
-- `ToolStrip.vue` — Sidebar tool management: Tool # input, Measure/Manual/Load/Abort, probe status
+- `SafetyStrip.vue` — Bottom strip: Arm/Disarm, E-Stop, Machine On/Off, status display (in #exempt slot)
+- `JogStrip.vue` — Bottom strip: jog wheel, speed slider, step increments
+- `SetupStrip.vue` — Bottom strip: DRO display, axis touchoff, homing grid, WCS selector
+- `OverridesStrip.vue` — Bottom strip: Feed/Spindle/Rapid override sliders
+- `SpindleStrip.vue` — Bottom strip: FWD/REV/STOP, RPM input, actual speed, coolant toggles
+- `ToolStrip.vue` — Bottom strip: Tool # input, Measure/Manual/Load/Abort, probe status
 - `ToolsetterSettings.vue` — Toolsetter configuration panel (used in SettingsPanel Machine sub-tab)
 - `GamepadLiveInput.vue` — Gamepad input visualization (SettingsPanel Gamepad sub-tab)
 - `DebugTab.vue` — Debug/diagnostics tab (SettingsPanel Debug sub-tab)
@@ -67,12 +67,12 @@ Gateway connects to LinuxCNC via Python bindings (`linuxcnc.stat`, `linuxcnc.com
 
 `Program | MDI | Probing | Offsets | Tools`
 
-### Sidebar
+### Bottom Action Strip
 
-Left column with six strip components (scrollable):
+Horizontally scrollable strip with six components (wrapped in `<Gate gate="armed">`):
 
-1. **SafetyStrip** — Arm/Disarm, E-Stop, Machine On/Off, status display
-2. **JogStrip** — Jog wheel, speed slider, step increments
+1. **SafetyStrip** — Arm/Disarm, E-Stop, Machine On/Off, status display (in `#exempt` slot — always accessible)
+2. **JogStrip** — Jog wheel, speed slider, step increments, world/joint mode
 3. **SetupStrip** — DRO display, axis touchoff, homing grid, WCS selector
 4. **OverridesStrip** — Feed/Spindle/Rapid override sliders
 5. **SpindleStrip** — FWD/REV/STOP, RPM input, actual speed, coolant toggles
@@ -128,13 +128,13 @@ TIER 3 — Machine enabled (base = armed + !estop + enabled)
   step ───────────────── base + ((isIdle+!busy+isHomed) OR isPaused)  Single-step
 
 TIER 4 — Machine idle (requires base + isIdle)
-  idle ───────────────── base + isIdle + !busy                        File ops, settings reset
+  idle ───────────────── base + isIdle + !busy                        Banner home, mode select
   jog ────────────────── base + isIdle + isHomed                      Jog buttons, speed slider
-  zero ───────────────── base + isIdle + !busy + !eoffset             Touch-off (G10 L20), Home, Unhome
+  zero ───────────────── base + isIdle + !busy + !eoffset             Home, Unhome
 
 TIER 5 — Full ready (requires everything)
   ready ──────────────── base + isIdle + !busy + isHomed              MDI, Cycle Start, Spindle, Coolant
-  probe ──────────────── base + isIdle + !busy + isHomed + !eoffset   Probe ops, tool change, WCS edit
+  probe ──────────────── base + isIdle + !busy + isHomed + !eoffset   Probe ops, tool change, touch-off, WCS edit, macros
 ```
 
 **State transition map — when gates open:**
@@ -213,9 +213,10 @@ Four layers enforce permissions:
 
 ## Layout Architecture
 
-- Sidebar (150px) + main content column with horizontally scrollable panels
-- Each panel independently selects tabs via TabPanel component
-- Same tab can appear in multiple panels (e.g. two 3D Viewers with separate refs)
+- Content area: viewerPane (left, 3D viewer always visible) + sidePane (right, tabbed content panels)
+- Bottom action strip: horizontally scrollable row of strip components (SafetyStrip in `#exempt` slot)
+- Macro bar: optional row of user-configurable macro buttons
+- Each content panel independently selects tabs via TabPanel component
 - Shared state: coordMode, jogVel, mdiText, armed, busy
 - Responsive: landscape (side-by-side panels) and portrait (stacked panels)
 

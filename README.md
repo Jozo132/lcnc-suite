@@ -147,14 +147,14 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - Optional stop / block delete toggles
 - 3D machine visualization with Three.js (colorized toolpath, backplot, STL machine model with per-part coloring/opacity)
 - 9-layer visibility/opacity control: backplot, toolpath, machine, workpiece, bounds, work zero, HUD, surface, tool
-- Probe panel with 7 views: Outside/Inside Corners (3x3 grid), Boss/Pocket, Ridge/Valley, Edge Angle, Calibrate (round/rect), and Surface Scan
+- Probe panel with 8 views: Outside/Inside Corners (3x3 grid), Boss/Pocket, Ridge/Valley, Edge Angle, Calibrate (round/rect), Surface Scan, and Toolsetter
 - Probe results grid (X/Y/Z probed, diameter, width, center, edge angle) from real-time DEBUG EVAL messages
 - Calibration offset display with reset in always-visible control bar
 - Surface map 3D visualization (probe grid rendered as point cloud in the viewer)
-- Toolsetter integration with 24 configurable parameters and tool change position (G30)
+- Toolsetter integration with 23 configurable parameters and tool change position (G30)
 - Tool table editor with tool library metadata (15+ fields: flutes, material, OAL, corner radius, etc.), filter/sort, spreadsheet import, per-tool STL upload with 2D side-view preview
 - 3D tool model from per-tool STL files with vertex-colored cutter/shaft zones, fallback cylinder from diameter/length
-- Camera tab with MJPEG feed, configurable crosshair/circle/grid SVG overlay (USB and IP cameras)
+- Camera PiP overlay with MJPEG feed, configurable crosshair/circle/grid SVG overlay (USB and IP cameras)
 - User-configurable macro buttons with `{param}` parameter prompts (sidebar popover + Settings editor)
 - HAL inspector built into Settings tab (tree view with search, live pin values)
 - Server-authoritative settings with multi-client sync (probe, toolsetter, gamepad, keyboard, macros, machine, camera, MDI settings shared across all connected UIs)
@@ -165,7 +165,7 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 - Error/message panel with persistent log (survives reload), unread count badge, per-message and bulk copy to clipboard, date+time timestamps
 - UI shutdown with confirmation dialog and clean gateway exit
 - **Machine Controls Catalog** — central catalog (`machineControls.ts`) defines every button type and input gate with permission class, variant, and size. Catalog-aware components (`MachineBtn`, `MachineInput`, etc.) look up their permissions automatically — developers never specify permissions inline.
-- **Default-deny gating** — outer `<Gate>` fieldset wraps the entire main area; sidebar safety controls (Arm, E-Stop, Machine On) are DOM siblings, always accessible. Browser `<fieldset disabled>` cascade enforces permissions at the DOM level.
+- **Default-deny gating** — outer `<Gate gate="armed">` fieldsets wrap content area, macro bar, and bottom action strip. SafetyStrip (Arm, E-Stop, Machine On) lives in the bottom strip's `#exempt` slot — always accessible even when disarmed. Browser `<fieldset disabled>` cascade enforces permissions at the DOM level.
 - **Permission classes** (14 total, defined in `permissions.ts`):
 
 | Class | Rule | Usage |
@@ -174,16 +174,16 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 | `armed` | armed | Outer content gate |
 | `safety` | armed, not estopped | Machine On/Off |
 | `setup` | armed, not estopped, idle, not busy | File ops, tool edits, settings reset |
-| `idle` | base, idle, not busy | File ops, settings |
+| `idle` | base, idle, not busy | Banner home, mode select |
 | `jog` | base, idle, homed | Jog, speed slider, keyboard jog |
 | `override` | base, not busy | Feed/Spindle/Rapid overrides |
-| `ready` | base, idle, not busy, homed | MDI, Cycle Start, Spindle, Coolant, Tool ops, WCS select |
+| `ready` | base, idle, not busy, homed | MDI, Cycle Start, Spindle, Coolant, comp toggle |
 | `pause` | base, running, not paused | Pause |
 | `resume` | base, paused | Resume |
 | `step` | base, (idle+homed OR paused) | Single-step |
 | `abort` | base | Abort, Shutdown |
-| `probe` | ready, no eoffset | Probe operations, WCS edit |
-| `zero` | idle, no eoffset | Touch-off, Home, Unhome |
+| `probe` | ready, no eoffset | Probe ops, tool change, WCS edit, touch-off, zero, macros |
+| `zero` | idle, no eoffset | Home, Unhome |
 
 `base` = armed, not estopped, enabled
 
@@ -1033,12 +1033,12 @@ lcnc-suite/
 │   │   ├── Gate.vue           # Permission gate (<fieldset :disabled>)
 │   │   ├── MachineBtn.vue     # Catalog-aware button (wraps Btn.vue)
 │   │   ├── MachineInput.vue   # Catalog-aware input (+ Toggle/Slider/Select/Radio/Color)
-│   │   ├── SafetyStrip.vue    # Sidebar safety: Arm/Disarm, E-Stop, Machine On/Off
-│   │   ├── JogStrip.vue       # Sidebar jog: wheel, speed slider, step increments
-│   │   ├── SetupStrip.vue     # Sidebar setup: DRO, touchoff, homing, WCS selector
-│   │   ├── OverridesStrip.vue # Sidebar overrides: Feed/Spindle/Rapid sliders
-│   │   ├── SpindleStrip.vue   # Sidebar spindle: FWD/REV/STOP, RPM, coolant
-│   │   ├── ToolStrip.vue      # Sidebar tool: load/unload/measure, metadata
+│   │   ├── SafetyStrip.vue    # Bottom strip: Arm/Disarm, E-Stop, Machine On/Off
+│   │   ├── JogStrip.vue       # Bottom strip: jog wheel, speed slider, increments
+│   │   ├── SetupStrip.vue     # Bottom strip: DRO, touchoff, homing, WCS selector
+│   │   ├── OverridesStrip.vue # Bottom strip: Feed/Spindle/Rapid sliders
+│   │   ├── SpindleStrip.vue   # Bottom strip: FWD/REV/STOP, RPM, coolant
+│   │   ├── ToolStrip.vue      # Bottom strip: load/unload/measure, metadata
 │   │   ├── TabPanel.vue       # Tab selector for content panels
 │   │   ├── Toolbar.vue        # 3D viewer toolbar (view presets, layer toggles)
 │   │   ├── ThreeViewer.vue    # 3D machine visualization (Three.js)
