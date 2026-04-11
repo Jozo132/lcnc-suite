@@ -86,25 +86,52 @@ Full layer behavior tables, pin semantics, and failure mode coverage in `safety-
 
 ### Permissions (`permissions.ts`)
 
-Single source of truth for all enable/disable logic. Components never compute their own disable conditions.
+Single source of truth for all enable/disable logic. Components never compute their own disable conditions. 14 permission classes organized in 6 tiers:
 
 ```
 base = armed && !estop && enabled
 ```
 
-| Class | Rule | Usage |
-|-------|------|-------|
-| `always` | unconditional (true) | Arm, E-Stop |
-| `safety` | armed, !estop | Machine On/Off |
-| `idle` | base, idle, !busy | Home, Unhome, file ops, settings management |
-| `jog` | base, idle, homed | Jog buttons, speed slider, keyboard jog |
-| `override` | base, !busy | Feed/Spindle/Rapid overrides, Optional Stop, Block Delete |
-| `ready` | base, idle, !busy, homed | MDI, Cycle Start, Spindle, Coolant, Tool ops, WCS select |
-| `pause` | base, running, !paused | Pause |
-| `resume` | base, paused | Resume |
-| `abort` | base | Abort, Shutdown |
-| `probe` | ready, !eoffset | Probe operations (comp active contaminates results) |
-| `zero` | idle, !eoffset | Touch-off (comp active bakes offset into G5x) |
+```
+TIER 0 — Unconditional
+  always ─────────────── true                                         Arm, E-Stop, UI nav
+
+TIER 1 — Client state (no machine state needed)
+  armed ──────────────── s.armed                                      Outer content gate
+
+TIER 2 — Machine power (no enabled needed)
+  safety ─────────────── armed + !estop                               Machine On/Off
+  setup ──────────────── armed + !estop + isIdle + !busy              File ops, tool edits, settings reset
+
+TIER 3 — Machine enabled (base = armed + !estop + enabled)
+  abort ──────────────── base                                         Abort, Shutdown
+  override ───────────── base + !busy                                 Feed/Spindle/Rapid overrides
+  pause ──────────────── base + isRunning + !isPaused                 Pause
+  resume ─────────────── base + isPaused                              Resume
+  step ───────────────── base + ((isIdle+!busy+isHomed) OR isPaused)  Single-step
+
+TIER 4 — Machine idle (requires base + isIdle)
+  idle ───────────────── base + isIdle + !busy                        Home, Unhome, WCS clear
+  jog ────────────────── base + isIdle + isHomed                      Jog buttons, speed slider
+  zero ───────────────── base + isIdle + !busy + !eoffset             Touch-off (G10 L20)
+
+TIER 5 — Full ready (requires everything)
+  ready ──────────────── base + isIdle + !busy + isHomed              MDI, Cycle Start, Spindle, Coolant
+  probe ──────────────── base + isIdle + !busy + isHomed + !eoffset   Probe ops, tool change, WCS edit
+```
+
+**State transition map — when gates open:**
+```
+Disconnected      → always
+Armed             → + armed
+E-Stop Cleared    → + safety, setup (if idle)
+Machine On        → + abort, override, idle, zero, jog (TIER 3+4)
+Homed             → + ready, probe, step (TIER 5)
+Running           → abort, override, pause, step remain; idle/ready/jog close
+Paused            → abort, override, resume, step remain; pause closes
+```
+
+**LinuxCNC enforces very little** — mode sequence (MDI needs MODE_MDI) and state transitions only. Our gates enforce: armed state (web-safety invention), idle-vs-running checks, homing requirements, and eoffset contamination prevention. The `set_mode()` + `reject_if_auto_running()` functions in gateway.py are the real backend gatekeepers.
 
 ### Machine Controls Catalog (`machineControls.ts`)
 
@@ -131,18 +158,19 @@ All interactive elements use catalog-aware wrapper components. **Never use `<Btn
 
 ### Gating Architecture — Default-Deny (IEC 62443 / ARINC 661)
 
-Three layers enforce permissions:
+Four layers enforce permissions:
 
-1. **Outer Gate** — `<Gate :allow="permissions.safety">` wraps the entire main area (header + panels + dialogs). When disarmed, everything is disabled by browser `<fieldset disabled>` cascade.
-2. **Catalog self-gating** — Each `MachineBtn`/`MachineInput` checks its own permission class for visual dimming (opacity) during normal operation.
-3. **Backend `require_armed()`** — Every motion command in gateway.py checks armed before executing (defense-in-depth).
+1. **Outer Gate** — `<Gate gate="armed">` wraps content area, macro bar, and bottom strip. When disarmed, everything is disabled by browser `<fieldset disabled>` cascade. Uses `armed` (not `safety`) so navigation works during E-Stop.
+2. **Inner Gates** — Section-level Gates with tighter permissions: `<Gate gate="override">` (OverridesStrip), `<Gate gate="ready">` (SpindleStrip), `<Gate gate="idle">` (OffsetPanel), `<Gate gate="setup">` (ToolTable/Gcode/Settings dialogs), `<Gate gate="safety">` (SafetyStrip Machine On/Off).
+3. **Catalog self-gating** — Each `MachineBtn`/`MachineInput` checks its own permission class for visual dimming + HTML disabled.
+4. **Backend `require_armed()`** — Every motion command in gateway.py checks armed before executing (defense-in-depth). Additionally, `fire()` in App.vue takes a gate parameter and re-checks permissions before sending.
 
-**DOM layout**: Sidebar and main area are flex siblings — sidebar is always outside the outer Gate, so Arm/E-Stop/Machine On are never locked.
+**DOM layout**: Bottom strip's `#exempt` slot holds SafetyStrip (Arm/E-Stop always accessible even when disarmed).
 
 ### Usage — Gate.vue (primary pattern)
 ```vue
 <!-- Wrap a section; fieldset :disabled propagates to all children -->
-<Gate :allow="can.ready">
+<Gate gate="ready">
   <MachineBtn type="start" @click="run">Start</MachineBtn>
   <MachineInput gate="mdiText" v-model="mdi" />
 </Gate>
@@ -161,7 +189,7 @@ Three layers enforce permissions:
 <!-- JogButton: internal JS guard needs its own :disabled prop -->
 <JogButton :disabled="!can.jog" ... />
 <!-- Tighter permission than parent Gate -->
-<Gate :allow="can.idle">
+<Gate gate="idle">
   <MachineBtn type="mdi" :disabled="!can.ready">Needs ready inside idle Gate</MachineBtn>
 </Gate>
 ```

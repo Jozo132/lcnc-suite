@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
-import { evaluatePermissions, PERMISSIONS_KEY } from "./permissions";
+import { evaluatePermissions, PERMISSIONS_KEY, type Permissions } from "./permissions";
 import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, type LcncMessage } from "./lcncWs";
 import ThreeViewer from "./ThreeViewer.vue";
 import Toolbar from "./Toolbar.vue";
@@ -651,10 +651,10 @@ const isSpinning = computed(() => isForward.value || isReverse.value);
 const floodOn = computed(() => !!st.value.flood);
 const mistOn = computed(() => !!st.value.mist);
 function toggleFlood() {
-  fire({ cmd: floodOn.value ? "flood_off" : "flood_on" });
+  fire({ cmd: floodOn.value ? "flood_off" : "flood_on" }, 'ready');
 }
 function toggleMist() {
-  fire({ cmd: mistOn.value ? "mist_off" : "mist_on" });
+  fire({ cmd: mistOn.value ? "mist_off" : "mist_on" }, 'ready');
 }
 
 // Program switches
@@ -713,7 +713,7 @@ function substituteMacro(command: string, values: Record<string, string>): strin
 
 function confirmMacroParams() {
   if (!macroParamDialog.value) return;
-  fire({ cmd: "mdi", text: substituteMacro(macroParamDialog.value.macro.command, macroParamDialog.value.values) });
+  fire({ cmd: "mdi", text: substituteMacro(macroParamDialog.value.macro.command, macroParamDialog.value.values) }, 'ready');
   macroParamDialog.value = null;
 }
 
@@ -728,7 +728,7 @@ function runMacro(macro: MacroDef) {
     for (const p of macro.params) values[p.name] = p.default;
     macroParamDialog.value = { macro, values };
   } else {
-    fire({ cmd: "mdi", text: macro.command });
+    fire({ cmd: "mdi", text: macro.command }, 'ready');
   }
 }
 // @ts-ignore TS6133 — kept for future use
@@ -737,7 +737,7 @@ function measureAuto() {
   const t = st.value.tool_number;
   if (!permissions.value.ready || st.value.probing || !t) return;
   send({ cmd: "set_probe_vars", vars: buildToolsetterVarMap() });
-  fire({ cmd: "mdi", text: `T${t} M600` });
+  fire({ cmd: "mdi", text: `T${t} M600` }, 'ready');
 }
 
 function unloadTool() {
@@ -745,9 +745,9 @@ function unloadTool() {
   const mode = loadMachineDefaults().toolChangeMode;
   if (mode === "m600") {
     send({ cmd: "set_probe_vars", vars: buildToolsetterVarMap() });
-    fire({ cmd: "mdi", text: "T0 M600" });
+    fire({ cmd: "mdi", text: "T0 M600" }, 'ready');
   } else {
-    fire({ cmd: "mdi", text: "T0 M6 G49" });
+    fire({ cmd: "mdi", text: "T0 M6 G49" }, 'ready');
   }
 }
 
@@ -902,10 +902,12 @@ let _rpmInit = false;
 watch(defaultSpindleSpeed, (v) => { if (!_rpmInit && v !== 1000) { rpmInput.value = v; _rpmInit = true; } });
 
 /**
- * Simple anti-spam gate so you don't double-send on fast clicks.
+ * Anti-spam gate with inline permission check (defense-in-depth).
+ * Gate param ensures the command is re-checked even if DOM state changed.
  */
-async function fire(payload: any, cooldownMs = 200) {
+async function fire(payload: any, gate?: keyof Permissions, cooldownMs = 200) {
   if (busy.value) return;
+  if (gate && !permissions.value[gate]) return;
   busy.value = true;
   try {
     send(payload);
@@ -921,7 +923,7 @@ function setAxis(axis: number, value: number = 0) {
   // For Z: subtract current eoffset so G5x doesn't absorb it
   let val = value;
   if (axis === 2 && st.value.eoffset_z) val += st.value.eoffset_z;
-  fire({ cmd: "mdi", text: `G10 L20 P0 ${axisName}${val.toFixed(6)}` });
+  fire({ cmd: "mdi", text: `G10 L20 P0 ${axisName}${val.toFixed(6)}` }, 'probe');
 }
 
 function setAll(values: number[] = []) {
@@ -931,19 +933,19 @@ function setAll(values: number[] = []) {
     if (letter === "Z") val += eoffsetZ;
     return `${letter}${val.toFixed(6)}`;
   });
-  fire({ cmd: "mdi", text: `G10 L20 P0 ${parts.join(" ")}` });
+  fire({ cmd: "mdi", text: `G10 L20 P0 ${parts.join(" ")}` }, 'probe');
 }
 
 function setG5x(gcode: string) {
-  fire({ cmd: "mdi", text: gcode });
+  fire({ cmd: "mdi", text: gcode }, 'probe');
 }
 
 function homeAll() {
-  fire({ cmd: "home_all" });
+  fire({ cmd: "home_all" }, 'idle');
 }
 
 function unhomeAll() {
-  fire({ cmd: "unhome_all" });
+  fire({ cmd: "unhome_all" }, 'idle');
 }
 
 const homedJoints = computed<boolean[]>(() => {
@@ -953,18 +955,18 @@ const homedJoints = computed<boolean[]>(() => {
 
 // @ts-ignore TS6133 — kept for future use
 function homeAxis(joint: number) {
-  fire({ cmd: "home", joint });
+  fire({ cmd: "home", joint }, 'idle');
 }
 
 // @ts-ignore TS6133 — kept for future use
 function unhomeAxis(joint: number) {
-  fire({ cmd: "unhome", joint });
+  fire({ cmd: "unhome", joint }, 'idle');
 }
 
 
 
 function cycleStart() {
-  fire({ cmd: "cycle_start" });
+  fire({ cmd: "cycle_start" }, 'ready');
 }
 
 function runFromLine(line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number) {
@@ -973,19 +975,19 @@ function runFromLine(line: number, spindleDir: "off" | "forward" | "reverse", sp
     line,
     spindle_dir: spindleDir !== "off" ? spindleDir : undefined,
     spindle_speed: spindleDir !== "off" ? spindleSpeed : undefined,
-  });
+  }, 'ready');
 }
 
 function cycleStep() {
-  fire({ cmd: "auto_step" });
+  fire({ cmd: "auto_step" }, 'step');
 }
 
 function cyclePause() {
-  fire({ cmd: "cycle_pause" });
+  fire({ cmd: "cycle_pause" }, 'pause');
 }
 
 function cycleResume() {
-  fire({ cmd: "cycle_resume" });
+  fire({ cmd: "cycle_resume" }, 'resume');
 }
 
 function setFeedOverride(scale: number) {
@@ -1001,23 +1003,23 @@ function setRapidOverride(scale: number) {
 }
 
 function spindleForward(speed: number) {
-  fire({ cmd: "spindle_forward", speed });
+  fire({ cmd: "spindle_forward", speed }, 'ready');
 }
 
 function spindleReverse(speed: number) {
-  fire({ cmd: "spindle_reverse", speed });
+  fire({ cmd: "spindle_reverse", speed }, 'ready');
 }
 
 function spindleStop() {
-  fire({ cmd: "spindle_stop" });
+  fire({ cmd: "spindle_stop" }, 'ready');
 }
 
 function loadFile(path: string) {
-  fire({ cmd: "load_file", path });
+  fire({ cmd: "load_file", path }, 'setup');
 }
 
 function unloadFile() {
-  fire({ cmd: "unload_file" });
+  fire({ cmd: "unload_file" }, 'setup');
 }
 
 /** ---------- keyboard shortcuts ---------- */
@@ -1090,16 +1092,16 @@ function onKeyDown(e: KeyboardEvent) {
   // Cycle start / pause / resume
   if (action === "cycle") {
     e.preventDefault();
-    if (permissions.value.resume) fire({ cmd: "cycle_resume" });
-    else if (permissions.value.pause) fire({ cmd: "cycle_pause" });
-    else if (permissions.value.ready && !!activeFile.value) fire({ cmd: "cycle_start" });
+    if (permissions.value.resume) fire({ cmd: "cycle_resume" }, 'resume');
+    else if (permissions.value.pause) fire({ cmd: "cycle_pause" }, 'pause');
+    else if (permissions.value.ready && !!activeFile.value) fire({ cmd: "cycle_start" }, 'ready');
     return;
   }
 
   // Abort
   if (action === "abort") {
     e.preventDefault();
-    if (permissions.value.abort) fire({ cmd: "abort" });
+    if (permissions.value.abort) fire({ cmd: "abort" }, 'abort');
     return;
   }
 }
@@ -1373,7 +1375,7 @@ watch(viewerGcode, (newGcode) => {
               @cycleStep="cycleStep"
               @cyclePause="cyclePause"
               @cycleResume="cycleResume"
-              @abort="fire({ cmd: 'abort' })"
+              @abort="fire({ cmd: 'abort' }, 'abort')"
               @toggleOptionalStop="toggleOptionalStop"
               @toggleBlockDelete="toggleBlockDelete"
               @openGcodeRef="openGcodeRef"
@@ -1721,8 +1723,8 @@ watch(viewerGcode, (newGcode) => {
         @arm="arm"
         @estop="send({ cmd: 'estop' })"
         @estop-reset="send({ cmd: 'estop_reset' })"
-        @machine-on="fire({ cmd: 'machine_on' })"
-        @machine-off="fire({ cmd: 'machine_off' })"
+        @machine-on="fire({ cmd: 'machine_on' }, 'safety')"
+        @machine-off="fire({ cmd: 'machine_off' }, 'safety')"
       />
       </template>
 
@@ -1756,9 +1758,9 @@ watch(viewerGcode, (newGcode) => {
         @setAxis="setAxis"
         @setAll="setAll"
         @setG5x="setG5x"
-        @goToG30="fire({ cmd: 'mdi', text: 'O<go_to_g30> CALL' })"
-        @goToHome="fire({ cmd: 'mdi', text: 'O<go_to_home> CALL' })"
-        @goToZero="fire({ cmd: 'mdi', text: 'O<go_to_zero> CALL' })"
+        @goToG30="fire({ cmd: 'mdi', text: 'O<go_to_g30> CALL' }, 'ready')"
+        @goToHome="fire({ cmd: 'mdi', text: 'O<go_to_home> CALL' }, 'ready')"
+        @goToZero="fire({ cmd: 'mdi', text: 'O<go_to_zero> CALL' }, 'ready')"
       />
 
       <OverridesStrip
