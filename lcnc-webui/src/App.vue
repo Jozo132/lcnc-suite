@@ -1604,7 +1604,7 @@ watch(viewerGcode, (newGcode) => {
             </div>
           </div>
           <div class="dialogContent stack-tight scroll-thin">
-            <div v-for="msg in messages" :key="msg.id" class="msgItem" :class="msgKindClass(msg.kind)">
+            <div v-for="msg in [...messages].reverse()" :key="msg.id" class="msgItem" :class="msgKindClass(msg.kind)">
               <span class="msgTime">{{ msgFormatTime(msg.ts) }}</span>
               <span class="msgKind">{{ msgKindLabel(msg.kind) }}</span>
               <span class="msgText">{{ msg.text }}</span>
