@@ -131,7 +131,7 @@ watch(settingsVersion, () => { loadTsParams(); });
     <span class="mono">{{ g30Z != null ? g30Z.toFixed(3) : '—' }}</span>
     <div class="row-tight span">
       <MachineBtn type="probe" @click="setG30">Set Current Position</MachineBtn>
-      <MachineBtn type="inline" @click="loadG30" :disabled="g30Loading">Refresh</MachineBtn>
+      <MachineBtn type="inlineMd" @click="loadG30" :disabled="g30Loading">Refresh</MachineBtn>
     </div>
 
     <div class="sep span"></div>
