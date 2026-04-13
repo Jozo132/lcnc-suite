@@ -83,4 +83,8 @@ const emit = defineEmits<{
   display: flex;
   gap: var(--gap-section);
 }
+
+@media (orientation: portrait) {
+  .spDirRow > * { flex: 1; }
+}
 </style>
