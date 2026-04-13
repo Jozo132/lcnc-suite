@@ -7,6 +7,7 @@ A modern, UI-agnostic WebSocket gateway for LinuxCNC with a reference Vue 3 web 
 - [Overview](#overview)
 - [Safety and Liability Disclaimer](#%EF%B8%8F-safety-and-liability-disclaimer)
 - [Features](#features)
+- [Screenshots](#screenshots)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick Start](#quick-start)
@@ -186,6 +187,84 @@ BY USING THIS SOFTWARE, YOU EXPRESSLY ACKNOWLEDGE AND ASSUME ALL RISKS ASSOCIATE
 | `zero` | idle, no eoffset | Home, Unhome |
 
 `base` = armed, not estopped, enabled
+
+## Screenshots
+
+### Landscape & Portrait layouts
+
+| Landscape | Portrait (tablet) |
+|-----------|-------------------|
+| ![Landscape](docs/screenshots/landscape.png) | ![Portrait](docs/screenshots/portrait.png) |
+
+The landscape layout places the 3D viewer and tabbed side panel side by side with a horizontally scrollable action strip along the bottom. In portrait mode the action strip rotates into a fixed left column, macro buttons into a thin middle column, and the main content stacks vertically — optimised for touchscreens and tablet mounting.
+
+---
+
+### Themes
+
+| Dark | Light | Dark High-Contrast | Light High-Contrast |
+|------|-------|-------------------|---------------------|
+| ![Dark](docs/screenshots/darkmode.png) | ![Light](docs/screenshots/lightmode.png) | ![Dark HC](docs/screenshots/dark_high_contrast.png) | ![Light HC](docs/screenshots/light_high_contrast.png) |
+
+Five theme modes selectable at runtime: Auto (follows OS), Light, Dark, High-Contrast Light, High-Contrast Dark.
+
+---
+
+### 3D Viewer — Toolpath & Surface Visualisation
+
+| Toolpath preview | Surface compensation map |
+|-----------------|--------------------------|
+| ![Toolpath](docs/screenshots/toolpath.png) | ![Surface map](docs/screenshots/surfacemap.png) |
+
+The Three.js viewer renders the full machine model from STL files alongside the G-code toolpath (rapids in red, feeds in cyan). The surface compensation tab overlays a probe height-map directly on the workpiece and shows a 3D surface plot with the interpolated Z values used for live compensation.
+
+---
+
+### Program Panel
+
+![Program](docs/screenshots/program.png)
+
+G-code viewer with syntax highlighting, inline editing, program controls (start / pause / step / abort), progress bar, and run-from-line. Hover any G/M-code token for an instant tooltip; click to open the searchable reference dialog.
+
+---
+
+### Probing
+
+| 3D probing operations | G-code reference |
+|-----------------------|-----------------|
+| ![3D Probing](docs/screenshots/3D_probing.png) | ![G-code Reference](docs/screenshots/gcode_reference.png) |
+
+The Probing tab covers 8 probe views: Outside/Inside corners (3×3 grid), Boss/Pocket, Ridge/Valley, Edge Angle, Calibrate, Surface Scan, and Toolsetter. Probe results (X/Y/Z, diameter, centre, angle) are captured live from LinuxCNC's debug channel. The built-in G-code reference dialog is searchable across all G and M codes with syntax and parameter descriptions.
+
+---
+
+### Tool Table
+
+| Tool library | Tool editor |
+|-------------|-------------|
+| ![Tool table](docs/screenshots/tool_table.png) | ![Tool edit](docs/screenshots/tool_edit.png) |
+
+The tool table lists all tools with metadata (type, diameter, flutes, material, OAL, corner radius, etc.) alongside a live 3D side-view preview rendered from per-tool STL files or a fallback cylinder. The editor dialog lets you update all fields and see the geometry update in real time.
+
+---
+
+### WCS Offset Table
+
+![Offsets](docs/screenshots/offsets.png)
+
+Inline editing of all work coordinate systems (G54–G59.3) plus G92, tool, and compensation auxiliary rows. Click any cell to edit, press Enter to apply.
+
+---
+
+### Messages & Settings
+
+| Message log | Settings |
+|-------------|----------|
+| ![Messages](docs/screenshots/messages.png) | ![Settings](docs/screenshots/settings.png) |
+
+The message panel shows a persistent log of all LinuxCNC errors and operator messages with timestamps, severity colour coding, per-message dismiss, and bulk copy to clipboard. Settings are server-authoritative and sync across all connected clients in real time — covering the 3D viewer, machine parameters, display, macros, gamepad, keyboard shortcuts, HAL inspector, and debug tools.
+
+---
 
 ## Requirements
 
