@@ -281,7 +281,7 @@ The message panel shows a persistent log of all LinuxCNC errors and operator mes
 ### Option A: Automated
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/lcnc-suite.git
+git clone https://github.com/bildobodo/lcnc-suite.git
 cd lcnc-suite
 ./install.sh          # checks dependencies, creates venv, installs npm packages
 cd lcnc-webui && npm run build && cd ..   # build frontend for production
@@ -293,7 +293,7 @@ cd lcnc-webui && npm run build && cd ..   # build frontend for production
 
 ```bash
 # 1. Clone
-git clone https://github.com/YOUR_USERNAME/lcnc-suite.git
+git clone https://github.com/bildobodo/lcnc-suite.git
 cd lcnc-suite
 git lfs pull
 
