@@ -159,7 +159,12 @@ M50 P0
 o<100> if [#<tool_selected> EQ 0]
   G90
   G53 G1 F#<traverse_fr> Z0
-  M6 T#<tool_selected> 
+  o<101> if [#<disable_pre_pos> EQ 0 AND #<mode> EQ 1]
+    ;Move to tool change position before unloading
+    G53 G1 F#<traverse_fr> X#5181 Y#5182
+    G53 G1 F#<traverse_fr> Z#5183
+  o<101> endif
+  M6 T#<tool_selected>
   G49
   M50 P1
   (LOG, END M6 T0)
