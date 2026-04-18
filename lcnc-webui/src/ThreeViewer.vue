@@ -367,8 +367,8 @@ function setView(p: ViewPreset) {
   if (!camera || !controls) return;
 
   if (p === "reset") {
-    if (!groups?.root) return;
-    frameToBounds(new THREE.Box3().setFromObject(groups.root));
+    if (!_iniBox || !_workGrp) return;
+    frameToBounds(_iniBox.clone().translate(_workGrp.position));
     return;
   }
 
