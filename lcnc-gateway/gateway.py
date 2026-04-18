@@ -295,6 +295,10 @@ _shared_timing: dict = {}  # poll_ms, errors_ms, parse_ms, poller_ts
 _surface_points_pending: list | None = None  # latest surface scan points; None = never scanned
 _surface_points_version: int = 0             # bumped each time new data is ready
 _surface_initialized: bool = False           # True after startup file-read attempted
+_comp_grid_pending: dict | None = None       # latest parsed probe-results-grid.json
+_comp_grid_version: int = 0                  # bumped each time new grid is ready
+_comp_grid_initialized: bool = False         # True after startup file-read attempted
+_last_comp_hal_ver: int | None = None        # last seen compensation.grid-version HAL value
 _status_gen = 0  # incremented each poll; clients compare to skip redundant sends
 _status_poller_task: Optional[asyncio.Task] = None
 
@@ -341,6 +345,21 @@ def _read_probe_results_file() -> list:
     return points
 
 
+def _read_comp_grid_file() -> "dict | None":
+    """Read probe-results-grid.json and return parsed dict, or None if unavailable."""
+    ini_path = getattr(STAT, "ini_filename", None)
+    if not ini_path:
+        return None
+    path = os.path.join(os.path.dirname(ini_path), "probe-results-grid.json")
+    if not os.path.isfile(path):
+        return None
+    with open(path) as f:
+        try:
+            return json.load(f)
+        except Exception:
+            return None
+
+
 async def _status_poller():
     """Single global poller — polls LinuxCNC once per cycle for all clients.
 
@@ -354,6 +373,7 @@ async def _status_poller():
     global _shared_status, _shared_status_dict, _shared_errors, _shared_probe_updates
     global _status_gen, lcnc_connected, STAT, CMD, ERR, _reconnect_fails, _shared_timing
     global _surface_points_pending, _surface_points_version, _surface_initialized
+    global _comp_grid_pending, _comp_grid_version, _comp_grid_initialized, _last_comp_hal_ver
     loop = asyncio.get_event_loop()
     _poll_fails = 0
     _last_pid_check = 0.0
@@ -443,6 +463,24 @@ async def _status_poller():
                 if pts:
                     _surface_points_pending = pts
                     _surface_points_version += 1
+
+            # Comp grid startup init: push existing probe-results-grid.json on first connect
+            if not _comp_grid_initialized and getattr(STAT, "ini_filename", None):
+                grid = _read_comp_grid_file()
+                if grid:
+                    _comp_grid_pending = grid
+                    _comp_grid_version += 1
+                _last_comp_hal_ver = st.comp_grid_version  # sync — prevents re-fire below
+                _comp_grid_initialized = True
+
+            # Comp grid update: detect via compensation.grid-version HAL pin
+            if _comp_grid_initialized and st.comp_grid_version is not None \
+                    and st.comp_grid_version != _last_comp_hal_ver:
+                grid = _read_comp_grid_file()
+                if grid:
+                    _comp_grid_pending = grid
+                    _comp_grid_version += 1
+                _last_comp_hal_ver = st.comp_grid_version
 
             # Cache results for per-client loops
             _shared_status = st
@@ -3473,6 +3511,7 @@ async def ws_endpoint(ws: WebSocket):
         _spindle_load_pin = _slp if isinstance(_slp, str) and _HAL_PIN_RE.match(_slp) else ""
         _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
         _last_surface_version = 0  # tracks which _surface_points_version was last sent to this client
+        _last_comp_grid_version = 0  # tracks which _comp_grid_version was last sent to this client
         while True:
             try:
                 # Not connected — disarm and send error to this client
@@ -3537,6 +3576,10 @@ async def ws_endpoint(ws: WebSocket):
                     if _surface_points_pending:
                         status_msg["surface_points"] = _surface_points_pending
                     _last_surface_version = _surface_points_version
+                if _comp_grid_version != _last_comp_grid_version:
+                    if _comp_grid_pending:
+                        status_msg["comp_grid"] = _comp_grid_pending
+                    _last_comp_grid_version = _comp_grid_version
 
                 # Inject tool_meta on tool_number change or library edit (for 3D rendering)
                 if st.tool_number != _prev_tool_num or _tool_meta_dirty:

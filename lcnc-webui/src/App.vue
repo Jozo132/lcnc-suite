@@ -1239,6 +1239,9 @@ watch(status, (st) => {
   if (Array.isArray(st?.surface_points) && st.surface_points.length) {
     surfacePoints.value = st.surface_points;
   }
+  if (st?.comp_grid && typeof st.comp_grid === "object") {
+    compGrid.value = st.comp_grid;
+  }
 });
 
 /** ---------- Surface map probe results ---------- */
