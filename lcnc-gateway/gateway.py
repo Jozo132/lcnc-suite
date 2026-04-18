@@ -12,7 +12,7 @@ from rs274.interpret import Translated, ArcsToSegmentsMixin, StatMixin
 import hal  # must import in main thread — _hal C extension registers signal handlers on init
 
 from dataclasses import asdict, dataclass
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 from fastapi.staticfiles import StaticFiles
 import re
 import shutil
@@ -294,6 +294,11 @@ _shared_status_dict: Optional[dict] = None  # cached asdict(_shared_status)
 _shared_errors: list = []
 _shared_probe_updates: dict = {}
 _shared_timing: dict = {}  # poll_ms, errors_ms, parse_ms, poller_ts
+# Per-cycle snapshot of connected clients — rebuilt once by the poller so
+# every status_loop doesn't repeat the O(N) list-comp (avoids O(N²)/cycle).
+# Reference is swapped atomically before _status_event.set(), so readers
+# always see a consistent list for the duration of their iteration.
+_shared_clients_list: list = []
 _surface_points_pending: list | None = None  # latest surface scan points; None = never scanned
 _surface_points_version: int = 0             # bumped each time new data is ready
 _surface_initialized: bool = False           # True after startup file-read attempted
@@ -368,6 +373,17 @@ def _read_comp_grid_file() -> "dict | None":
             return None
 
 
+def _poll_and_serialize():
+    """Executor-thread helper: poll STAT + serialize to dict in one hop.
+
+    Combines poll_status() and asdict() so neither touches the event loop.
+    Returns (StatusPayload, dict) — the dict is cached as _shared_status_dict
+    and consumed (via .copy()) by every per-client status_loop.
+    """
+    st = poll_status()
+    return st, asdict(st)
+
+
 async def _status_poller():
     """Single global poller — polls LinuxCNC once per cycle for all clients.
 
@@ -382,7 +398,7 @@ async def _status_poller():
     global _status_gen, lcnc_connected, STAT, CMD, ERR, _reconnect_fails, _shared_timing
     global _surface_points_pending, _surface_points_version, _surface_initialized
     global _comp_grid_pending, _comp_grid_version, _comp_grid_initialized, _last_comp_hal_ver
-    global _status_event
+    global _status_event, _shared_clients_list
     loop = asyncio.get_event_loop()
     _poll_fails = 0
     _last_pid_check = 0.0
@@ -429,9 +445,11 @@ async def _status_poller():
 
             # poll_status() blocks ~40ms (GIL held by C extensions).
             # run_in_executor lets the event loop serve HTTP (STL files)
-            # between GIL switches during that time.
+            # between GIL switches during that time. asdict() runs in the
+            # same hop so StatusPayload serialisation stays off the event
+            # loop too.
             t0 = time.monotonic()
-            st = await loop.run_in_executor(None, poll_status)
+            st, status_dict = await loop.run_in_executor(None, _poll_and_serialize)
             t1 = time.monotonic()
             raw_errs = read_errors_nonblocking()
             t2 = time.monotonic()
@@ -493,7 +511,10 @@ async def _status_poller():
 
             # Cache results for per-client loops
             _shared_status = st
-            _shared_status_dict = asdict(st)
+            _shared_status_dict = status_dict
+            _shared_clients_list = [
+                {"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()
+            ]
             t3 = time.monotonic()
             _shared_errors = errs
             _shared_probe_updates = probe_updates
@@ -817,6 +838,10 @@ TOOL_LIBRARY_PATH = BASE_DIR / "tool_library.json"
 _tool_tbl_path: Optional[str] = None
 _tool_tbl_ini: Optional[str] = None
 _tool_meta_dirty = False
+# mtime-keyed cache for tool_library.json — status_loop reads this on every
+# tool-number change × every connected client, so the uncached disk-read +
+# JSON-parse was the single largest event-loop stall in the status path.
+_tool_lib_cache: Optional[Tuple[float, dict]] = None  # (mtime, data)
 
 _TOOL_TP_RE = re.compile(r"T(\d+)\s+P(\d+)")
 _TOOL_FIELD_RE = re.compile(r"([XYZD])([+-]?[\d.]+)")
@@ -927,18 +952,34 @@ def _current_ini_path() -> str:
 
 
 def _load_tool_library_all() -> dict:
-    """Load the full tool_library.json (all configs)."""
-    if TOOL_LIBRARY_PATH.exists():
-        try:
-            with open(TOOL_LIBRARY_PATH, "r") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {}
+    """Load the full tool_library.json (all configs), mtime-cached.
+
+    Hot path: status_loop calls load_tool_library() on every tool-number
+    change for every connected client. mtime-keying catches both UI edits
+    (via _save_tool_library_all) and external edits to the file.
+    """
+    global _tool_lib_cache
+    if not TOOL_LIBRARY_PATH.exists():
+        _tool_lib_cache = None
+        return {}
+    try:
+        mtime = TOOL_LIBRARY_PATH.stat().st_mtime
+    except OSError:
+        return _tool_lib_cache[1] if _tool_lib_cache else {}
+    if _tool_lib_cache is not None and _tool_lib_cache[0] == mtime:
+        return _tool_lib_cache[1]
+    try:
+        with open(TOOL_LIBRARY_PATH, "r") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return _tool_lib_cache[1] if _tool_lib_cache else {}
+    _tool_lib_cache = (mtime, data)
+    return data
 
 
 def _save_tool_library_all(all_data: dict):
     """Write tool_library.json atomically."""
+    global _tool_lib_cache
     fd, tmp = tempfile.mkstemp(dir=str(TOOL_LIBRARY_PATH.parent), suffix=".tmp")
     try:
         with os.fdopen(fd, "w") as f:
@@ -950,6 +991,7 @@ def _save_tool_library_all(all_data: dict):
         except Exception:
             pass
         raise
+    _tool_lib_cache = None  # invalidate; next read re-loads with fresh mtime
 
 
 def load_tool_library() -> dict:
@@ -3603,13 +3645,14 @@ async def ws_endpoint(ws: WebSocket):
                 if _shared_probe_updates:
                     _probe_results.update(_shared_probe_updates)
 
-                # Build status message — use cached asdict from poller
+                # Build status message — use cached asdict + clients snapshot
+                # from poller (O(1) ref copy vs. rebuilding per client).
                 status_data = _shared_status_dict.copy() if _shared_status_dict else asdict(st)
                 status_msg: dict = {
                     "type": "status",
                     "data": status_data,
                     "errors": _shared_errors,
-                    "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
+                    "clients": _shared_clients_list,
                     "armed": armed,
                 }
                 if _probe_results:
