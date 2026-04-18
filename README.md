@@ -347,6 +347,7 @@ WEBUI_DEV = 0
 | `WEBUI_PORT` | `8000` | HTTP and WebSocket port |
 | `WEBUI_BROWSER` | `1` | Auto-open browser on start (`0` to disable) |
 | `WEBUI_DEV` | `0` | `1` = Vite dev server on :5173 with hot-reload |
+| `DEBUG` | `0` | Subroutine debug logging — `0` = off, `1` = write `logfile.txt` to config folder (read by `tool_touch_off.ngc`) |
 | `CAMERA_SOURCE` | *(disabled)* | USB device index (`0`, `1`) or URL (`rtsp://host/live`, `http://host/mjpeg`) |
 | `CAMERA_RESOLUTION` | `1280x720` | Capture resolution `WxH` (USB cameras only) |
 | `CAMERA_FPS` | `15` | MJPEG stream frame rate |
@@ -823,6 +824,7 @@ All velocity values are in **machine units per second** (mm/s or in/s). The gate
 | `MIN_SPINDLE_OVERRIDE` | recommended | Spindle override lower limit (e.g. `0.5` = 50%) |
 | `MAX_SPINDLE_OVERRIDE` | recommended | Spindle override upper limit (e.g. `2.0` = 200%) |
 | `PROGRAM_PREFIX` | recommended | Root directory for the G-code file browser |
+| `DEBUG` | required | Subroutine debug logging — must be present or `tool_touch_off.ngc` aborts with "not defined". Set `0` to disable, `1` to write `logfile.txt` |
 | `CAMERA_SOURCE` | optional | USB device index (`0`, `1`) or URL (`rtsp://host/live`) — empty = disabled |
 | `CAMERA_RESOLUTION` | optional | Capture resolution `WxH` (default: `1280x720`, USB only) |
 | `CAMERA_FPS` | optional | MJPEG stream frame rate (default: `15`) |
@@ -885,8 +887,13 @@ The gateway communicates with LinuxCNC through a HAL watchdog component. See [Se
 Additional HAL signals used by the gateway:
 
 ```hal
-# Tool change confirmation (web UI manual tool change dialog)
+# Tool change: web UI drives the ack back to LinuxCNC
+# On real machines, replace the auto-loopback (net tool-change-loop iocontrol.0.tool-change iocontrol.0.tool-changed)
+# with these two nets so the web UI confirms each change:
 net tool-change-confirmed <= webui-safety.tool-changed
+net tool-change-confirmed => iocontrol.0.tool-changed
+# Tool prep is still auto-looped (no UI interaction needed):
+net tool-prep-loop iocontrol.0.tool-prepare iocontrol.0.tool-prepared
 
 # Surface compensation (optional — requires surfacemap subroutine)
 net compensation-on  webui-safety.compensation-enable => compensation.enable-in
@@ -912,6 +919,8 @@ The HAL pins the gateway reads at runtime:
 | `axis.z.eoffset` | Current Z external offset (surface compensation) |
 | `axis.z.eoffset-enable` | Whether compensation is active |
 | `compensation.method` | Active interpolation method (0=nearest, 1=linear, 2=cubic) |
+| `compensation.grid-version` | Increments each time compensation grid is recomputed — triggers UI refresh |
+| `motion.probe-input` | Current probe input state (TRUE = tripped) |
 
 > **Note:** The gateway automatically creates an internal HAL component called `webui-monitor` that wires these pins for efficient direct reads. It is visible in `halcmd show comp` but requires no manual configuration — it is created and wired automatically at startup.
 
