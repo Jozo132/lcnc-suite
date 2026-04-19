@@ -369,6 +369,21 @@ _status_poller_task: Optional[asyncio.Task] = None
 # Lazily allocated on first use so module import doesn't require an event loop.
 _status_event: Optional[asyncio.Event] = None
 
+# Serializes all CMD.* access. The LinuxCNC NML command channel is not
+# thread-safe; concurrent handle_command coroutines with >=2 clients
+# corrupted NML state and segfaulted the process before this lock existed.
+# Must be held for every CMD.* call — direct, via _cmd_blocking, or via
+# asyncio.to_thread. Non-reentrant: helpers (_cmd_blocking, set_mode) assume
+# the caller already holds the lock.
+_cmd_lock: Optional[asyncio.Lock] = None
+
+
+def _get_cmd_lock() -> asyncio.Lock:
+    global _cmd_lock
+    if _cmd_lock is None:
+        _cmd_lock = asyncio.Lock()
+    return _cmd_lock
+
 # Timing log (toggled via "timing_log" WS command from Debug tab)
 _timing_log_enabled = False
 _timing_log_path: Optional[str] = None
@@ -1992,12 +2007,32 @@ async def ws_send_measured(ws: WebSocket, obj: Dict[str, Any]) -> Tuple[float, i
     return (encode_ms, len(data))
 
 
-def set_mode(mode: int):
+async def _cmd_blocking(cmd_fn, *args, wait=_CMD_WAIT_TIMEOUT) -> int:
+    """Run a blocking CMD.* call + optional wait_complete() on a worker thread.
+
+    Every `CMD.* + wait_complete()` pair must go through here. The LinuxCNC C
+    extension holds the GIL during its blocking sections; calling it directly
+    from the event-loop thread starves `_heartbeat_loop` and trips the HAL
+    watchdog. `asyncio.to_thread` isolates the blocking section so heartbeats
+    and status polls keep firing. Returns wait_complete()'s int result (0 ok,
+    1 failed, -1 timeout) or 0 when wait=None.
+
+    Caller must hold `_cmd_lock` — NML command channel is not thread-safe.
+    """
+    def _run():
+        cmd_fn(*args)
+        if wait is not None:
+            return CMD.wait_complete(wait)
+        return 0
+    return await asyncio.to_thread(_run)
+
+
+async def set_mode(mode: int):
+    """Switch LinuxCNC task mode. Caller must hold `_cmd_lock`."""
     STAT.poll()
     if safe_get("task_mode", None) == mode:
         return
-    CMD.mode(mode)
-    CMD.wait_complete(_CMD_WAIT_TIMEOUT)
+    await _cmd_blocking(CMD.mode, mode)
 
 def reject_if_auto_running() -> Optional[Dict[str, Any]]:
     STAT.poll()
@@ -2038,7 +2073,14 @@ def require_armed(armed: bool):
         raise PermissionError("Not armed")
 
 
-def handle_command(msg: Dict[str, Any], armed: bool):
+async def handle_command(msg: Dict[str, Any], armed: bool):
+    # Acquire the CMD lock before dispatching. Every path that touches CMD.*
+    # must hold this lock; see _cmd_lock docstring.
+    async with _get_cmd_lock():
+        return await _handle_command_impl(msg, armed)
+
+
+async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
     global _estop_hold
     cmd = msg.get("cmd")
     if not cmd:
@@ -2129,7 +2171,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             mode = int(msg.get("mode", 0))
             if mode not in (linuxcnc.MODE_MANUAL, linuxcnc.MODE_AUTO, linuxcnc.MODE_MDI):
                 return {"ok": False, "error": f"Invalid mode: {mode}"}
-            set_mode(mode)
+            await set_mode(mode)
             return {"ok": True}
 
         if cmd == "shutdown":
@@ -2155,7 +2197,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
 
             if not isinstance(text, str) or not text.strip():
                 return {"ok": False, "error": "Missing text"}
-            set_mode(linuxcnc.MODE_MDI)
+            await set_mode(linuxcnc.MODE_MDI)
             CMD.mdi(text)
             return {"ok": True}
 
@@ -2186,7 +2228,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
 
             write_tool_table(tbl_path, tbl_tools)
             if CMD:
-                CMD.load_tool_table()
+                await asyncio.to_thread(CMD.load_tool_table)
 
             # Update metadata
             library = load_tool_library()
@@ -2222,7 +2264,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             })
             write_tool_table(tbl_path, tbl_tools)
             if CMD:
-                CMD.load_tool_table()
+                await asyncio.to_thread(CMD.load_tool_table)
 
             # Save metadata if provided
             library = load_tool_library()
@@ -2259,7 +2301,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
 
             write_tool_table(tbl_path, new_tools)
             if CMD:
-                CMD.load_tool_table()
+                await asyncio.to_thread(CMD.load_tool_table)
 
             library = load_tool_library()
             library.pop(str(tool_num), None)
@@ -2273,7 +2315,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             if blocked:
                 return blocked
             tool_num = int(msg["tool_number"])
-            set_mode(linuxcnc.MODE_MDI)
+            await set_mode(linuxcnc.MODE_MDI)
             CMD.mdi(f"T{tool_num} M6 G43")
             return {"ok": True}
 
@@ -2292,7 +2334,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 CMD.auto(linuxcnc.AUTO_PAUSE)
             else:
                 # Idle → start program and step
-                set_mode(linuxcnc.MODE_AUTO)
+                await set_mode(linuxcnc.MODE_AUTO)
                 CMD.auto(linuxcnc.AUTO_STEP)
             return {"ok": True}
 
@@ -2301,12 +2343,12 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             spindle_dir = msg.get("spindle_dir")
             spindle_speed = int(msg.get("spindle_speed", 0))
             if spindle_dir and spindle_speed > 0:
-                set_mode(linuxcnc.MODE_MANUAL)
+                await set_mode(linuxcnc.MODE_MANUAL)
                 if spindle_dir == "forward":
                     CMD.spindle(linuxcnc.SPINDLE_FORWARD, spindle_speed)
                 elif spindle_dir == "reverse":
                     CMD.spindle(linuxcnc.SPINDLE_REVERSE, spindle_speed)
-            set_mode(linuxcnc.MODE_AUTO)
+            await set_mode(linuxcnc.MODE_AUTO)
             start_line = int(msg.get("line", 0))
             CMD.auto(linuxcnc.AUTO_RUN, start_line)
             return {"ok": True}
@@ -2321,7 +2363,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
 
             axis = int(msg.get("axis"))
             vel = float(msg.get("vel", 0.0))
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             CMD.jog(linuxcnc.JOG_CONTINUOUS, jf, axis, vel)
             return {"ok": True}
@@ -2335,7 +2377,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 return blocked
 
             axis = int(msg.get("axis"))
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             CMD.jog(linuxcnc.JOG_STOP, jf, axis)
             return {"ok": True}
@@ -2348,7 +2390,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 return blocked
 
             axes = msg.get("axes", [])
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
                 CMD.jog(linuxcnc.JOG_CONTINUOUS, jf, int(entry["axis"]), float(entry["vel"]))
@@ -2363,7 +2405,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 return blocked
 
             axes = msg.get("axes", [])
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for a in axes:
                 CMD.jog(linuxcnc.JOG_STOP, jf, int(a))
@@ -2379,7 +2421,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             axis = int(msg.get("axis"))
             vel = abs(float(msg.get("vel", 0.0)))  # speed only; distance carries direction
             dist = float(msg.get("distance", 0.0))
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             CMD.jog(linuxcnc.JOG_INCREMENT, jf, axis, vel, dist)
             return {"ok": True}
@@ -2392,7 +2434,7 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 return blocked
 
             axes = msg.get("axes", [])
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
                 CMD.jog(linuxcnc.JOG_INCREMENT, jf, int(entry["axis"]), abs(float(entry["vel"])), float(entry["distance"]))
@@ -2400,37 +2442,35 @@ def handle_command(msg: Dict[str, Any], armed: bool):
 
         if cmd == "home_all":
             require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             CMD.home(-1)  # -1 homes all axes
             return {"ok": True}
 
         if cmd == "unhome_all":
             require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
-            CMD.teleop_enable(0)  # unhome requires joint mode
-            CMD.wait_complete(_CMD_WAIT_TIMEOUT)
+            await set_mode(linuxcnc.MODE_MANUAL)
+            await _cmd_blocking(CMD.teleop_enable, 0)  # unhome requires joint mode
             CMD.unhome(-1)  # -1 unhomes all axes
             return {"ok": True}
 
         if cmd == "home":
             require_armed(armed)
             joint = int(msg.get("joint", -1))
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             CMD.home(joint)
             return {"ok": True}
 
         if cmd == "unhome":
             require_armed(armed)
             joint = int(msg.get("joint", -1))
-            set_mode(linuxcnc.MODE_MANUAL)
-            CMD.teleop_enable(0)  # unhome requires joint mode
-            CMD.wait_complete(_CMD_WAIT_TIMEOUT)
+            await set_mode(linuxcnc.MODE_MANUAL)
+            await _cmd_blocking(CMD.teleop_enable, 0)  # unhome requires joint mode
             CMD.unhome(joint)
             return {"ok": True}
 
         if cmd == "cycle_start":
             require_armed(armed)
-            set_mode(linuxcnc.MODE_AUTO)
+            await set_mode(linuxcnc.MODE_AUTO)
             CMD.auto(linuxcnc.AUTO_RUN, 0)  # Start from beginning
             return {"ok": True}
 
@@ -2464,20 +2504,20 @@ def handle_command(msg: Dict[str, Any], armed: bool):
         if cmd == "spindle_forward":
             require_armed(armed)
             speed = float(msg.get("speed", 0))
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             CMD.spindle(linuxcnc.SPINDLE_FORWARD, speed)
             return {"ok": True}
 
         if cmd == "spindle_reverse":
             require_armed(armed)
             speed = float(msg.get("speed", 0))
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             CMD.spindle(linuxcnc.SPINDLE_REVERSE, speed)
             return {"ok": True}
 
         if cmd == "spindle_stop":
             require_armed(armed)
-            set_mode(linuxcnc.MODE_MANUAL)
+            await set_mode(linuxcnc.MODE_MANUAL)
             CMD.spindle(linuxcnc.SPINDLE_OFF)
             return {"ok": True}
 
@@ -2550,9 +2590,10 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             if blocked:
                 return blocked
 
-            set_mode(linuxcnc.MODE_AUTO)
-            CMD.program_open(abs_path)
-            CMD.wait_complete(5)  # program_open can legitimately take several seconds on large files
+            await set_mode(linuxcnc.MODE_AUTO)
+            # program_open can legitimately take several seconds on large files —
+            # offload so the heartbeat/poller keep ticking during the wait.
+            await _cmd_blocking(CMD.program_open, abs_path, wait=5)
             return {"ok": True, "path": abs_path}
 
         if cmd == "unload_file":
@@ -2560,10 +2601,8 @@ def handle_command(msg: Dict[str, Any], armed: bool):
             blocked = reject_if_auto_running()
             if blocked:
                 return blocked
-            CMD.abort()
-            CMD.wait_complete(_CMD_WAIT_TIMEOUT)
-            CMD.reset_interpreter()
-            CMD.wait_complete(_CMD_WAIT_TIMEOUT)
+            await _cmd_blocking(CMD.abort)
+            await _cmd_blocking(CMD.reset_interpreter)
             return {"ok": True}
 
         if cmd == "list_probe_macros":
@@ -2628,11 +2667,10 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                             current = f"{current} {item}".strip() if current else item
                     if current:
                         chunks.append(current)
-                    set_mode(linuxcnc.MODE_MDI)
+                    await set_mode(linuxcnc.MODE_MDI)
                     mdi_ok = True
                     for chunk in chunks:
-                        CMD.mdi(chunk)
-                        ret = CMD.wait_complete(5)
+                        ret = await _cmd_blocking(CMD.mdi, chunk, wait=5)
                         if ret != 0:
                             mdi_ok = False
                 except Exception as e:
@@ -2675,13 +2713,12 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                 indices = [_G5X_MAP[target]]
             else:
                 return {"ok": False, "error": f"Invalid target: {target}"}
-            set_mode(linuxcnc.MODE_MDI)
+            await set_mode(linuxcnc.MODE_MDI)
             STAT.poll()
             machine_axes = [a.lower() for a in _axes_from_mask(getattr(STAT, "axis_mask", 7))]
             zero_parts = " ".join(f"{k.upper()}0" for k in machine_axes) + " R0"
             for p in indices:
-                CMD.mdi(f"G10 L2 P{p} {zero_parts}")
-                CMD.wait_complete(5)
+                await _cmd_blocking(CMD.mdi, f"G10 L2 P{p} {zero_parts}", wait=5)
             # Update cache immediately
             for p in indices:
                 ci = p - 1
@@ -2706,9 +2743,8 @@ def handle_command(msg: Dict[str, Any], armed: bool):
                     parts.append(f"{axis.upper()}{float(val):.6f}")
             if not parts:
                 return {"ok": False, "error": "No axis values provided"}
-            set_mode(linuxcnc.MODE_MDI)
-            CMD.mdi(f"G10 L2 P{p} {' '.join(parts)}")
-            CMD.wait_complete(5)
+            await set_mode(linuxcnc.MODE_MDI)
+            await _cmd_blocking(CMD.mdi, f"G10 L2 P{p} {' '.join(parts)}", wait=5)
             ci = p - 1
             for axis in all_keys:
                 val = msg.get(axis)
@@ -3446,7 +3482,7 @@ async def apply_tool_library_import(
 
     write_tool_table(tbl_path, tbl_tools)
     if CMD:
-        CMD.load_tool_table()
+        await asyncio.to_thread(CMD.load_tool_table)
     save_tool_library(library)
 
     return {"ok": True, "added": len(parsed), "skipped": len(_skipped)}
@@ -3967,20 +4003,21 @@ async def ws_endpoint(ws: WebSocket):
                             armed = False
                             _clients[client_id]["armed"] = False
                             try:
-                                if bool(safe_get("enabled", False)):
-                                    mode = safe_get("task_mode", None)
-                                    interp = safe_get("interp_state", None)
-                                    if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-                                        CMD.abort()
-                                    else:
-                                        homed = normalize_homed(safe_get("homed", None))
-                                        if homed:
-                                            set_mode(linuxcnc.MODE_MANUAL)
-                                            jf = _jog_joint_flag()
-                                            _nj = getattr(STAT, "joints", 3) if STAT else 3
-                                            for ax in range(_nj):
-                                                CMD.jog(linuxcnc.JOG_STOP, jf, ax)
-                                        CMD.abort()
+                                async with _get_cmd_lock():
+                                    if bool(safe_get("enabled", False)):
+                                        mode = safe_get("task_mode", None)
+                                        interp = safe_get("interp_state", None)
+                                        if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
+                                            CMD.abort()
+                                        else:
+                                            homed = normalize_homed(safe_get("homed", None))
+                                            if homed:
+                                                await set_mode(linuxcnc.MODE_MANUAL)
+                                                jf = _jog_joint_flag()
+                                                _nj = getattr(STAT, "joints", 3) if STAT else 3
+                                                for ax in range(_nj):
+                                                    CMD.jog(linuxcnc.JOG_STOP, jf, ax)
+                                            CMD.abort()
                             except Exception:
                                 pass
                             try:
@@ -4140,8 +4177,7 @@ async def ws_endpoint(ws: WebSocket):
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 
-            reply = await asyncio.get_event_loop().run_in_executor(
-                None, handle_command, msg, armed)
+            reply = await handle_command(msg, armed)
             if msg.get("cmd") == "load_file" and reply.get("ok"):
                 last_file = None  # force status_loop to re-read on next poll
             elif msg.get("cmd") == "unload_file" and reply.get("ok"):
@@ -4160,21 +4196,22 @@ async def ws_endpoint(ws: WebSocket):
         # Safety: stop all motion if this armed client disconnects
         if armed and CMD is not None:
             try:
-                STAT.poll()
-                if bool(safe_get("enabled", False)):
-                    mode = safe_get("task_mode", None)
-                    interp = safe_get("interp_state", None)
-                    if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-                        CMD.abort()
-                    else:
-                        homed = normalize_homed(safe_get("homed", None))
-                        if homed:
-                            set_mode(linuxcnc.MODE_MANUAL)
-                            jf = _jog_joint_flag()
-                            _nj = getattr(STAT, "joints", 3) if STAT else 3
-                            for ax in range(_nj):
-                                CMD.jog(linuxcnc.JOG_STOP, jf, ax)
-                        CMD.abort()
+                async with _get_cmd_lock():
+                    STAT.poll()
+                    if bool(safe_get("enabled", False)):
+                        mode = safe_get("task_mode", None)
+                        interp = safe_get("interp_state", None)
+                        if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
+                            CMD.abort()
+                        else:
+                            homed = normalize_homed(safe_get("homed", None))
+                            if homed:
+                                await set_mode(linuxcnc.MODE_MANUAL)
+                                jf = _jog_joint_flag()
+                                _nj = getattr(STAT, "joints", 3) if STAT else 3
+                                for ax in range(_nj):
+                                    CMD.jog(linuxcnc.JOG_STOP, jf, ax)
+                            CMD.abort()
             except Exception:
                 pass
         status_task.cancel()
