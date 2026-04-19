@@ -10,7 +10,9 @@ self.onmessage = (ev: MessageEvent) => {
   if (msg.cmd === "start") {
     if (timer) clearInterval(timer);
     timer = setInterval(() => {
-      (self as unknown as Worker).postMessage({ tick: performance.now() });
+      // Edge trigger only — the main thread timestamps the send itself,
+      // because performance.now() here is on the worker's time origin.
+      (self as unknown as Worker).postMessage(0);
     }, 1000);
   } else if (msg.cmd === "stop") {
     if (timer) { clearInterval(timer); timer = null; }

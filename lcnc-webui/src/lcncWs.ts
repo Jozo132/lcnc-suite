@@ -167,9 +167,11 @@ export function connectWs() {
   ws.onopen = () => {
     connected.value = true;
     _hbWorker = new Worker(new URL("./heartbeatWorker.ts", import.meta.url), { type: "module" });
-    _hbWorker.onmessage = (ev: MessageEvent<{ tick: number }>) => {
+    _hbWorker.onmessage = () => {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        _heartbeatSentAt = _rtSentAt = ev.data.tick;
+        // Timestamp on the main thread — worker performance.now() is on a
+        // different time origin and would mis-measure RTT by seconds.
+        _heartbeatSentAt = _rtSentAt = performance.now();
         ws.send('{"cmd":"heartbeat"}');
       }
     };
