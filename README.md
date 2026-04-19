@@ -339,6 +339,13 @@ WEBUI_HOST = 0.0.0.0
 WEBUI_PORT = 8000
 WEBUI_BROWSER = 1
 WEBUI_DEV = 0
+
+# Gateway performance flags
+WEBUI_STATUS_DELTA  = 1       # recommended ON
+WEBUI_ADAPTIVE_POLL = 1       # recommended ON for SBCs, optional on workstations
+WEBUI_IDLE_POLL_HZ  = 5
+WEBUI_UVLOOP        = 0
+WEBUI_WIRE_FORMAT   = json
 ```
 
 | Variable | Default | Description |
@@ -352,7 +359,17 @@ WEBUI_DEV = 0
 | `CAMERA_RESOLUTION` | `1280x720` | Capture resolution `WxH` (USB cameras only) |
 | `CAMERA_FPS` | `15` | MJPEG stream frame rate |
 
-Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
+**Performance flags** — all default OFF unless set to `1`. Measured on localhost SIM (300 samples each, idle and running). See `docs/` for raw CSVs.
+
+| Variable | Default | Effect | When to enable |
+|----------|---------|--------|----------------|
+| `WEBUI_STATUS_DELTA` | `0` | Only fields that changed since last status are sent; server forces a full snapshot every 100 cycles. Measured ~90 % bandwidth cut idle (2253 → 125 B), ~65 % running (2472 → 857 B), no RT penalty. | **Always.** No downside observed. |
+| `WEBUI_ADAPTIVE_POLL` | `0` | Drops status poll rate from 30 Hz to `WEBUI_IDLE_POLL_HZ` (default 5) when the machine is idle (interp idle + not in AUTO/MDI + no motion + inpos + no tool-change). Instant return to 30 Hz on motion. Trade-off: up to ~200 ms DRO lag while truly idle. | On SBCs / low-power hosts to free ~85 % of idle-time gateway CPU and reduce stat-mutex contention. Optional on workstations. |
+| `WEBUI_IDLE_POLL_HZ` | `5` | Integer poll rate used while `WEBUI_ADAPTIVE_POLL=1` and the machine is idle. Lower = more CPU savings, longer DRO lag. | Raise to `10` if 200 ms lag feels sluggish, lower to `2` for maximum CPU savings. |
+| `WEBUI_UVLOOP` | `0` | Swaps asyncio's default event loop for libuv (requires `uvloop` package). Faster socket I/O and callback scheduling under load. No measurable effect on a single localhost client at 30 Hz. | Real deployments with multiple concurrent clients and/or camera streaming alongside status WS. |
+| `WEBUI_WIRE_FORMAT` | `json` | `msgpack` switches WS frames to binary msgpack encoding (requires `msgspec`). Our status payload is numeric-heavy — msgpack's int encoding was measured ~6 % *larger* than JSON digit strings with no RT benefit. | Only when custom payloads contain large structured/binary blobs. |
+
+Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. `WEBUI_*` flags can also be set as environment variables (same name) and take precedence over the INI. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
 
 #### 3. HAL safety chain
 
