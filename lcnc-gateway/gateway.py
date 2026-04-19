@@ -29,11 +29,45 @@ MACHINE_DIR = BASE_DIR / "machine"
 
 # ---- Perf experiment flags (INI-sourced via lcnc-suite launcher) ----
 # All flags default OFF. Each is an independent opt-in for A/B measurement.
+_WIRE_FORMAT = (os.environ.get("WEBUI_WIRE_FORMAT") or "json").strip().lower()
+if _WIRE_FORMAT not in ("json", "msgpack"):
+    _WIRE_FORMAT = "json"
 _ADAPTIVE_POLL_ENABLED = os.environ.get("WEBUI_ADAPTIVE_POLL") == "1"
 try:
     _IDLE_POLL_HZ = max(1, int(os.environ.get("WEBUI_IDLE_POLL_HZ") or "5"))
 except ValueError:
     _IDLE_POLL_HZ = 5
+
+# ---- Wire-format encoders (msgspec, lazy-initialised) ----
+# msgspec.json is used in place of stdlib json.dumps to avoid the per-call
+# Encoder setup cost. msgspec.msgpack produces compact binary frames for
+# float-heavy StatusPayload. Both encoders are thread-safe for reuse.
+def _wire_enc_hook(obj):
+    # Matches the prior json.dumps(..., default=str) behaviour: any object
+    # msgspec doesn't know how to encode gets stringified. Covers Path, datetime,
+    # and defensive stringification of stray non-primitive payloads.
+    return str(obj)
+
+try:
+    import msgspec as _msgspec
+    _json_encoder = _msgspec.json.Encoder(enc_hook=_wire_enc_hook)
+    _msgpack_encoder = _msgspec.msgpack.Encoder(enc_hook=_wire_enc_hook)
+
+    def _json_encoder_encode(obj):
+        return _json_encoder.encode(obj)  # returns bytes
+except Exception:
+    _msgspec = None
+    _msgpack_encoder = None
+
+    def _json_encoder_encode(obj):
+        # Fallback: stdlib json. default=str matches prior ws_send_json behaviour.
+        return json.dumps(obj, separators=(",", ":"), default=str)
+
+# If msgspec isn't installed, force-downgrade to JSON even if the operator
+# set WEBUI_WIRE_FORMAT=msgpack — msgpack requires msgspec.
+if _WIRE_FORMAT == "msgpack" and _msgpack_encoder is None:
+    print("[WIRE] msgspec not installed — WEBUI_WIRE_FORMAT=msgpack ignored, falling back to JSON", flush=True)
+    _WIRE_FORMAT = "json"
 
 # ---- LinuxCNC handles (nullable for auto-reconnect) ----
 STAT: Optional[linuxcnc.stat] = None
@@ -1873,17 +1907,39 @@ def read_errors_nonblocking() -> list:
 
 
 async def ws_send_json(ws: WebSocket, obj: Dict[str, Any]):
-    # default=str prevents weird types from killing the WS during development
-    # json.dumps runs in executor: prevents large payloads (e.g. comp_grid) from
-    # blocking the event loop and starving _heartbeat_loop → HAL watchdog ESTOP.
+    # Legacy-name shim: all sends go through ws_send_measured so the wire-format
+    # flag applies uniformly and non-status messages don't diverge from status
+    # frames. Callers that need encode timing / bytes use ws_send_measured directly.
+    await ws_send_measured(ws, obj)
+
+
+async def ws_send_measured(ws: WebSocket, obj: Dict[str, Any]) -> Tuple[float, int]:
+    """Encode + send a WS payload. Returns (encode_ms, bytes_sent).
+
+    Used by the status hot path to attribute encode cost and payload size for
+    the Debug-tab timing surface. Other callers keep using ws_send_json when
+    they don't care about the measurement.
+
+    The wire format is chosen by _WIRE_FORMAT (see Experiment 1). encode_ms
+    excludes the actual ws.send_* call; bytes_sent is the size of the encoded
+    payload. Returns (encode_ms, 0) if the client disconnected mid-send.
+    """
+    loop = asyncio.get_event_loop()
+    t0 = time.monotonic()
+    if _WIRE_FORMAT == "msgpack":
+        data = await loop.run_in_executor(None, _msgpack_encoder.encode, obj)
+    else:
+        data = await loop.run_in_executor(None, _json_encoder_encode, obj)
+    encode_ms = round((time.monotonic() - t0) * 1000, 3)
     try:
-        loop = asyncio.get_event_loop()
-        text = await loop.run_in_executor(
-            None, lambda: json.dumps(obj, separators=(",", ":"), default=str)
-        )
-        await ws.send_text(text)
+        if _WIRE_FORMAT == "msgpack":
+            await ws.send_bytes(data)
+        else:
+            await ws.send_text(data if isinstance(data, str) else data.decode("utf-8"))
     except RuntimeError:
-        pass  # client already disconnected — cleanup handled in finally block
+        return (encode_ms, 0)
+    # msgspec returns bytes; stdlib json returns str — both have len() == bytes/chars
+    return (encode_ms, len(data))
 
 
 def set_mode(mode: int):
@@ -3614,6 +3670,7 @@ async def ws_endpoint(ws: WebSocket):
         _slp = _machine_s.get("spindleLoadPin", "")
         _spindle_load_pin = _slp if isinstance(_slp, str) and _HAL_PIN_RE.match(_slp) else ""
         _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
+        _prev_encode_ms = 0.0  # encode_ms from previous cycle (wire-format serialise time)
         _last_surface_version = 0  # tracks which _surface_points_version was last sent to this client
         _last_comp_grid_version = 0  # tracks which _comp_grid_version was last sent to this client
         while True:
@@ -3733,12 +3790,16 @@ async def ws_endpoint(ws: WebSocket):
                         "errors_ms": _shared_timing.get("errors_ms", 0),
                         "parse_ms": _shared_timing.get("parse_ms", 0),
                         "overhead_ms": _shared_timing.get("overhead_ms", 0),
+                        # Prior-cycle encode time (status_msg built before the
+                        # encode happens → we attach the last known value).
+                        # ws_bytes is measured client-side from the received frame.
+                        "encode_ms": _prev_encode_ms,
                     }
                     if client_id in _clients:
                         _clients[client_id]["hb_mono"] = 0.0
 
                 pre_send = time.monotonic()
-                await ws_send_json(ws, status_msg)
+                _prev_encode_ms, _ = await ws_send_measured(ws, status_msg)
                 _prev_send_ms = round((time.monotonic() - pre_send) * 1000, 2)
 
                 # Log timing to file if enabled

@@ -1,4 +1,5 @@
 import { ref, shallowRef } from "vue";
+import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { type WsCommand, OPERATOR_ERROR } from "./lcnc";
 import { updateServerCache } from "./defaults";
 
@@ -55,6 +56,9 @@ export interface TimingStats {
   errors: TimingComponentStats;
   parse: TimingComponentStats;
   overhead: TimingComponentStats;
+  encode: TimingComponentStats;   // server: wire-format encode time per status msg
+  decode: TimingComponentStats;   // client: JSON.parse / msgpack.decode per message
+  ws_bytes: TimingComponentStats; // server: encoded payload size (bytes)
   count: number;
 }
 
@@ -62,9 +66,10 @@ export const timingStats = ref<TimingStats | null>(null);
 
 const TIMING_MAX_SAMPLES = 300;
 
-type TimingKey = "rt" | "network" | "server" | "cycle" | "poll" | "errors" | "parse" | "overhead";
+type TimingKey = "rt" | "network" | "server" | "cycle" | "poll" | "errors" | "parse" | "overhead" | "encode" | "decode" | "ws_bytes";
 const _timingSamples: Record<TimingKey, number[]> = {
   rt: [], network: [], server: [], cycle: [], poll: [], errors: [], parse: [], overhead: [],
+  encode: [], decode: [], ws_bytes: [],
 };
 
 function _computeComponentStats(arr: number[]): TimingComponentStats {
@@ -96,7 +101,7 @@ function _pushSample(key: TimingKey, value: number) {
 }
 
 function _recomputeTimingStats() {
-  const keys: TimingKey[] = ["rt", "network", "server", "cycle", "poll", "errors", "parse", "overhead"];
+  const keys: TimingKey[] = ["rt", "network", "server", "cycle", "poll", "errors", "parse", "overhead", "encode", "decode", "ws_bytes"];
   const stats = {} as Record<TimingKey, TimingComponentStats>;
   for (const k of keys) stats[k] = _computeComponentStats(_timingSamples[k]);
   timingStats.value = { ...stats, count: _timingSamples.rt.length };
@@ -108,7 +113,7 @@ export function resetTimingStats() {
 }
 
 export function getTimingCsv(): string {
-  const keys: TimingKey[] = ["rt", "network", "server", "cycle", "poll", "errors", "parse", "overhead"];
+  const keys: TimingKey[] = ["rt", "network", "server", "cycle", "poll", "errors", "parse", "overhead", "encode", "decode", "ws_bytes"];
   const maxLen = Math.max(...keys.map(k => _timingSamples[k].length));
   const lines = [keys.join(",")];
   for (let i = 0; i < maxLen; i++) {
@@ -139,6 +144,9 @@ export function connectWs() {
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${wsProto}//${location.host}/ws`;
   ws = new WebSocket(wsUrl);
+  // Required so msgpack frames arrive as ArrayBuffer, not Blob (Blob decode
+  // is async and would need an extra await). JSON text frames are unaffected.
+  ws.binaryType = "arraybuffer";
 
   ws.onopen = () => {
     connected.value = true;
@@ -166,12 +174,22 @@ export function connectWs() {
 
   ws.onmessage = (ev) => {
     let msg: any;
+    const _t0 = performance.now();
     try {
-      msg = JSON.parse(ev.data);
-    } catch {
-      console.error("WS: invalid JSON", ev.data);
+      if (typeof ev.data === "string") {
+        msg = JSON.parse(ev.data);
+        _pushSample("ws_bytes", ev.data.length);
+      } else {
+        // Binary frame (msgpack). ArrayBuffer because binaryType = "arraybuffer".
+        const buf = ev.data as ArrayBuffer;
+        msg = msgpackDecode(new Uint8Array(buf));
+        _pushSample("ws_bytes", buf.byteLength);
+      }
+    } catch (e) {
+      console.error("WS: decode failed", e);
       return;
     }
+    _pushSample("decode", performance.now() - _t0);
 
     // Server-authoritative armed state — update from every message that carries it
     if (msg.armed !== undefined) armed.value = msg.armed;
@@ -203,6 +221,7 @@ export function connectWs() {
         if (t.errors_ms != null) _pushSample("errors", t.errors_ms);
         if (t.parse_ms != null) _pushSample("parse", t.parse_ms);
         if (t.overhead_ms != null) _pushSample("overhead", t.overhead_ms);
+        if (t.encode_ms != null) _pushSample("encode", t.encode_ms);
         _recomputeTimingStats();
       }
 

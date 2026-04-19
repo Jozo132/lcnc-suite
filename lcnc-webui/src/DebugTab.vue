@@ -21,7 +21,7 @@ function downloadTimingCsv() {
   URL.revokeObjectURL(url);
 }
 
-const timingComponents: { key: keyof Omit<import("./lcncWs").TimingStats, "count">; label: string }[] = [
+const timingComponents: { key: keyof Omit<import("./lcncWs").TimingStats, "count">; label: string; unit?: string }[] = [
   { key: "rt",        label: "RT (total)" },
   { key: "network",   label: "\u2003Network" },
   { key: "server",    label: "\u2003Server" },
@@ -30,6 +30,9 @@ const timingComponents: { key: keyof Omit<import("./lcncWs").TimingStats, "count
   { key: "errors",    label: "\u2003Errors" },
   { key: "parse",     label: "\u2003Parse" },
   { key: "overhead",  label: "\u2003Overhead" },
+  { key: "encode",    label: "Encode (server)" },
+  { key: "decode",    label: "Decode (client)" },
+  { key: "ws_bytes",  label: "WS bytes",      unit: "" },
 ];
 </script>
 
@@ -43,11 +46,11 @@ const timingComponents: { key: keyof Omit<import("./lcncWs").TimingStats, "count
         </div>
         <div v-for="comp in timingComponents" :key="comp.key" class="timingRow" :class="{ timingTotal: comp.key === 'rt' || comp.key === 'cycle' }">
           <span>{{ comp.label }}</span>
-          <span>{{ (timingStats[comp.key] as TimingComponentStats).last }}ms</span>
-          <span>{{ (timingStats[comp.key] as TimingComponentStats).min }}ms</span>
-          <span>{{ (timingStats[comp.key] as TimingComponentStats).max }}ms</span>
-          <span>{{ (timingStats[comp.key] as TimingComponentStats).mean }}ms</span>
-          <span>{{ (timingStats[comp.key] as TimingComponentStats).std }}ms</span>
+          <span>{{ (timingStats[comp.key] as TimingComponentStats).last }}{{ comp.unit ?? 'ms' }}</span>
+          <span>{{ (timingStats[comp.key] as TimingComponentStats).min }}{{ comp.unit ?? 'ms' }}</span>
+          <span>{{ (timingStats[comp.key] as TimingComponentStats).max }}{{ comp.unit ?? 'ms' }}</span>
+          <span>{{ (timingStats[comp.key] as TimingComponentStats).mean }}{{ comp.unit ?? 'ms' }}</span>
+          <span>{{ (timingStats[comp.key] as TimingComponentStats).std }}{{ comp.unit ?? 'ms' }}</span>
         </div>
       </div>
       <div v-else class="muted">Waiting for data…</div>
