@@ -32,11 +32,15 @@ MACHINE_DIR = BASE_DIR / "machine"
 _WIRE_FORMAT = (os.environ.get("WEBUI_WIRE_FORMAT") or "json").strip().lower()
 if _WIRE_FORMAT not in ("json", "msgpack"):
     _WIRE_FORMAT = "json"
+_STATUS_DELTA_ENABLED = os.environ.get("WEBUI_STATUS_DELTA") == "1"
 _ADAPTIVE_POLL_ENABLED = os.environ.get("WEBUI_ADAPTIVE_POLL") == "1"
 try:
     _IDLE_POLL_HZ = max(1, int(os.environ.get("WEBUI_IDLE_POLL_HZ") or "5"))
 except ValueError:
     _IDLE_POLL_HZ = 5
+# Full-snapshot cadence when delta mode is on: force a full every N cycles so
+# any drift-bug self-heals within ~3s at 30 Hz.
+_DELTA_FULL_INTERVAL = 100
 
 # ---- Wire-format encoders (msgspec, lazy-initialised) ----
 # msgspec.json is used in place of stdlib json.dumps to avoid the per-call
@@ -1913,6 +1917,23 @@ async def ws_send_json(ws: WebSocket, obj: Dict[str, Any]):
     await ws_send_measured(ws, obj)
 
 
+def _diff_status_data(last: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
+    """Return fields of `current` that differ from `last`.
+
+    Single-level diff — StatusPayload is flat (no nested dataclasses per the
+    definition around line 1144). For list-valued fields, Python == compares
+    element-wise; mismatched lists are included whole. Removed keys are NOT
+    reported: the one-shot injected field `tool_meta` would otherwise be
+    cleared on the cycle after tool-change, which is exactly what we don't
+    want (client keeps last known tool_meta — server re-injects on actual change).
+    """
+    diff: Dict[str, Any] = {}
+    for k, v in current.items():
+        if k not in last or last[k] != v:
+            diff[k] = v
+    return diff
+
+
 async def ws_send_measured(ws: WebSocket, obj: Dict[str, Any]) -> Tuple[float, int]:
     """Encode + send a WS payload. Returns (encode_ms, bytes_sent).
 
@@ -3673,6 +3694,9 @@ async def ws_endpoint(ws: WebSocket):
         _prev_encode_ms = 0.0  # encode_ms from previous cycle (wire-format serialise time)
         _last_surface_version = 0  # tracks which _surface_points_version was last sent to this client
         _last_comp_grid_version = 0  # tracks which _comp_grid_version was last sent to this client
+        # Experiment 2: status-delta per-client state
+        _last_status_data: Optional[Dict[str, Any]] = None
+        _cycles_since_full = 0
         while True:
             try:
                 # Not connected — disarm and send error to this client
@@ -3775,6 +3799,23 @@ async def ws_endpoint(ws: WebSocket):
                                     status_msg["data"]["tool_meta"] = _tm
                         except (KeyError, TypeError, OSError) as e:
                             print(f"[STATUS] tool_meta build failed for T{st.tool_number}: {type(e).__name__}: {e}", flush=True)
+
+                # Experiment 2: delta encoding of the `data` field.
+                # After all mutations to status_msg["data"] are done, compare
+                # against this client's last-sent baseline and swap the full
+                # dict for a diff when delta mode is on. On a forced-full
+                # cadence (every _DELTA_FULL_INTERVAL cycles) or first send,
+                # stay with the full payload. `errors`, `clients`, `timing`,
+                # `surface_points`, etc. always go through as-is — they're
+                # already sparse or cheap.
+                if _STATUS_DELTA_ENABLED:
+                    if _last_status_data is None or _cycles_since_full >= _DELTA_FULL_INTERVAL:
+                        _cycles_since_full = 0
+                    else:
+                        status_msg["type"] = "status_delta"
+                        status_msg["data"] = _diff_status_data(_last_status_data, status_msg["data"])
+                        _cycles_since_full += 1
+                    _last_status_data = status_data
 
                 # Timing: only on first status after heartbeat so all
                 # components share the same ~1Hz sample rate.

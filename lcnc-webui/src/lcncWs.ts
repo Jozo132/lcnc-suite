@@ -203,6 +203,16 @@ export function connectWs() {
       return;
     }
 
+    // Experiment 2: server-side status deltas. Merge incoming changed fields
+    // onto the most recent known data, then fall through as a normal status.
+    // Server forces a full snapshot every N cycles and on reconnect, so any
+    // drift self-heals within a few seconds.
+    if (msg.type === "status_delta") {
+      const base = _pendingStatus?.data ?? status.value?.data ?? {};
+      msg.data = { ...base, ...(msg.data ?? {}) };
+      msg.type = "status";
+    }
+
     if (msg.type === "status") {
       // Only act on status messages that carry timing (heartbeat-triggered).
       // Plain status messages arrive first and must NOT consume _rtSentAt.
