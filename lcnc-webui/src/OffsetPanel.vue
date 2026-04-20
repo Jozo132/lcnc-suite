@@ -3,6 +3,7 @@ import { ref, computed, watch, onMounted, nextTick } from "vue";
 import { lastReply, connected, send } from "./lcncWs";
 import { usePermissions } from "./permissions";
 import { fmtOffset } from "./format";
+import { openKeypad, keypadMode } from "./useNumberKeypad";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 
@@ -68,8 +69,24 @@ const editingCell = ref<{ wcs: string; axis: string } | null>(null);
 const editValue = ref("");
 const offsetInputRef = ref<HTMLInputElement | null>(null);
 
+function applyEdit(wcs: string, axis: string, v: number) {
+  send({ cmd: "set_wcs", target: wcs, [axis]: v });
+  const row = wcsTable.value.find(r => r.name === wcs);
+  if (row) (row as Record<string, string | number>)[axis] = v;
+}
+
 function startEditCell(wcs: string, axis: string, current: number) {
   if (!can.value.zero) return;
+  // Keypad mode on: skip inline input, open the dialog directly.
+  if (keypadMode.value) {
+    openKeypad({
+      value: current,
+      label: `${wcs} ${axis.toUpperCase()}`,
+      onConfirm: (v) => applyEdit(wcs, axis, v),
+    });
+    return;
+  }
+  // Otherwise fall back to inline editing.
   editingCell.value = { wcs, axis };
   editValue.value = current.toFixed(4);
   nextTick(() => {
@@ -84,9 +101,7 @@ function commitCell(wcs: string, axis: string) {
   const val = parseFloat(editValue.value);
   editingCell.value = null;
   if (isNaN(val)) return;
-  send({ cmd: "set_wcs", target: wcs, [axis]: val });
-  const row = wcsTable.value.find(r => r.name === wcs);
-  if (row) (row as Record<string, string | number>)[axis] = val;
+  applyEdit(wcs, axis, val);
 }
 
 function cancelEdit() { editingCell.value = null; }
