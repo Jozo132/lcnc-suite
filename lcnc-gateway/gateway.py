@@ -392,10 +392,10 @@ _shared_timing: dict = {}  # poll_ms, errors_ms, parse_ms, poller_ts
 # always see a consistent list for the duration of their iteration.
 _shared_clients_list: list = []
 _surface_points_pending: list | None = None  # latest surface scan points; None = never scanned
-_surface_points_version: int = 0             # bumped each time new data is ready
+_surface_points_version: int = int(time.time())  # bumped each time new data is ready; seeded from startup so ?v= URLs don't collide across restarts
 _surface_initialized: bool = False           # True after startup file-read attempted
 _comp_grid_pending: dict | None = None       # latest parsed probe-results-grid.json
-_comp_grid_version: int = 0                  # bumped each time new grid is ready
+_comp_grid_version: int = int(time.time())   # bumped each time new grid is ready; seeded from startup so ?v= URLs don't collide across restarts
 _comp_grid_initialized: bool = False         # True after startup file-read attempted
 _last_comp_hal_ver: int | None = None        # last seen compensation.grid-version HAL value
 
@@ -406,9 +406,9 @@ _last_comp_hal_ver: int | None = None        # last seen compensation.grid-versi
 # them via GET /preview (uvicorn streamed response runs off the WS writer),
 # and broadcast a tiny JSON ping per version so clients know to fetch.
 _gcode_preview_pending: Optional[dict] = None   # {"file","feed","feed_lines","rapid","stats"}
-_gcode_preview_version: int = 0                 # bumps on file OR rotation change
+_gcode_preview_version: int = int(time.time()) # bumps on file OR rotation change; seeded from startup so ?v= URLs don't collide across restarts
 _gcode_last_file: Optional[str] = None          # edge detection in poller
-_gcode_last_rotation: Optional[float] = None    # edge detection in poller
+_gcode_last_rotation: Optional[tuple] = None    # edge detection: 9-tuple of WCS rotations
 _gcode_refresh_running: bool = False            # single-flight guard
 # Pre-encoded msgpack bytes of _gcode_preview_pending. Served over HTTP by
 # GET /preview so the 2.7 MB polyline payload never touches the WS writer.
@@ -667,20 +667,26 @@ async def _status_poller():
                     _comp_grid_version += 1
                 _last_comp_hal_ver = st.comp_grid_version
 
-            # Gcode preview: parse once (in subprocess) on file/rotation change,
-            # share to all clients via version counter. Single-flight via
-            # _gcode_refresh_running so rapid-fire loads don't stack subprocesses.
-            cur_rot = st.rotation_xy if st.rotation_xy is not None else 0.0
+            # Gcode preview: parse once (in subprocess) on file/rotation/WCS-switch
+            # change, share to all clients via version counter. Single-flight
+            # via _gcode_refresh_running so rapid-fire loads don't stack
+            # subprocesses. Fingerprint = (active_wcs_index, rotation of each
+            # of 9 WCSes). Watching st.rotation_xy alone misses non-active WCS
+            # edits and plain WCS switches between equal-rotation systems.
+            cur_wcs_idx = st.g5x_index if st.g5x_index is not None else 1
+            cur_rot_fp = (cur_wcs_idx,) + tuple(
+                float(row.get("r", 0.0)) for row in _wcs_cache
+            )
             file_changed = bool(st.active_file) and st.active_file != _gcode_last_file
             rot_changed = (
                 _gcode_last_file is not None
                 and bool(st.active_file)
-                and cur_rot != _gcode_last_rotation
+                and cur_rot_fp != _gcode_last_rotation
             )
             if (file_changed or rot_changed) and not _gcode_refresh_running:
                 _gcode_refresh_running = True
                 asyncio.create_task(
-                    _refresh_gcode_preview(st.active_file, cur_rot)
+                    _refresh_gcode_preview(st.active_file, cur_rot_fp)
                 )
             elif not st.active_file and _gcode_last_file is not None:
                 _gcode_preview_pending = None
@@ -3029,7 +3035,7 @@ def _build_wcs_rotation_patches() -> Dict[str, str]:
     return patches
 
 
-async def _refresh_gcode_preview(filepath: str, rotation: float):
+async def _refresh_gcode_preview(filepath: str, rotation: tuple):
     """Parse filepath in an isolated subprocess and publish the result.
 
     Called from _status_poller on file/rotation change. Single-flight via
@@ -3046,14 +3052,17 @@ async def _refresh_gcode_preview(filepath: str, rotation: float):
         ini_path = getattr(STAT, "ini_filename", None) if STAT is not None else None
         if not ini_path:
             return
+        active_idx = getattr(STAT, "g5x_index", None) if STAT is not None else None
+        patches = _build_wcs_rotation_patches()
         ctx = {
             "file": filepath,
             "ini_path": ini_path,
             "units": get_machine_units(),
-            "var_patches": _build_wcs_rotation_patches(),
+            "var_patches": patches,
+            "g5x_index": active_idx if isinstance(active_idx, int) else 1,
         }
         ctx_bytes = _msgpack_encoder.encode(ctx) if _msgpack_encoder else json.dumps(ctx).encode()
-        print(f"[GCODE] spawn start file={os.path.basename(filepath)}", flush=True)
+        print(f"[GCODE] spawn start file={os.path.basename(filepath)} rotations={rotation} active_idx={active_idx}", flush=True)
 
         t_spawn = time.monotonic()
         proc = await asyncio.create_subprocess_exec(

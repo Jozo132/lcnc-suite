@@ -212,12 +212,12 @@ function _fetchPreview(version: number, file: string | null) {
   if (_previewFetchAbort) { _previewFetchAbort.abort(); _previewFetchAbort = null; }
   const ac = new AbortController();
   _previewFetchAbort = ac;
-  fetch(`/preview?v=${version}`, { signal: ac.signal })
+  const url = `/preview?v=${version}`;
+  fetch(url, { signal: ac.signal })
     .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
     .then(buf => {
-      if (_previewLastVersion !== version) return;  // newer version already won
-      const data = msgpackDecode(new Uint8Array(buf)) as any;
-      viewerGcode.value = data;
+      if (_previewLastVersion !== version) return;
+      viewerGcode.value = msgpackDecode(new Uint8Array(buf)) as any;
     })
     .catch(err => {
       if (err?.name !== "AbortError") {

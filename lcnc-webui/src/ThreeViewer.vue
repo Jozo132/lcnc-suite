@@ -86,7 +86,7 @@ import { computed, inject, onMounted, onUnmounted, reactive, ref, watch, type Re
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Text } from "troika-three-text";
 
-import { viewerInit, viewerGcode, status } from "./lcncWs";
+import { viewerInit, viewerGcode, gcodeContent, status } from "./lcncWs";
 import { loadViewerDefaults, ALL_LAYERS, settingsVersion, type Vec3, type Layer } from "./defaults";
 import { fmtCoord } from "./format";
 
@@ -182,6 +182,19 @@ const emit = defineEmits<{
 
 // HUD data (read from status for template)
 const vst = computed(() => status.value?.data ?? null);
+
+// First WCS word the loaded file pins (G54..G59.3). CAM preambles almost
+// always emit one on line ~15, so its rotation is what the preview parser
+// ends up applying — regardless of the active WCS. Surface a HUD hint when
+// this differs from the operator's active selection so rotation edits on
+// the non-pinned WCS don't look silently ignored.
+const filePinnedWcs = computed(() => {
+  const src = gcodeContent.value;
+  if (!src) return null;
+  const head = src.length > 8192 ? src.slice(0, 8192) : src;
+  const m = head.match(/\bG5[4-9](?:\.[1-3])?\b/i);
+  return m ? m[0].toUpperCase() : null;
+});
 
 // ---------- DOM ----------
 const host = ref<HTMLDivElement | null>(null);
@@ -1960,6 +1973,11 @@ defineExpose({
       <div v-if="vst?.rotation_xy" class="hudSection hudWarn">
         <div class="label">Rotation</div>
         <div class="hudValue">{{ vst.rotation_xy.toFixed(1) }}°</div>
+      </div>
+
+      <div v-if="filePinnedWcs && filePinnedWcs !== props.g5xLabel" class="hudSection hudWarn">
+        <div class="label">File WCS</div>
+        <div class="hudValue">{{ filePinnedWcs }} — preview rotates with {{ filePinnedWcs }}</div>
       </div>
 
       <div v-if="toolpathOverflow" class="hudSection hudWarn">

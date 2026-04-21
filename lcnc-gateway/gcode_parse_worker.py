@@ -13,6 +13,10 @@ Context shape (msgpack dict):
   units:       "mm" | "in" (machine linear units)
   var_patches: { "<param_num>": "<float_str>", ... } — rotation patches
                applied to the temp parameter file before parse
+  g5x_index:   1..9, live active WCS. Forced into the interpreter via an
+               initcode so the preview matches the controller when the
+               program doesn't explicitly select a WCS (param 5220 on
+               disk is stale — LinuxCNC only writes it at shutdown).
 
 Result shape (msgpack dict):
   feed:        [[x, y, z], ...]   work-coord polyline (feed moves)
@@ -41,12 +45,22 @@ from gcode_canon import PreviewCanon, apply_var_patches
 
 _EMPTY = {"feed": [], "feed_lines": [], "rapid": [], "stats": None}
 
+# g5x_index → RS274 WCS word. Interpreter starts in G54 unless the initcode
+# selects another; param 5220 on disk is stale until LinuxCNC shutdown, so
+# relying on the var file would produce a preview that doesn't match the
+# active WCS the operator is running under.
+_WCS_CODES = {
+    1: "G54", 2: "G55", 3: "G56", 4: "G57", 5: "G58",
+    6: "G59", 7: "G59.1", 8: "G59.2", 9: "G59.3",
+}
+
 
 def parse(ctx: dict) -> dict:
     filename = ctx.get("file") or ""
     ini_path = ctx.get("ini_path")
     machine_units = ctx.get("units", "mm")
     var_patches = ctx.get("var_patches") or {}
+    g5x_index = ctx.get("g5x_index")
 
     if not filename or not os.path.isfile(filename) or not ini_path:
         return _EMPTY
@@ -72,8 +86,12 @@ def parse(ctx: dict) -> dict:
         canon.parameter_file = temp_param
 
         unitcode = "G%d" % (20 + (s.linear_units == 1))
+        initcodes = [unitcode, "G90"]
+        wcs_code = _WCS_CODES.get(g5x_index if isinstance(g5x_index, int) else 0)
+        if wcs_code:
+            initcodes.append(wcs_code)
         t0 = time.monotonic()
-        result, seq = gcode.parse(filename, canon, unitcode, "")
+        result, seq = gcode.parse(filename, canon, initcodes, "")
         t1 = time.monotonic()
         if result > gcode.MIN_ERROR:
             print(f"parse error at line {seq}: {gcode.strerror(result)}", file=sys.stderr, flush=True)
