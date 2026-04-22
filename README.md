@@ -1,5 +1,7 @@
 # LCNC Suite
 
+> ⚠️ **Under active development.** The WebUI is a work in progress — expect rough edges, breaking changes, and incomplete features. Not yet recommended for production machining.
+
 A modern, UI-agnostic WebSocket gateway for LinuxCNC with a reference Vue 3 web interface.
 
 ## Table of Contents
