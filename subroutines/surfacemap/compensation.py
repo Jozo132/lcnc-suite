@@ -87,16 +87,28 @@ class Compensation :
 		self.zi = griddata((self.x_data,self.y_data),self.z_data,(self.xi,self.yi),method=method)
 		self.zi = np.transpose(self.zi)
 
-		# Write interpolated grid for UI visualization (atomic: temp + rename)
+		# Write interpolated grid for UI visualization (atomic: temp + rename).
+		# Decimated to MAX_VIZ on the longer axis so the JSON stays ~tens of KB
+		# for the /comp_grid HTTP fan-out. self.zi above remains full-resolution
+		# for runtime HAL compensation — this decimation affects the browser
+		# surface-mesh preview only, never the offset values applied at runtime.
+		MAX_VIZ = 60
+		nx, ny = len(self.x), len(self.y)
+		xi_idx = np.linspace(0, nx - 1, min(nx, MAX_VIZ), dtype=int)
+		yi_idx = np.linspace(0, ny - 1, min(ny, MAX_VIZ), dtype=int)
+		viz_x = self.x[xi_idx]
+		viz_y = self.y[yi_idx]
+		viz_zi = self.zi[np.ix_(xi_idx, yi_idx)]
+
 		grid_path = os.path.splitext(self.filename)[0] + "-grid.json"
 		try:
 			grid_dir = os.path.dirname(grid_path) or "."
 			fd, tmp_path = tempfile.mkstemp(suffix=".json", dir=grid_dir)
 			with os.fdopen(fd, "w") as f:
 				json.dump({
-					"x": self.x.tolist(),
-					"y": self.y.tolist(),
-					"zi": self.zi.tolist(),
+					"x": viz_x.tolist(),
+					"y": viz_y.tolist(),
+					"zi": viz_zi.tolist(),
 					"method": int(self.h['method']),
 				}, f)
 			os.rename(tmp_path, grid_path)

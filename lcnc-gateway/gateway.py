@@ -447,6 +447,15 @@ _status_poller_task: Optional[asyncio.Task] = None
 # Lazily allocated on first use so module import doesn't require an event loop.
 _status_event: Optional[asyncio.Event] = None
 
+# Per-tick aggregate stats for [STATUS] log. Accumulated as each client's
+# status_loop finishes its send; snapshotted + logged on the next poller tick.
+# All writers run on the single event loop, so no lock is required.
+_status_tick_stats: Dict[str, Any] = {
+    "gen": 0, "tick_start": 0.0, "expected": 0, "done": 0,
+    "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
+}
+_status_tick_ctr: int = 0  # log every N ticks even when not tripping threshold
+
 # Serializes all CMD.* access. The LinuxCNC NML command channel is not
 # thread-safe; concurrent handle_command coroutines with >=2 clients
 # corrupted NML state and segfaulted the process before this lock existed.
@@ -632,7 +641,7 @@ async def _status_poller():
 
             # Startup init: push existing probe-results.txt to new clients on first connect
             if not _surface_initialized and getattr(STAT, "ini_filename", None):
-                pts = _read_probe_results_file()
+                pts = await asyncio.to_thread(_read_probe_results_file)
                 if pts:
                     _surface_points_pending = pts
                     _surface_points_bytes = await asyncio.to_thread(
@@ -643,7 +652,7 @@ async def _status_poller():
 
             # Scan completion: re-read file and push updated data to all clients
             if surface_scan_done:
-                pts = _read_probe_results_file()
+                pts = await asyncio.to_thread(_read_probe_results_file)
                 if pts:
                     _surface_points_pending = pts
                     _surface_points_bytes = await asyncio.to_thread(
@@ -653,26 +662,49 @@ async def _status_poller():
 
             # Comp grid startup init: push existing probe-results-grid.json on first connect
             if not _comp_grid_initialized and getattr(STAT, "ini_filename", None):
-                grid = _read_comp_grid_file()
+                t_read = time.monotonic()
+                grid = await asyncio.to_thread(_read_comp_grid_file)
+                t_read_done = time.monotonic()
                 if grid:
                     _comp_grid_pending = grid
                     _comp_grid_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, grid
                     )
+                    t_enc_done = time.monotonic()
                     _comp_grid_version += 1
+                    print(
+                        f"[COMP] publish v={_comp_grid_version} trigger=init "
+                        f"file_ms={(t_read_done - t_read)*1000:.0f} "
+                        f"encode_ms={(t_enc_done - t_read_done)*1000:.0f} "
+                        f"bytes={len(_comp_grid_bytes)}B "
+                        f"total_ms={(t_enc_done - t_read)*1000:.0f}",
+                        flush=True,
+                    )
                 _last_comp_hal_ver = st.comp_grid_version  # sync — prevents re-fire below
                 _comp_grid_initialized = True
 
             # Comp grid update: detect via compensation.grid-version HAL pin
             if _comp_grid_initialized and st.comp_grid_version is not None \
                     and st.comp_grid_version != _last_comp_hal_ver:
-                grid = _read_comp_grid_file()
+                t_read = time.monotonic()
+                grid = await asyncio.to_thread(_read_comp_grid_file)
+                t_read_done = time.monotonic()
                 if grid:
                     _comp_grid_pending = grid
                     _comp_grid_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, grid
                     )
+                    t_enc_done = time.monotonic()
                     _comp_grid_version += 1
+                    print(
+                        f"[COMP] publish v={_comp_grid_version} trigger=hal "
+                        f"hal_ver={st.comp_grid_version} "
+                        f"file_ms={(t_read_done - t_read)*1000:.0f} "
+                        f"encode_ms={(t_enc_done - t_read_done)*1000:.0f} "
+                        f"bytes={len(_comp_grid_bytes)}B "
+                        f"total_ms={(t_enc_done - t_read)*1000:.0f}",
+                        flush=True,
+                    )
                 _last_comp_hal_ver = st.comp_grid_version
 
             # Gcode preview: parse once (in subprocess) on file change, share
@@ -734,6 +766,29 @@ async def _status_poller():
                 "parse_ms": parse_ms,
                 "poller_ts": t3,
             }
+            # Snapshot prior tick's aggregate before rolling gen. Log when
+            # wall or send time is interesting, or every ~2s baseline.
+            global _status_tick_ctr
+            _s = _status_tick_stats
+            if _s["expected"] > 0:
+                _wall_ms = (time.monotonic() - _s["tick_start"]) * 1000
+                _status_tick_ctr += 1
+                if (
+                    _wall_ms > 50
+                    or _s["send_max"] > 20
+                    or _status_tick_ctr >= 60
+                ):
+                    _status_tick_ctr = 0
+                    print(
+                        f"[STATUS] tick gen={_s['gen']} "
+                        f"clients={_s['done']}/{_s['expected']} "
+                        f"encode_sum_ms={_s['encode_sum']:.0f} "
+                        f"send_sum_ms={_s['send_sum']:.0f} "
+                        f"send_max_ms={_s['send_max']:.0f} "
+                        f"wall_ms={_wall_ms:.0f}",
+                        flush=True,
+                    )
+
             # Broadcast: swap in a fresh unset event for future waiters, then
             # set the old one to wake all current waiters. This avoids the
             # clear/set race where a client checking _status_gen between set()
@@ -741,6 +796,12 @@ async def _status_poller():
             _status_gen += 1
             old_evt = _status_event
             _status_event = asyncio.Event()
+            _status_tick_stats.update({
+                "gen": _status_gen,
+                "tick_start": time.monotonic(),
+                "expected": len(_clients),
+                "done": 0, "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
+            })
             if old_evt is not None:
                 old_evt.set()
 
@@ -2190,20 +2251,27 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             return {"ok": True, "tools": merged, "current_tool": current_tool}
 
         if cmd == "get_probe_results":
-            return {"ok": True, "points": _read_probe_results_file()}
+            pts = await asyncio.to_thread(_read_probe_results_file)
+            return {"ok": True, "points": pts}
 
         if cmd == "get_comp_grid":
             ini_path = getattr(STAT, "ini_filename", None)
             config_dir = os.path.dirname(ini_path) if ini_path else ""
             path = os.path.join(config_dir, "probe-results-grid.json")
-            if os.path.isfile(path):
+            if not os.path.isfile(path):
+                return {"ok": False, "error": "No grid file"}
+
+            def _load_grid():
                 with open(path, "r") as f:
                     try:
-                        grid = json.load(f)
-                        return {"ok": True, "comp_grid": grid}
+                        return json.load(f), None
                     except (json.JSONDecodeError, ValueError):
-                        return {"ok": False, "error": "Invalid grid file"}
-            return {"ok": False, "error": "No grid file"}
+                        return None, "Invalid grid file"
+
+            grid, err = await asyncio.to_thread(_load_grid)
+            if err:
+                return {"ok": False, "error": err}
+            return {"ok": True, "comp_grid": grid}
     except Exception as e:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
@@ -3501,6 +3569,26 @@ def list_files(subdir: str = ""):
     return {"ok": True, "nc_dir": nc_dir, "subdir": subdir, "entries": entries}
 
 
+# ---- Fan-out instrumentation ----
+# Counts how many bulk-payload HTTP requests are in flight at any moment so
+# [FANOUT] log lines correlate with [HB-STALL] / [LAG] trips. Uses a simple
+# lock because sync def endpoints run in starlette's threadpool.
+_fanout_lock = threading.Lock()
+_fanout_inflight: Dict[str, int] = {"comp_grid": 0, "preview": 0, "gcode": 0, "surface_points": 0}
+
+
+def _fanout_enter(kind: str) -> int:
+    with _fanout_lock:
+        _fanout_inflight[kind] += 1
+        return _fanout_inflight[kind]
+
+
+def _fanout_exit(kind: str) -> int:
+    with _fanout_lock:
+        _fanout_inflight[kind] -= 1
+        return _fanout_inflight[kind]
+
+
 @app.get("/gcode")
 def get_gcode(path: str):
     """Stream a G-code file as plain text so the frontend doesn't need the
@@ -3517,7 +3605,19 @@ def get_gcode(path: str):
     _, ext = os.path.splitext(abs_path)
     if ext.lower() not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Invalid extension")
-    return FileResponse(abs_path, media_type="text/plain")
+    t_start = time.monotonic()
+    inflight = _fanout_enter("gcode")
+    try:
+        size = os.path.getsize(abs_path)
+        print(f"[FANOUT] gcode start inflight={inflight} bytes={size}B file={os.path.basename(abs_path)}", flush=True)
+        return FileResponse(abs_path, media_type="text/plain")
+    finally:
+        remaining = _fanout_exit("gcode")
+        print(
+            f"[FANOUT] gcode done handler_ms={(time.monotonic() - t_start)*1000:.0f} "
+            f"inflight={remaining}",
+            flush=True,
+        )
 
 
 @app.get("/preview")
@@ -3531,15 +3631,25 @@ def get_preview(v: Optional[int] = None):
     """
     if _gcode_preview_bytes is None:
         raise HTTPException(status_code=404, detail="No preview cached")
-    headers = {
-        "Cache-Control": "public, max-age=31536000, immutable",
-        "X-Preview-Version": str(_gcode_preview_version),
-    }
-    return Response(
-        content=_gcode_preview_bytes,
-        media_type="application/x-msgpack",
-        headers=headers,
-    )
+    t_start = time.monotonic()
+    inflight = _fanout_enter("preview")
+    try:
+        print(f"[FANOUT] preview start inflight={inflight} bytes={len(_gcode_preview_bytes)}B v={_gcode_preview_version}", flush=True)
+        return Response(
+            content=_gcode_preview_bytes,
+            media_type="application/x-msgpack",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "X-Preview-Version": str(_gcode_preview_version),
+            },
+        )
+    finally:
+        remaining = _fanout_exit("preview")
+        print(
+            f"[FANOUT] preview done handler_ms={(time.monotonic() - t_start)*1000:.0f} "
+            f"inflight={remaining}",
+            flush=True,
+        )
 
 
 @app.get("/surface_points")
@@ -3552,14 +3662,25 @@ def get_surface_points(v: Optional[int] = None):
     """
     if _surface_points_bytes is None:
         raise HTTPException(status_code=404, detail="No surface data")
-    return Response(
-        content=_surface_points_bytes,
-        media_type="application/x-msgpack",
-        headers={
-            "Cache-Control": "public, max-age=31536000, immutable",
-            "X-Surface-Version": str(_surface_points_version),
-        },
-    )
+    t_start = time.monotonic()
+    inflight = _fanout_enter("surface_points")
+    try:
+        print(f"[FANOUT] surface_points start inflight={inflight} bytes={len(_surface_points_bytes)}B v={_surface_points_version}", flush=True)
+        return Response(
+            content=_surface_points_bytes,
+            media_type="application/x-msgpack",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "X-Surface-Version": str(_surface_points_version),
+            },
+        )
+    finally:
+        remaining = _fanout_exit("surface_points")
+        print(
+            f"[FANOUT] surface_points done handler_ms={(time.monotonic() - t_start)*1000:.0f} "
+            f"inflight={remaining}",
+            flush=True,
+        )
 
 
 @app.get("/comp_grid")
@@ -3571,14 +3692,25 @@ def get_comp_grid(v: Optional[int] = None):
     """
     if _comp_grid_bytes is None:
         raise HTTPException(status_code=404, detail="No comp grid")
-    return Response(
-        content=_comp_grid_bytes,
-        media_type="application/x-msgpack",
-        headers={
-            "Cache-Control": "public, max-age=31536000, immutable",
-            "X-Comp-Grid-Version": str(_comp_grid_version),
-        },
-    )
+    t_start = time.monotonic()
+    inflight = _fanout_enter("comp_grid")
+    try:
+        print(f"[FANOUT] comp_grid start inflight={inflight} bytes={len(_comp_grid_bytes)}B v={_comp_grid_version}", flush=True)
+        return Response(
+            content=_comp_grid_bytes,
+            media_type="application/x-msgpack",
+            headers={
+                "Cache-Control": "public, max-age=31536000, immutable",
+                "X-Comp-Grid-Version": str(_comp_grid_version),
+            },
+        )
+    finally:
+        remaining = _fanout_exit("comp_grid")
+        print(
+            f"[FANOUT] comp_grid done handler_ms={(time.monotonic() - t_start)*1000:.0f} "
+            f"inflight={remaining}",
+            flush=True,
+        )
 
 
 # ---------- HAL viewer ----------
@@ -3959,6 +4091,16 @@ async def ws_endpoint(ws: WebSocket):
                 pre_send = time.monotonic()
                 _prev_encode_ms, _ = await ws_send_measured(ws, status_msg)
                 _prev_send_ms = round((time.monotonic() - pre_send) * 1000, 2)
+
+                # Contribute to per-tick aggregate stats (logged by poller on
+                # next cycle). Only record for the current generation to avoid
+                # double-counting if a client is slow and rolls into next tick.
+                if _status_tick_stats["gen"] == _last_gen:
+                    _status_tick_stats["done"] += 1
+                    _status_tick_stats["encode_sum"] += _prev_encode_ms
+                    _status_tick_stats["send_sum"] += _prev_send_ms
+                    if _prev_send_ms > _status_tick_stats["send_max"]:
+                        _status_tick_stats["send_max"] = _prev_send_ms
 
                 # Log timing to file if enabled
                 if _timing_log_enabled and "timing" in status_msg:
