@@ -347,7 +347,7 @@ WEBUI_STATUS_DELTA  = 1       # recommended ON
 WEBUI_ADAPTIVE_POLL = 1       # recommended ON for SBCs, optional on workstations
 WEBUI_IDLE_POLL_HZ  = 5
 WEBUI_UVLOOP        = 0
-WEBUI_WIRE_FORMAT   = json
+WEBUI_WIRE_FORMAT   = msgpack
 ```
 
 | Variable | Default | Description |
@@ -369,7 +369,7 @@ WEBUI_WIRE_FORMAT   = json
 | `WEBUI_ADAPTIVE_POLL` | `0` | Drops status poll rate from 30 Hz to `WEBUI_IDLE_POLL_HZ` (default 5) when the machine is idle (interp idle + not in AUTO/MDI + no motion + inpos + no tool-change). Instant return to 30 Hz on motion. Trade-off: up to ~200 ms DRO lag while truly idle. | On SBCs / low-power hosts to free ~85 % of idle-time gateway CPU and reduce stat-mutex contention. Optional on workstations. |
 | `WEBUI_IDLE_POLL_HZ` | `5` | Integer poll rate used while `WEBUI_ADAPTIVE_POLL=1` and the machine is idle. Lower = more CPU savings, longer DRO lag. | Raise to `10` if 200 ms lag feels sluggish, lower to `2` for maximum CPU savings. |
 | `WEBUI_UVLOOP` | `0` | Swaps asyncio's default event loop for libuv (requires `uvloop` package). Faster socket I/O and callback scheduling under load. No measurable effect on a single localhost client at 30 Hz. | Real deployments with multiple concurrent clients and/or camera streaming alongside status WS. |
-| `WEBUI_WIRE_FORMAT` | `json` | `msgpack` switches WS frames to binary msgpack encoding (requires `msgspec`). Our status payload is numeric-heavy — msgpack's int encoding was measured ~6 % *larger* than JSON digit strings with no RT benefit. | Only when custom payloads contain large structured/binary blobs. |
+| `WEBUI_WIRE_FORMAT` | `msgpack` | WS encoding. `msgpack` (default) sends binary frames via `msgspec` — smaller payloads, C-accelerated encode, and when `WEBUI_STATUS_DELTA=0` unlocks a one-encode-per-tick fan-out path (each client splices the shared bytes via `msgspec.Raw`). `json` produces text frames readable directly in browser DevTools. | Set to `json` only when actively debugging status frames in DevTools. |
 
 Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. `WEBUI_*` flags can also be set as environment variables (same name) and take precedence over the INI. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
 

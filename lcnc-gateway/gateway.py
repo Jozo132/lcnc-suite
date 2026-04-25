@@ -47,10 +47,14 @@ BASE_DIR = Path(__file__).resolve().parent
 MACHINE_DIR = BASE_DIR / "machine"
 
 # ---- Perf experiment flags (INI-sourced via lcnc-suite launcher) ----
-# All flags default OFF. Each is an independent opt-in for A/B measurement.
-_WIRE_FORMAT = (os.environ.get("WEBUI_WIRE_FORMAT") or "json").strip().lower()
+# WIRE_FORMAT defaults to msgpack: smaller payload than JSON, faster
+# C-accelerated encode, and unlocks the per-tick shared-encode path under
+# fan-out when delta is off (one encode per tick instead of N). Set
+# WEBUI_WIRE_FORMAT=json explicitly to debug status frames in browser
+# DevTools. The remaining flags default OFF.
+_WIRE_FORMAT = (os.environ.get("WEBUI_WIRE_FORMAT") or "msgpack").strip().lower()
 if _WIRE_FORMAT not in ("json", "msgpack"):
-    _WIRE_FORMAT = "json"
+    _WIRE_FORMAT = "msgpack"
 _STATUS_DELTA_ENABLED = os.environ.get("WEBUI_STATUS_DELTA") == "1"
 _ADAPTIVE_POLL_ENABLED = os.environ.get("WEBUI_ADAPTIVE_POLL") == "1"
 try:
