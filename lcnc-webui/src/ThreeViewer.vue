@@ -1645,6 +1645,19 @@ const hudUvw = computed<HudAxisEntry[]>(() =>
   hudAxes.value.map((l, i) => ({ letter: l, index: i })).filter(a => UVW.has(a.letter))
 );
 
+const spindleLoadZone = computed(() => {
+  const v = vst.value?.spindle_load;
+  if (v == null) return "";
+  if (v <= 100) return "zone-ok";
+  if (v <= 200) return "zone-warn";
+  return "zone-danger";
+});
+const spindleLoadFillPct = computed(() => {
+  const v = vst.value?.spindle_load;
+  if (v == null) return 0;
+  return Math.max(0, Math.min(100, (v / 300) * 100));
+});
+
 // ─── Surface map layer ──────────────────────────────────────────
 
 function viridis(t: number): [number, number, number] {
@@ -1964,6 +1977,9 @@ defineExpose({
         <div class="label">Spindle</div>
         <div class="hudValue">{{ fmtCoord(vst?.spindle_speed_actual) }} RPM</div>
         <div v-if="vst?.spindle_load != null" class="hudValue">Load {{ Math.round(vst.spindle_load) }}%</div>
+        <div v-if="vst?.spindle_load != null" class="loadBar" :class="spindleLoadZone">
+          <div class="loadBarFill" :style="{ width: spindleLoadFillPct + '%' }"></div>
+        </div>
       </div>
 
       <div v-if="vst?.eoffset_enabled" class="hudSection hudWarn">

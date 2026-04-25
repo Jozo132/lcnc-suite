@@ -908,6 +908,27 @@ label:has(input:disabled, select:disabled) {
 .statusDot.tripped { background: var(--ok); }
 @keyframes statusPulse { from { opacity: 0.4; } to { opacity: 1; } }
 
+/* Load bar — single-color fill that recolors by zone (zone-ok/warn/danger) */
+.loadBar {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklab, var(--panel) 90%, var(--fg));
+  overflow: hidden;
+}
+.loadBar > .loadBarFill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  border-radius: var(--radius-sm);
+  background: var(--ok);
+  transition: width 0.15s ease, background-color 0.15s ease;
+}
+.loadBar.zone-warn   > .loadBarFill { background: var(--warn); }
+.loadBar.zone-danger > .loadBarFill { background: var(--danger); }
+
 /* Active G/M code display */
 .codes-value    { font-size: var(--fs-sm); font-family: var(--font-mono); word-break: break-all; line-height: 1.4; min-height: calc(2 * 1.4em); }
 
