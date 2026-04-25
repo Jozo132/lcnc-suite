@@ -37,9 +37,7 @@ o<surface_scan> sub
   ; Probe tool safety check
   ; ============================================================
   o109 if [#5400 NE #<probe_tool_number>]
-    (DEBUG, Specified probe tool %d#<probe_tool_number> not in spindle, aborting)
-    M50 P1
-    o<surface_scan> return
+    (abort, Specified probe tool %d#<probe_tool_number> not in spindle, aborting)
   o109 endif
 
   ; ============================================================
