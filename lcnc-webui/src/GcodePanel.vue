@@ -245,7 +245,7 @@ function onDragLeave(_e: DragEvent) {
 
 function onDrop(e: DragEvent) {
   dragOver.value = false;
-  if (!can.value.idle) return;
+  if (!can.value.setup) return;
   const file = e.dataTransfer?.files[0];
   if (file) handleUpload(file);
 }
@@ -418,8 +418,8 @@ async function saveEdit() {
     <!-- Code area wrapper (drop overlay target) -->
     <div class="codeArea">
       <!-- Drop overlay -->
-      <div v-if="dragOver" class="dropOverlay" :class="{ denied: !can.idle }">
-        <svg v-if="can.idle" class="dropIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+      <div v-if="dragOver" class="dropOverlay" :class="{ denied: !can.setup }">
+        <svg v-if="can.setup" class="dropIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
           <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
           <polyline points="7 10 12 15 17 10"/>
           <line x1="12" y1="15" x2="12" y2="3"/>
@@ -428,7 +428,7 @@ async function saveEdit() {
           <circle cx="12" cy="12" r="10"/>
           <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
         </svg>
-        <div class="dropText">{{ can.idle ? 'Drop program file to upload' : 'Not permitted' }}</div>
+        <div class="dropText">{{ can.setup ? 'Drop program file to upload' : 'Not permitted' }}</div>
       </div>
 
       <!-- Edit mode -->
