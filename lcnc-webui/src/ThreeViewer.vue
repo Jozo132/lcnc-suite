@@ -1090,6 +1090,12 @@ async function buildFromInit(init: ViewerInit) {
     const _freshVd = loadViewerDefaults();
     for (const layer of ALL_LAYERS) setLayerVisible(layer, _freshVd.layers[layer]);
 
+    // Re-attach surface mesh: ensureCoreGroups() orphans the old surfaceGroup
+    // (it lived under the previous workRotGroup), and the prop watcher only
+    // fires on prop change — not on viewer rebuilds. Also covers the race
+    // where surface_points arrived before scene/workOrigin existed.
+    if (props.surfacePoints?.length) buildSurfaceLayer(props.surfacePoints);
+
   } catch (err) {
     console.error("buildFromInit failed:", err);
     (window as any).__viewerDiag = { ready: false, error: (err as Error).message };
