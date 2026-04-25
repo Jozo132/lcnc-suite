@@ -21,6 +21,7 @@ let renderer: THREE.WebGLRenderer | null = null;
 let scene: THREE.Scene | null = null;
 let cam: THREE.OrthographicCamera | null = null;
 let cubeRoot: THREE.Group | null = null;
+let hitGrid: THREE.Group | null = null;
 let raf = 0;
 
 function makeFaceTexture(label: string): THREE.CanvasTexture {
@@ -51,13 +52,13 @@ function makeFaceTexture(label: string): THREE.CanvasTexture {
 // label reads right-side-up when the user clicks into that view.
 // Object3D.lookAt() for non-cameras orients local +Z away from the target, so
 // targeting a point outward of the face puts the textured side facing outward.
+//
+// Click handling lives on a separate 3x3x3 grid of invisible hit boxes built
+// after the labels — see buildHitGrid(). Face label meshes carry no userData
+// so the raycaster only sees the hit grid.
 function buildCube(): THREE.Group {
   const g = new THREE.Group();
   const half = CUBE_SIZE / 2;
-  // Visual `up` (per-face, used to orient the texture) vs. camera `up` after
-  // the click (always world-Z so OrbitControls keeps the natural CNC turntable
-  // axis; the parent's applyViewDirection nudges off-pole to dodge gimbal lock).
-  const VIEW_UP = new THREE.Vector3(0, 0, 1);
   const faces: Array<{ label: string; pos: THREE.Vector3; visualUp: THREE.Vector3 }> = [
     { label: "FRONT",  pos: new THREE.Vector3(+half, 0, 0), visualUp: new THREE.Vector3(0, 0, 1) },
     { label: "BACK",   pos: new THREE.Vector3(-half, 0, 0), visualUp: new THREE.Vector3(0, 0, 1) },
@@ -73,8 +74,6 @@ function buildCube(): THREE.Group {
     m.position.copy(f.pos);
     m.up.copy(f.visualUp);
     m.lookAt(f.pos.clone().multiplyScalar(2));
-    m.userData.viewDir = f.pos.clone().normalize();
-    m.userData.viewUp = VIEW_UP.clone();
     g.add(m);
   }
   const wire = new THREE.LineSegments(
@@ -85,16 +84,45 @@ function buildCube(): THREE.Group {
   return g;
 }
 
+// 3x3x3 grid of invisible hit boxes covering the cube. The 26 outer cells
+// (interior excluded) classify a click into face / edge / corner by how many
+// axes are non-zero:
+//   1 axis  -> face   (6)   e.g. (+1,0,0)   = FRONT  orthographic
+//   2 axes  -> edge  (12)   e.g. (+1,0,+1)  = front-top 45deg tilted
+//   3 axes  -> corner (8)   e.g. (+1,+1,+1) = front-right-top isometric
+// viewUp is always world +Z so OrbitControls keeps the CNC turntable feel.
+// applyViewDirection() in the parent handles the off-pole nudge for face hits.
+function buildHitGrid(): THREE.Group {
+  const g = new THREE.Group();
+  const cell = CUBE_SIZE / 3;
+  const hitGeom = new THREE.BoxGeometry(cell, cell, cell);
+  const hitMat = new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, depthWrite: false });
+  const VIEW_UP = new THREE.Vector3(0, 0, 1);
+  for (let i = -1; i <= 1; i++) {
+    for (let j = -1; j <= 1; j++) {
+      for (let k = -1; k <= 1; k++) {
+        if (i === 0 && j === 0 && k === 0) continue;
+        const m = new THREE.Mesh(hitGeom, hitMat);
+        m.position.set(i * cell, j * cell, k * cell);
+        m.userData.viewDir = new THREE.Vector3(i, j, k).normalize();
+        m.userData.viewUp = VIEW_UP.clone();
+        g.add(m);
+      }
+    }
+  }
+  return g;
+}
+
 const raycaster = new THREE.Raycaster();
 const pointerNDC = new THREE.Vector2();
 
 function onClick(e: MouseEvent) {
-  if (!cam || !cubeRoot || !canvasRef.value) return;
+  if (!cam || !hitGrid || !canvasRef.value) return;
   const rect = canvasRef.value.getBoundingClientRect();
   pointerNDC.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
   pointerNDC.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointerNDC, cam);
-  const hits = raycaster.intersectObjects(cubeRoot.children, false);
+  const hits = raycaster.intersectObjects(hitGrid.children, false);
   for (const hit of hits) {
     const ud = hit.object.userData as { viewDir?: THREE.Vector3; viewUp?: THREE.Vector3 };
     if (ud.viewDir && ud.viewUp) {
@@ -129,6 +157,8 @@ onMounted(() => {
   cam = new THREE.OrthographicCamera(-0.85, 0.85, 0.85, -0.85, 0.1, 100);
 
   cubeRoot = buildCube();
+  hitGrid = buildHitGrid();
+  cubeRoot.add(hitGrid);
   scene.add(cubeRoot);
 
   tick();
@@ -147,6 +177,7 @@ onBeforeUnmount(() => {
     });
     cubeRoot = null;
   }
+  hitGrid = null;
   scene = null;
   cam = null;
   if (renderer) {
