@@ -1295,7 +1295,7 @@ watch(viewerGcode, (newGcode) => {
         <Transition name="banner-fade" mode="out-in">
           <span v-if="safetyTrip" :key="'safety'" class="bannerError">
             SAFETY TRIPPED at <span class="mono">{{ fmtTimestamp(safetyTrip.ts) }}</span>
-            — press E-Stop Reset, then Acknowledge
+            — press Acknowledge to recover
           </span>
           <span v-else-if="bannerMessage && !bannerShowAbort" :key="'msg'" :class="{ bannerError: bannerMessageKind <= 2 }">
             {{ bannerMessage }}
