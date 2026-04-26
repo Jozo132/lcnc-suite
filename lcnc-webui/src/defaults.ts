@@ -11,10 +11,10 @@ export const STEP_RAPID_OVERRIDE = 25;
 
 export type Vec3 = [number, number, number];
 
-export type Layer = "backplot" | "toolpath" | "machine" | "workpiece" | "bounds" | "toolpathBounds" | "workzero" | "hud" | "surface" | "tool";
-export const ALL_LAYERS: Layer[] = ["backplot", "toolpath", "machine", "workpiece", "bounds", "toolpathBounds", "workzero", "hud", "surface", "tool"];
+export type Layer = "backplot" | "toolpath" | "machine" | "bounds" | "toolpathBounds" | "workzero" | "hud" | "surface" | "tool";
+export const ALL_LAYERS: Layer[] = ["backplot", "toolpath", "machine", "bounds", "toolpathBounds", "workzero", "hud", "surface", "tool"];
 
-export type TrackMode = "none" | "tool" | "workpiece";
+export type TrackMode = "none" | "tool" | "wcs";
 export type Projection = "perspective" | "parallel";
 
 export interface ColorDefaults {
@@ -23,14 +23,11 @@ export interface ColorDefaults {
   backplot: string;
   bounds: string;
   toolpathBounds: string;
-  workpiece: string;
   tool: string;
   cutter: string;
 }
 
 export interface ViewerDefaults {
-  workpieceSize: Vec3;
-  workpieceOffset: Vec3;
   layers: Record<Layer, boolean>;
   colors: ColorDefaults;
   machineColors: Record<string, string>;
@@ -147,10 +144,8 @@ export function saveSection(key: string, data: any): void {
 // ─── Viewer section ──────────────────────────────────────────────
 
 const VIEWER_FALLBACK: ViewerDefaults = {
-  workpieceSize: [100, 100, 20],
-  workpieceOffset: [0, 0, -20],
-  layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, toolpathBounds: false, workzero: true, hud: true, surface: true, tool: true },
-  colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", toolpathBounds: "#f5a623", workpiece: "#ffffff", tool: "#c0c0c0", cutter: "#ffdd00" },
+  layers: { backplot: true, toolpath: true, machine: true, bounds: true, toolpathBounds: false, workzero: true, hud: true, surface: true, tool: true },
+  colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", toolpathBounds: "#f5a623", tool: "#c0c0c0", cutter: "#ffdd00" },
   machineColors: {},
   machineEdges: true,
   trackingMode: "none",
@@ -163,8 +158,6 @@ registerSection<ViewerDefaults>("viewer", VIEWER_FALLBACK, (saved, fb) => {
   return {
     ...fb,
     ...saved,
-    workpieceSize: (saved.workpieceSize ?? [...fb.workpieceSize]) as Vec3,
-    workpieceOffset: (saved.workpieceOffset ?? [...fb.workpieceOffset]) as Vec3,
     layers: { ...fb.layers, ...saved.layers } as Record<Layer, boolean>,
     colors: { ...fb.colors, ...saved.colors },
     machineColors: { ...fb.machineColors, ...saved.machineColors },

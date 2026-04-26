@@ -304,8 +304,6 @@ function onMdiKeydown(e: KeyboardEvent) {
 }
 
 // Viewer state (initialized from saved defaults, persisted on every change)
-const workpieceSize = ref<[number, number, number]>(_vd.workpieceSize);
-const workpieceOffset = ref<[number, number, number]>(_vd.workpieceOffset);
 const viewerLayers = reactive<Record<Layer, boolean>>({ ..._vd.layers });
 const viewerTrackMode = ref<TrackMode>(_vd.trackingMode);
 const viewerPathOnTop = ref(_vd.pathOnTop);
@@ -1152,8 +1150,6 @@ watch(settingsVersion, () => {
   }
   if (disp.startFullscreen) armStartFullscreen();
   const vd = loadViewerDefaults();
-  workpieceSize.value = vd.workpieceSize;
-  workpieceOffset.value = vd.workpieceOffset;
   Object.assign(viewerLayers, vd.layers);
   viewerTrackMode.value = vd.trackingMode;
   viewerPathOnTop.value = vd.pathOnTop;
@@ -1314,8 +1310,6 @@ watch(viewerGcode, (newGcode) => {
         <ThreeViewer
           ref="viewerRef"
           :active="true"
-          :workpieceSize="workpieceSize"
-          :workpieceOffset="workpieceOffset"
           :g5xLabel="g5xLabel"
           :linearUnit="linearUnit"
           :activeFile="activeFile"
@@ -1563,8 +1557,6 @@ watch(viewerGcode, (newGcode) => {
               @setProjection="(p: Projection) => { viewerProjection = p; setProjection(p); }"
               @setTrackMode="(m: TrackMode) => { viewerTrackMode = m; viewerRef?.setTrackingMode?.(m); }"
               @toggleLayer="(l: Layer, on: boolean) => { viewerLayers[l] = on; viewerRef?.setLayerVisible?.(l, on); }"
-              @update:workpieceSize="workpieceSize = $event"
-              @update:workpieceOffset="workpieceOffset = $event"
               :keyboardConfig="keyboardConfig"
               @setKeyboardConfig="setKeyboardConfig"
               @setRunFromLine="runFromLineEnabled = $event"

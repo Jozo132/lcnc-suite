@@ -184,8 +184,6 @@ type ViewerGcode = {
 };
 
 const props = defineProps<{
-  workpieceSize: Vec3;
-  workpieceOffset: Vec3;
   g5xLabel?: string;
   linearUnit?: string;
   active?: boolean;
@@ -292,7 +290,7 @@ const toolpathOverflow = ref(false);
 let toolpathBBox: { min: [number, number, number]; max: [number, number, number] } | null = null;
 
 // ---- Camera tracking ----
-let trackingMode: "none" | "tool" | "workpiece" = "none";
+let trackingMode: "none" | "tool" | "wcs" = "none";
 
 // ---- Path rendering ----
 let pathAlwaysOnTop = true; // default; overridden by setPathAlwaysOnTop()
@@ -317,8 +315,6 @@ let toolpathOverflowEdges: THREE.LineSegments | null = null;
 let toolpathBoundsVisible = false;
 const _billboardLabels: Text[] = [];
 const _bbQ = new THREE.Quaternion();  // reused for billboard parent compensation
-let workpieceMesh: THREE.LineSegments | null = null;
-let overflowEdges: THREE.LineSegments | null = null;
 const boundsClipPlanes: THREE.Plane[] = [];
 const insideBoundsClipPlanes: THREE.Plane[] = [];
 const _localBoundsPlanes: THREE.Plane[] = [];
@@ -658,10 +654,6 @@ function setLayerVisible(layer: Layer, on: boolean) {
       for (const m of machineMeshes) m.visible = on;
       for (const e of _machineEdgeLines) e.visible = on && machineEdges;
       break;
-    case "workpiece":
-      if (workpieceMesh) workpieceMesh.visible = on;
-      if (overflowEdges) overflowEdges.visible = on;
-      break;
     case "bounds":
       if (machineBoundsMesh) machineBoundsMesh.visible = on;
       break;
@@ -725,7 +717,7 @@ function setPathAlwaysOnTop(on: boolean) {
   }
 }
 
-function setTrackingMode(mode: "none" | "tool" | "workpiece") {
+function setTrackingMode(mode: "none" | "tool" | "wcs") {
   trackingMode = mode;
 }
 
@@ -906,8 +898,6 @@ function ensureCoreGroups(init: ViewerInit) {
   workRotGroup = null;
   workAxes = null;
   machineBoundsMesh = null;
-  workpieceMesh = null;
-  overflowEdges = null;
   machineMeshes = [];
   _machineEdgeLines = [];
   _edgesBuilt = false;
@@ -1009,24 +999,6 @@ resetBackplot();
     _workGrp!.add(machineBoundsMesh);
   }
 
-  // --- Workpiece box — wireframe edges only, clipped to inside machine bounds ---
-  {
-    const wpColor = viewerDefaults.colors.workpiece ?? "#ffffff";
-    const boxGeom = new THREE.BoxGeometry(1, 1, 1);
-    const edgeGeom = new THREE.EdgesGeometry(boxGeom);
-    boxGeom.dispose();
-    workpieceMesh = new THREE.LineSegments(
-      edgeGeom,
-      new THREE.LineBasicMaterial({
-        color: wpColor,
-        clippingPlanes: insideBoundsClipPlanes,
-      })
-    );
-
-    workRotGroup!.add(workpieceMesh);
-    applyBox(workpieceMesh, props.workpieceSize, props.workpieceOffset);
-  }
-
   // Apply tool colors
   MAT.tool.color.set(viewerDefaults.colors.tool ?? "#c0c0c0");
   MAT.cutter.color.set(viewerDefaults.colors.cutter ?? "#ffdd00");
@@ -1113,10 +1085,6 @@ async function buildFromInit(init: ViewerInit) {
           boundsClipPlanes.push(p.clone());
           insideBoundsClipPlanes.push(p.clone().negate());
         }
-
-        // Overflow outline (workpiece parts outside machine bounds)
-        overflowEdges = rebuildOverflowEdges(props.workpieceSize, props.workpieceOffset);
-        if (overflowEdges && workRotGroup) workRotGroup.add(overflowEdges);
       }
 
     } else {
@@ -1591,7 +1559,7 @@ function animate() {
     const target = new THREE.Vector3();
     if (trackingMode === "tool" && toolMarker) {
       toolMarker.getWorldPosition(target);
-    } else if (trackingMode === "workpiece" && workOrigin) {
+    } else if (trackingMode === "wcs" && workOrigin) {
       workOrigin.getWorldPosition(target);
     }
     const delta = target.sub(controls.target);
@@ -1837,25 +1805,6 @@ watch(
   (g) => {
     if (g) applyGcode(g);
   },
-);
-
-
-// Update workpiece live from UI
-watch(
-  () => [props.workpieceSize, props.workpieceOffset] as const,
-  () => {
-    if (workpieceMesh) applyBox(workpieceMesh, props.workpieceSize, props.workpieceOffset);
-    if (overflowEdges && workRotGroup) {
-      workRotGroup.remove(overflowEdges);
-      disposeObject(overflowEdges);
-    }
-    overflowEdges = rebuildOverflowEdges(props.workpieceSize, props.workpieceOffset);
-    if (overflowEdges && workRotGroup) {
-      if (workpieceMesh) overflowEdges.visible = workpieceMesh.visible;
-      workRotGroup.add(overflowEdges);
-    }
-  },
-  { deep: true }
 );
 
 

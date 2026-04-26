@@ -15,8 +15,7 @@ import {
   loadMacrosDefaults, saveMacrosDefaults, extractParams,
   loadDisplayDefaults, saveDisplayDefaults, settingsVersion, serverSettingsReady,
   loadCameraDefaults, saveCameraDefaults,
-  STEP_DEFAULT,
-  type Vec3, type Layer, type ColorDefaults,
+  type Layer, type ColorDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir, type SpindleFeedbackUnit,
   type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
   type GamepadMapping, GAMEPAD_ACTIONS, DEFAULT_MAPPING, GAMEPAD_FALLBACK,
@@ -112,8 +111,6 @@ const emit = defineEmits<{
   (e: "setProjection", proj: Projection): void;
   (e: "setTrackMode", mode: TrackMode): void;
   (e: "toggleLayer", layer: Layer, on: boolean): void;
-  (e: "update:workpieceSize", value: Vec3): void;
-  (e: "update:workpieceOffset", value: Vec3): void;
   (e: "setRunFromLine", on: boolean): void;
   (e: "setGamepadConfig", cfg: GamepadDefaults): void;
   (e: "setKeyboardConfig", cfg: KeyboardDefaults): void;
@@ -129,14 +126,11 @@ const resetLabels: Record<string, string> = {
 
 function resetViewer() {
   saveViewerDefaults({
-    workpieceSize: [100, 100, 20], workpieceOffset: [0, 0, -20],
-    layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, toolpathBounds: false, workzero: true, hud: true, surface: true, tool: true },
-    colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", toolpathBounds: "#f5a623", workpiece: "#ffffff", tool: "#c0c0c0", cutter: "#ffdd00" },
+    layers: { backplot: true, toolpath: true, machine: true, bounds: true, toolpathBounds: false, workzero: true, hud: true, surface: true, tool: true },
+    colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", toolpathBounds: "#f5a623", tool: "#c0c0c0", cutter: "#ffdd00" },
     machineColors: {}, machineEdges: true, trackingMode: "none", pathOnTop: false, projection: "parallel",
   });
   const vd = loadViewerDefaults();
-  wpSize.splice(0, 3, ...vd.workpieceSize);
-  wpOffset.splice(0, 3, ...vd.workpieceOffset);
   Object.assign(layers, vd.layers);
   Object.assign(colors, vd.colors);
   for (const k of Object.keys(machineColors)) delete machineColors[k];
@@ -199,8 +193,6 @@ function confirmReset() {
 
 // ─── Viewer defaults ───────────────────────
 const saved = loadViewerDefaults();
-const wpSize = reactive<Vec3>([...saved.workpieceSize] as Vec3);
-const wpOffset = reactive<Vec3>([...saved.workpieceOffset] as Vec3);
 const layers = reactive<Record<Layer, boolean>>({ ...saved.layers });
 const colors = reactive<ColorDefaults>({ ...saved.colors });
 const machineColors = reactive<Record<string, string>>({ ...saved.machineColors });
@@ -211,8 +203,6 @@ const projection = ref<Projection>(saved.projection);
 
 function save() {
   saveViewerDefaults({
-    workpieceSize: [...wpSize] as Vec3,
-    workpieceOffset: [...wpOffset] as Vec3,
     layers: { ...layers },
     colors: { ...colors },
     machineColors: { ...machineColors },
@@ -230,7 +220,6 @@ const LAYER_LABELS: { key: Layer; label: string }[] = [
   { key: "workzero", label: "Work Zero" },
   { key: "surface", label: "Surface" },
   { key: "toolpathBounds", label: "Toolpath Bounds" },
-  { key: "workpiece", label: "Stock Bounds" },
   { key: "bounds", label: "Machine Bounds" },
   { key: "machine", label: "Machine" },
   { key: "hud", label: "HUD" },
@@ -258,24 +247,6 @@ function onProjectionChange(proj: Projection) {
   projection.value = proj;
   save();
   emit("setProjection", proj);
-}
-
-function onWpSizeChange(axis: number) {
-  const value = wpSize[axis]!;
-  if (isNaN(value) || value < 0) return;
-  save();
-  emit("update:workpieceSize", [...wpSize] as Vec3);
-  if (axis === 2) {
-    wpOffset[2] = -value;
-    save();
-    emit("update:workpieceOffset", [...wpOffset] as Vec3);
-  }
-}
-
-function onWpOffsetChange(axis: number) {
-  if (isNaN(wpOffset[axis]!)) return;
-  save();
-  emit("update:workpieceOffset", [...wpOffset] as Vec3);
 }
 
 // ─── Camera overlay state ─────────────────────────────────────────
@@ -340,8 +311,6 @@ watch(settingsVersion, () => {
   Object.assign(layers, vd.layers);
   Object.assign(colors, vd.colors);
   Object.assign(machineColors, vd.machineColors);
-  wpSize.splice(0, 3, ...vd.workpieceSize);
-  wpOffset.splice(0, 3, ...vd.workpieceOffset);
   trackingMode.value = vd.trackingMode;
   pathOnTop.value = vd.pathOnTop;
   machineEdgesOn.value = vd.machineEdges;
@@ -501,7 +470,6 @@ const colorFields: { key: keyof ColorDefaults; label: string }[] = [
   { key: "backplot", label: "Backplot" },
   { key: "bounds", label: "Machine Bounds" },
   { key: "toolpathBounds", label: "Toolpath Bounds" },
-  { key: "workpiece", label: "Workpiece" },
   { key: "tool", label: "Tool Shaft" },
   { key: "cutter", label: "Tool Cutter" },
 ];
@@ -674,11 +642,11 @@ const halStats = computed(() => ({
             <label><MachineRadio gate="viewerSetting" name="projection" :modelValue="projection" value="perspective" @update:modelValue="onProjectionChange('perspective')" /> Perspective</label>
             <label><MachineRadio gate="viewerSetting" name="projection" :modelValue="projection" value="parallel" @update:modelValue="onProjectionChange('parallel')" /> Parallel</label>
           </div>
-          <div class="settingDesc">Camera tracking — keep the tool or workpiece centered while it moves.</div>
+          <div class="settingDesc">Camera tracking — keep the tool or WCS origin centered while it moves.</div>
           <div class="radioGroup inline">
             <label><MachineRadio gate="viewerSetting" name="tracking" :modelValue="trackingMode" value="none" @update:modelValue="onTrackModeChange('none')" /> None</label>
             <label><MachineRadio gate="viewerSetting" name="tracking" :modelValue="trackingMode" value="tool" @update:modelValue="onTrackModeChange('tool')" /> Tool</label>
-            <label><MachineRadio gate="viewerSetting" name="tracking" :modelValue="trackingMode" value="workpiece" @update:modelValue="onTrackModeChange('workpiece')" /> Workpiece</label>
+            <label><MachineRadio gate="viewerSetting" name="tracking" :modelValue="trackingMode" value="wcs" @update:modelValue="onTrackModeChange('wcs')" /> WCS</label>
           </div>
         </div>
 
@@ -707,38 +675,6 @@ const halStats = computed(() => ({
             @update:modelValue="onPathOnTopChange($event!)"
             label="Always on top"
           />
-        </div>
-
-        <div class="sep"></div>
-
-        <div class="section">
-          <div class="sub">Workpiece</div>
-          <div class="wpGrid">
-            <div class="inputRow">
-              <span class="inputLabel">Size X</span>
-              <MachineInput gate="viewerSettingNum" type="number" v-model.number="wpSize[0]" @change="onWpSizeChange(0)" :step="STEP_DEFAULT" min="0" max="9999" />
-            </div>
-            <div class="inputRow">
-              <span class="inputLabel">Size Y</span>
-              <MachineInput gate="viewerSettingNum" type="number" v-model.number="wpSize[1]" @change="onWpSizeChange(1)" :step="STEP_DEFAULT" min="0" max="9999" />
-            </div>
-            <div class="inputRow">
-              <span class="inputLabel">Size Z</span>
-              <MachineInput gate="viewerSettingNum" type="number" v-model.number="wpSize[2]" @change="onWpSizeChange(2)" :step="STEP_DEFAULT" min="0" max="9999" />
-            </div>
-            <div class="inputRow">
-              <span class="inputLabel">Offset X</span>
-              <MachineInput gate="viewerSettingNum" type="number" v-model.number="wpOffset[0]" @change="onWpOffsetChange(0)" :step="STEP_DEFAULT" min="-9999" max="9999" />
-            </div>
-            <div class="inputRow">
-              <span class="inputLabel">Offset Y</span>
-              <MachineInput gate="viewerSettingNum" type="number" v-model.number="wpOffset[1]" @change="onWpOffsetChange(1)" :step="STEP_DEFAULT" min="-9999" max="9999" />
-            </div>
-            <div class="inputRow">
-              <span class="inputLabel">Offset Z</span>
-              <MachineInput gate="viewerSettingNum" type="number" v-model.number="wpOffset[2]" @change="onWpOffsetChange(2)" :step="STEP_DEFAULT" min="-9999" max="9999" />
-            </div>
-          </div>
         </div>
 
         <div class="sep"></div>
@@ -1331,14 +1267,6 @@ const halStats = computed(() => ({
 .layerGrid {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: var(--gap-controls);
-}
-
-.wpGrid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  grid-template-rows: repeat(3, auto);
-  grid-auto-flow: column;
   gap: var(--gap-controls);
 }
 
