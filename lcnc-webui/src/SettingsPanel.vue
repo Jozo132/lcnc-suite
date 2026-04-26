@@ -16,7 +16,7 @@ import {
   loadDisplayDefaults, saveDisplayDefaults, settingsVersion, serverSettingsReady,
   loadCameraDefaults, saveCameraDefaults,
   STEP_DEFAULT,
-  type Vec3, type Layer, type ColorDefaults, type OpacityDefaults,
+  type Vec3, type Layer, type ColorDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir, type SpindleFeedbackUnit,
   type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
   type GamepadMapping, GAMEPAD_ACTIONS, DEFAULT_MAPPING, GAMEPAD_FALLBACK,
@@ -132,7 +132,6 @@ function resetViewer() {
     workpieceSize: [100, 100, 20], workpieceOffset: [0, 0, -20],
     layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, toolpathBounds: false, workzero: true, hud: true, surface: true, tool: true },
     colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", toolpathBounds: "#f5a623", workpiece: "#ffffff", tool: "#c0c0c0", cutter: "#ffdd00" },
-    opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
     machineColors: {}, machineEdges: true, trackingMode: "none", pathOnTop: false, projection: "parallel",
   });
   const vd = loadViewerDefaults();
@@ -140,7 +139,6 @@ function resetViewer() {
   wpOffset.splice(0, 3, ...vd.workpieceOffset);
   Object.assign(layers, vd.layers);
   Object.assign(colors, vd.colors);
-  Object.assign(opacities, vd.opacities);
   for (const k of Object.keys(machineColors)) delete machineColors[k];
   Object.assign(machineColors, vd.machineColors);
   trackingMode.value = vd.trackingMode;
@@ -205,7 +203,6 @@ const wpSize = reactive<Vec3>([...saved.workpieceSize] as Vec3);
 const wpOffset = reactive<Vec3>([...saved.workpieceOffset] as Vec3);
 const layers = reactive<Record<Layer, boolean>>({ ...saved.layers });
 const colors = reactive<ColorDefaults>({ ...saved.colors });
-const opacities = reactive<OpacityDefaults>({ ...saved.opacities });
 const machineColors = reactive<Record<string, string>>({ ...saved.machineColors });
 const trackingMode = ref<TrackMode>(saved.trackingMode);
 const pathOnTop = ref(saved.pathOnTop);
@@ -218,7 +215,6 @@ function save() {
     workpieceOffset: [...wpOffset] as Vec3,
     layers: { ...layers },
     colors: { ...colors },
-    opacities: { ...opacities },
     machineColors: { ...machineColors },
     machineEdges: machineEdgesOn.value,
     trackingMode: trackingMode.value,
@@ -343,7 +339,6 @@ watch(settingsVersion, () => {
   const vd = loadViewerDefaults();
   Object.assign(layers, vd.layers);
   Object.assign(colors, vd.colors);
-  Object.assign(opacities, vd.opacities);
   Object.assign(machineColors, vd.machineColors);
   wpSize.splice(0, 3, ...vd.workpieceSize);
   wpOffset.splice(0, 3, ...vd.workpieceOffset);
@@ -509,20 +504,6 @@ const colorFields: { key: keyof ColorDefaults; label: string }[] = [
   { key: "workpiece", label: "Workpiece" },
   { key: "tool", label: "Tool Shaft" },
   { key: "cutter", label: "Tool Cutter" },
-];
-
-function onOpacityChange(key: keyof OpacityDefaults, value: number) {
-  opacities[key] = value;
-  save();
-}
-
-const opacityFields: { key: keyof OpacityDefaults; label: string }[] = [
-  { key: "toolpath", label: "Toolpath" },
-  { key: "backplot", label: "Backplot" },
-  { key: "machine", label: "Machine" },
-  { key: "bounds", label: "Machine Bounds" },
-  { key: "workpiece", label: "Workpiece" },
-  { key: "hud", label: "HUD" },
 ];
 
 // ─── Machine part colors ────────────────────
@@ -778,10 +759,10 @@ const halStats = computed(() => ({
             <span class="inputLabel">Grid</span>
             <MachineInput gate="cameraSetting" type="number" v-model.number="camGridSpacing" min="10" max="200" :step="1" @change="saveCamTracked" />
           </div>
-          <div class="opacityRow">
-            <span class="opacityLabel">Opacity</span>
-            <MachineSlider gate="cameraSetting" class="opacitySlider" :min="0" :max="1" :step="0.05" v-model="camOverlayOpacity" @update:modelValue="saveCamTracked" />
-            <span class="opacityValue">{{ Math.round(camOverlayOpacity * 100) }}%</span>
+          <div class="camOverlayRow">
+            <span class="camOverlayLabel">Opacity</span>
+            <MachineSlider gate="cameraSetting" class="camOverlaySlider" :min="0" :max="1" :step="0.05" v-model="camOverlayOpacity" @update:modelValue="saveCamTracked" />
+            <span class="camOverlayValue">{{ Math.round(camOverlayOpacity * 100) }}%</span>
           </div>
           <div class="inputRow">
             <span class="inputLabel">Color</span>
@@ -801,25 +782,6 @@ const halStats = computed(() => ({
                 @update:modelValue="onColorChange(cf.key, $event!)"
               />
               <span class="colorLabel">{{ cf.label }}</span>
-            </div>
-          </div>
-        </div>
-
-        <div class="sep"></div>
-
-        <div class="section">
-          <div class="sub">Opacity</div>
-          <div class="stack-controls opacityList">
-            <div class="opacityRow" v-for="of_ in opacityFields" :key="of_.key">
-              <span class="opacityLabel">{{ of_.label }}</span>
-              <MachineSlider
-                gate="viewerSetting"
-                class="opacitySlider"
-                :min="0" :max="1" :step="0.05"
-                :modelValue="opacities[of_.key]"
-                @update:modelValue="onOpacityChange(of_.key, $event!)"
-              />
-              <span class="opacityValue">{{ Math.round(opacities[of_.key] * 100) }}%</span>
             </div>
           </div>
         </div>
@@ -1407,26 +1369,23 @@ const halStats = computed(() => ({
   opacity: var(--opacity-secondary);
 }
 
-.opacityList {
-}
-
-.opacityRow {
+.camOverlayRow {
   display: flex;
   align-items: center;
   gap: var(--gap-controls);
 }
 
-.opacityLabel {
+.camOverlayLabel {
   font-size: var(--fs-base);
   opacity: var(--opacity-secondary);
   min-width: 100px;
 }
 
-.opacitySlider {
+.camOverlaySlider {
   flex: 1;
 }
 
-.opacityValue {
+.camOverlayValue {
   font-size: var(--fs-sm);
   font-family: var(--font-mono);
   opacity: var(--opacity-muted);

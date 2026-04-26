@@ -28,21 +28,11 @@ export interface ColorDefaults {
   cutter: string;
 }
 
-export interface OpacityDefaults {
-  workpiece: number;
-  bounds: number;
-  machine: number;
-  toolpath: number;
-  backplot: number;
-  hud: number;
-}
-
 export interface ViewerDefaults {
   workpieceSize: Vec3;
   workpieceOffset: Vec3;
   layers: Record<Layer, boolean>;
   colors: ColorDefaults;
-  opacities: OpacityDefaults;
   machineColors: Record<string, string>;
   machineEdges: boolean;
   trackingMode: TrackMode;
@@ -161,7 +151,6 @@ const VIEWER_FALLBACK: ViewerDefaults = {
   workpieceOffset: [0, 0, -20],
   layers: { backplot: true, toolpath: true, machine: true, workpiece: true, bounds: true, toolpathBounds: false, workzero: true, hud: true, surface: true, tool: true },
   colors: { feed: "#22b8cf", rapid: "#f5a623", backplot: "#ff00ff", bounds: "#ffffff", toolpathBounds: "#f5a623", workpiece: "#ffffff", tool: "#c0c0c0", cutter: "#ffdd00" },
-  opacities: { workpiece: 0.16, bounds: 0.10, machine: 1.0, toolpath: 1.0, backplot: 0.55, hud: 1.0 },
   machineColors: {},
   machineEdges: true,
   trackingMode: "none",
@@ -178,7 +167,6 @@ registerSection<ViewerDefaults>("viewer", VIEWER_FALLBACK, (saved, fb) => {
     workpieceOffset: (saved.workpieceOffset ?? [...fb.workpieceOffset]) as Vec3,
     layers: { ...fb.layers, ...saved.layers } as Record<Layer, boolean>,
     colors: { ...fb.colors, ...saved.colors },
-    opacities: { ...fb.opacities, ...saved.opacities },
     machineColors: { ...fb.machineColors, ...saved.machineColors },
   };
 });

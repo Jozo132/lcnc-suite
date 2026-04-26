@@ -310,15 +310,14 @@ const BACKPLOT_MAX = 20000;   // points (10 Hz -> ~33 min)
 const BACKPLOT_EPS = 0.01;    // mm; min distance before adding a point
 let lastBackplotPt: THREE.Vector3 | null = null;
 
-let machineBoundsMesh: THREE.Mesh | null = null;
-let boundsLabels: THREE.Group | null = null;
+let machineBoundsMesh: THREE.LineSegments | null = null;
 let toolpathBoundsBox: THREE.LineSegments | null = null;
 let toolpathBoundsLabels: THREE.Group | null = null;
 let toolpathOverflowEdges: THREE.LineSegments | null = null;
 let toolpathBoundsVisible = false;
 const _billboardLabels: Text[] = [];
 const _bbQ = new THREE.Quaternion();  // reused for billboard parent compensation
-let workpieceMesh: THREE.Mesh | null = null;
+let workpieceMesh: THREE.LineSegments | null = null;
 let overflowEdges: THREE.LineSegments | null = null;
 const boundsClipPlanes: THREE.Plane[] = [];
 const insideBoundsClipPlanes: THREE.Plane[] = [];
@@ -665,7 +664,6 @@ function setLayerVisible(layer: Layer, on: boolean) {
       break;
     case "bounds":
       if (machineBoundsMesh) machineBoundsMesh.visible = on;
-      if (boundsLabels) boundsLabels.visible = on;
       break;
     case "toolpathBounds":
       toolpathBoundsVisible = on;
@@ -792,16 +790,6 @@ MAT.tool.color.setHex(0xc0c0c0);  // silver shaft
 MAT.cutter.color.setHex(0xffdd00); // gold cutter
 MAT.holder.color.setHex(0x888888); // steel gray holder
 
-/** Apply machine STL opacity to all MAT materials */
-function applyMachineOpacity(op: number) {
-  for (const mat of [MAT.frame, MAT.axisX, MAT.axisY, MAT.axisZ]) {
-    mat.transparent = op < 1;
-    mat.opacity = op;
-    mat.depthWrite = op >= 1;
-    mat.needsUpdate = true;
-  }
-}
-
 // ---------- helpers ----------
 function disposeObject(obj: THREE.Object3D) {
   obj.traverse((child: any) => {
@@ -820,7 +808,7 @@ function clearScene() {
   }
 }
 
-function applyBox(mesh: THREE.Mesh, size: Vec3, origin: Vec3) {
+function applyBox(mesh: THREE.Object3D, size: Vec3, origin: Vec3) {
   const [sx, sy, sz] = size;
   const [ox, oy, oz] = origin;
 
@@ -965,26 +953,13 @@ function ensureCoreGroups(init: ViewerInit) {
   workRotGroup = new THREE.Group();
   workOrigin.add(workRotGroup);
 
-  // Work zero XYZ arrows with labels
+  // Work zero XYZ arrows (color identifies axis — no text labels)
   workAxes = new THREE.Group();
   const _al = 60 * _unitScale;
   const _ah = _al * 0.15, _aw = _al * 0.08;
   workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(), _al, 0xff4444, _ah, _aw));
   workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(), _al, 0x44ff44, _ah, _aw));
   workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(), _al, 0x4488ff, _ah, _aw));
-
-  const _lblOff = _al * 1.15;
-  const _fs = _al * 0.5;
-  for (const [text, color, pos] of [
-    ["X", "#ff4444", [_lblOff, 0, 0]],
-    ["Y", "#44ff44", [0, _lblOff, 0]],
-    ["Z", "#4488ff", [0, 0, _lblOff]],
-  ] as [string, string, number[]][]) {
-    const lbl = mkTextLabel(text, color, _fs);
-    lbl.position.set(pos[0]!, pos[1]!, pos[2]!);
-    workAxes.add(lbl);
-    _billboardLabels.push(lbl);
-  }
 
   workRotGroup.add(workAxes);
 
@@ -996,11 +971,8 @@ function ensureCoreGroups(init: ViewerInit) {
   backplotGeom.setDrawRange(0, 0);
 
   const bpColor = viewerDefaults.colors.backplot ?? "#ff00ff";
-  const bpOpacity = viewerDefaults.opacities.backplot ?? 0.55;
   const mat = new THREE.LineBasicMaterial({
     color: bpColor,
-    transparent: true,
-    opacity: bpOpacity,
     depthTest: !pathAlwaysOnTop,
     depthWrite: false,
   });
@@ -1024,60 +996,36 @@ resetBackplot();
 
 
 
-  // --- Machine bounds box (also sits on X, like your vismach limits_vis) ---
+  // --- Machine bounds box — wireframe edges only ---
   {
     const boundsColor = viewerDefaults.colors.bounds ?? "#ffffff";
-    const boundsOp = viewerDefaults.opacities.bounds ?? 0.10;
-    const geom = new THREE.BoxGeometry(1, 1, 1);
-    const mat = new THREE.MeshBasicMaterial({
-      color: boundsColor,
-      transparent: true,
-      opacity: boundsOp,
-      depthWrite: false,
-    });
-    machineBoundsMesh = new THREE.Mesh(geom, mat);
-
-    const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(geom),
-      new THREE.LineBasicMaterial({ color: boundsColor, transparent: true, opacity: Math.min(1, boundsOp * 2.5) })
+    const boxGeom = new THREE.BoxGeometry(1, 1, 1);
+    const edgeGeom = new THREE.EdgesGeometry(boxGeom);
+    boxGeom.dispose();
+    machineBoundsMesh = new THREE.LineSegments(
+      edgeGeom,
+      new THREE.LineBasicMaterial({ color: boundsColor })
     );
-    machineBoundsMesh.add(edges);
-
     _workGrp!.add(machineBoundsMesh);
   }
 
-  // --- Workpiece box (in work coordinates, relative to DRO zero, and sits on X via workOrigin) ---
+  // --- Workpiece box — wireframe edges only, clipped to inside machine bounds ---
   {
     const wpColor = viewerDefaults.colors.workpiece ?? "#ffffff";
-    const wpOp = viewerDefaults.opacities.workpiece ?? 0.16;
-    const geom = new THREE.BoxGeometry(1, 1, 1);
-    const mat = new THREE.MeshBasicMaterial({
-      color: wpColor,
-      transparent: true,
-      opacity: wpOp,
-      depthWrite: false,
-      clippingPlanes: insideBoundsClipPlanes,
-    });
-    workpieceMesh = new THREE.Mesh(geom, mat);
-
-    const edges = new THREE.LineSegments(
-      new THREE.EdgesGeometry(geom),
+    const boxGeom = new THREE.BoxGeometry(1, 1, 1);
+    const edgeGeom = new THREE.EdgesGeometry(boxGeom);
+    boxGeom.dispose();
+    workpieceMesh = new THREE.LineSegments(
+      edgeGeom,
       new THREE.LineBasicMaterial({
         color: wpColor,
-        transparent: true,
-        opacity: Math.min(1, wpOp * 2.2),
         clippingPlanes: insideBoundsClipPlanes,
       })
     );
-    workpieceMesh.add(edges);
 
     workRotGroup!.add(workpieceMesh);
     applyBox(workpieceMesh, props.workpieceSize, props.workpieceOffset);
-
   }
-
-  // Apply machine STL opacity
-  applyMachineOpacity(viewerDefaults.opacities.machine ?? 1.0);
 
   // Apply tool colors
   MAT.tool.color.set(viewerDefaults.colors.tool ?? "#c0c0c0");
@@ -1171,29 +1119,6 @@ async function buildFromInit(init: ViewerInit) {
         if (overflowEdges && workRotGroup) workRotGroup.add(overflowEdges);
       }
 
-      // Dimension labels along bottom edges
-      if (boundsLabels) {
-        boundsLabels.traverse((c: any) => { if (c.dispose) { c.dispose(); _billboardLabels.splice(_billboardLabels.indexOf(c), 1); } });
-        _workGrp!.remove(boundsLabels);
-        boundsLabels = null;
-      }
-      boundsLabels = new THREE.Group();
-      const [sx, sy, sz] = mb.size as Vec3;
-      const [ox, oy, oz] = mb.origin as Vec3;
-      const unit = (init.units === "in" || init.units === "inch") ? "in" : "mm";
-      const boundsFs = Math.min(sx, sy, sz) * 0.12;
-      const axes: [string, number, THREE.Vector3, string][] = [
-        ["X", sx, new THREE.Vector3(ox + sx / 2, oy, oz), "#ff4444"],
-        ["Y", sy, new THREE.Vector3(ox, oy + sy / 2, oz), "#44ff44"],
-        ["Z", sz, new THREE.Vector3(ox, oy, oz + sz / 2), "#4488ff"],
-      ];
-      for (const [name, size, pos, color] of axes) {
-        const lbl = mkTextLabel(`${name}: ${size.toFixed(0)} ${unit}`, color, boundsFs);
-        lbl.position.copy(pos);
-        boundsLabels.add(lbl);
-        _billboardLabels.push(lbl);
-      }
-      _workGrp!.add(boundsLabels);
     } else {
       console.warn("No machine_bounds in viewer_init; bounds box will remain default");
     }
@@ -1561,18 +1486,17 @@ function applyGcode(g: ViewerGcode) {
     }
   }
 
-  // Feed + Rapid toolpath lines (colors + opacity from props or defaults)
+  // Feed + Rapid toolpath lines
   const feedColor = viewerDefaults.colors.feed ?? "#22b8cf";
   const rapidColor = viewerDefaults.colors.rapid ?? "#f5a623";
-  const toolpathOp = viewerDefaults.opacities.toolpath ?? 1.0;
   if (feedPts.length >= 2) {
-    feedLine = makeLine(feedPts, feedColor, false, toolpathOp);
+    feedLine = makeLine(feedPts, feedColor, false);
     workRotGroup!.add(feedLine);
     feedOverflow = makeOverflowLine(feedLine);
     if (feedOverflow) workRotGroup!.add(feedOverflow);
   }
   if (rapidPts.length >= 2) {
-    rapidLine = makeLine(rapidPts, rapidColor, true, toolpathOp);
+    rapidLine = makeLine(rapidPts, rapidColor, true);
     workRotGroup!.add(rapidLine);
     rapidOverflow = makeOverflowLine(rapidLine);
     if (rapidOverflow) workRotGroup!.add(rapidOverflow);
@@ -1807,9 +1731,6 @@ function applyViewerDefaults(opts: { initialMount?: boolean } = {}) {
   // Live-updatable materials: colors on shared MAT instances propagate immediately.
   MAT.tool.color.set(viewerDefaults.colors.tool ?? "#c0c0c0");
   MAT.cutter.color.set(viewerDefaults.colors.cutter ?? "#ffdd00");
-
-  // Machine mesh opacity (already iterates the frame/axis materials)
-  applyMachineOpacity(viewerDefaults.opacities.machine ?? 1.0);
 
   // Per-part color overrides — re-apply to any existing machine meshes.
   // Meshes built after this point pick up the new values from viewerDefaults
@@ -2212,7 +2133,7 @@ defineExpose({
     <div ref="host" class="viewerHost bordered-panel" />
 
     <!-- HUD Overlay -->
-    <div v-show="hudVisible" class="hud" :style="{ opacity: viewerDefaults.opacities.hud ?? 1 }">
+    <div v-show="hudVisible" class="hud">
       <div class="hudSection">
         <div class="label">Work Position ({{ props.g5xLabel || '-' }})</div>
         <div class="hudCoords">
