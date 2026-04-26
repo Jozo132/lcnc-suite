@@ -24,17 +24,42 @@ let cubeRoot: THREE.Group | null = null;
 let hitGrid: THREE.Group | null = null;
 let raf = 0;
 
-function makeFaceTexture(label: string): THREE.CanvasTexture {
+interface Palette { face: string; edge: string; label: string; hover: string; }
+let palette: Palette = { face: "#cbd2da", edge: "#444444", label: "#222222", hover: "#4ea9ff" };
+
+// Resolve a CSS expression (e.g. 'var(--viewcube-face)') to a canonical
+// 'rgb(r, g, b)' string by piggy-backing on the canvas element's computed
+// style. Three.js can't read CSS vars directly; this bridges the gap.
+function resolveColor(cssExpr: string): string {
+  const el = canvasRef.value;
+  if (!el) return "#000";
+  const prev = el.style.color;
+  el.style.color = cssExpr;
+  const computed = getComputedStyle(el).color;
+  el.style.color = prev;
+  return computed;
+}
+
+function readPalette(): Palette {
+  return {
+    face:  resolveColor("var(--viewcube-face)"),
+    edge:  resolveColor("var(--viewcube-edge)"),
+    label: resolveColor("var(--viewcube-label)"),
+    hover: resolveColor("var(--viewcube-hover)"),
+  };
+}
+
+function makeFaceTexture(label: string, p: Palette): THREE.CanvasTexture {
   const px = 256;
   const c = document.createElement("canvas");
   c.width = c.height = px;
   const ctx = c.getContext("2d")!;
-  ctx.fillStyle = "#cbd2da";
+  ctx.fillStyle = p.face;
   ctx.fillRect(0, 0, px, px);
-  ctx.strokeStyle = "rgba(0,0,0,0.35)";
+  ctx.strokeStyle = p.edge;
   ctx.lineWidth = 6;
   ctx.strokeRect(3, 3, px - 6, px - 6);
-  ctx.fillStyle = "#222";
+  ctx.fillStyle = p.label;
   ctx.font = `bold ${Math.floor(px * 0.20)}px sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
@@ -69,17 +94,19 @@ function buildCube(): THREE.Group {
   ];
   for (const f of faces) {
     const geom = new THREE.PlaneGeometry(CUBE_SIZE * 0.96, CUBE_SIZE * 0.96);
-    const mat = new THREE.MeshBasicMaterial({ map: makeFaceTexture(f.label) });
+    const mat = new THREE.MeshBasicMaterial({ map: makeFaceTexture(f.label, palette) });
     const m = new THREE.Mesh(geom, mat);
     m.position.copy(f.pos);
     m.up.copy(f.visualUp);
     m.lookAt(f.pos.clone().multiplyScalar(2));
+    m.userData.faceLabel = f.label;
     g.add(m);
   }
   const wire = new THREE.LineSegments(
     new THREE.EdgesGeometry(new THREE.BoxGeometry(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE)),
-    new THREE.LineBasicMaterial({ color: 0x444444 }),
+    new THREE.LineBasicMaterial({ color: palette.edge }),
   );
+  wire.userData.isCubeWire = true;
   g.add(wire);
   return g;
 }
@@ -126,7 +153,7 @@ function buildHitGrid(): THREE.Group {
           else if (axis === 1) { dPos.y = sign * (half + DECAL_OFFSET); outward.set(0, sign, 0); }
           else { dPos.z = sign * (half + DECAL_OFFSET); outward.set(0, 0, sign); }
           const decalMat = new THREE.MeshBasicMaterial({
-            color: 0x4ea9ff,
+            color: palette.hover,
             transparent: true,
             opacity: 0,
             depthWrite: false,
@@ -211,6 +238,38 @@ function tick() {
   renderer.render(scene, cam);
 }
 
+function rebuildPalette() {
+  palette = readPalette();
+  if (cubeRoot) {
+    cubeRoot.traverse((obj) => {
+      const label = obj.userData.faceLabel as string | undefined;
+      if (label) {
+        const mesh = obj as THREE.Mesh;
+        const mat = mesh.material as THREE.MeshBasicMaterial;
+        mat.map?.dispose();
+        mat.map = makeFaceTexture(label, palette);
+        mat.needsUpdate = true;
+      } else if (obj.userData.isCubeWire) {
+        const wire = obj as THREE.LineSegments;
+        (wire.material as THREE.LineBasicMaterial).color.set(palette.edge);
+      }
+    });
+  }
+  if (hitGrid) {
+    for (const cell of hitGrid.children) {
+      const decals = cell.userData.decals as THREE.Mesh[] | undefined;
+      if (!decals) continue;
+      for (const d of decals) {
+        (d.material as THREE.MeshBasicMaterial).color.set(palette.hover);
+      }
+    }
+  }
+}
+
+let themeObserver: MutationObserver | null = null;
+let themeMql: MediaQueryList | null = null;
+const onThemeMqlChange = () => rebuildPalette();
+
 onMounted(() => {
   if (!canvasRef.value) return;
   renderer = new THREE.WebGLRenderer({ canvas: canvasRef.value, alpha: true, antialias: true });
@@ -220,10 +279,19 @@ onMounted(() => {
   scene = new THREE.Scene();
   cam = new THREE.OrthographicCamera(-0.85, 0.85, 0.85, -0.85, 0.1, 100);
 
+  palette = readPalette();
   cubeRoot = buildCube();
   hitGrid = buildHitGrid();
   cubeRoot.add(hitGrid);
   scene.add(cubeRoot);
+
+  themeObserver = new MutationObserver(rebuildPalette);
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+  themeMql = window.matchMedia("(prefers-color-scheme: dark)");
+  themeMql.addEventListener("change", onThemeMqlChange);
 
   tick();
 });
@@ -231,13 +299,21 @@ onMounted(() => {
 onBeforeUnmount(() => {
   cancelAnimationFrame(raf);
   raf = 0;
+  themeObserver?.disconnect();
+  themeObserver = null;
+  themeMql?.removeEventListener("change", onThemeMqlChange);
+  themeMql = null;
   if (cubeRoot) {
     cubeRoot.traverse((obj) => {
       const g = (obj as THREE.Mesh).geometry;
       if (g) g.dispose();
       const mat = (obj as THREE.Mesh).material;
       if (Array.isArray(mat)) mat.forEach((m) => m.dispose());
-      else if (mat) mat.dispose();
+      else if (mat) {
+        const mm = mat as THREE.MeshBasicMaterial;
+        mm.map?.dispose();
+        mat.dispose();
+      }
     });
     cubeRoot = null;
   }

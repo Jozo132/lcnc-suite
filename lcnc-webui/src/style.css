@@ -70,6 +70,12 @@
   --hl-selected: color-mix(in oklab, var(--fg) 15%, var(--button-bg));
   --hl-active: color-mix(in oklab, var(--fg) 20%, var(--button-bg));
 
+  /* ViewCube palette — derived from theme tokens, auto-switches per data-theme */
+  --viewcube-face:  color-mix(in oklab, var(--fg) 10%, var(--bg));
+  --viewcube-edge:  color-mix(in oklab, var(--fg) 55%, var(--bg));
+  --viewcube-label: var(--fg);
+  --viewcube-hover: var(--info);
+
   /* Radius scale */
   --radius-sm: 3px;
   --radius-md: 4px;
