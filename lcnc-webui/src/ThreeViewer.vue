@@ -1708,7 +1708,8 @@ function animate() {
   if (!_tweenRaf) controls?.update();
   renderer?.render(scene!, camera!);
 
-  // Orientation gizmo — always ortho, render into bottom-left viewport
+  // Orientation gizmo — always ortho, render into bottom-right viewport
+  // (top-left is the HUD, top-right is the ViewCube + quick-grid).
   if (renderer && _gizmoScene && _gizmoCam && camera) {
     _gizmoCam.position.set(0, 0, 200).applyQuaternion(camera.quaternion);
     _gizmoCam.quaternion.copy(camera.quaternion);
@@ -1716,8 +1717,10 @@ function animate() {
     // Billboard gizmo labels
     _gizmoScene.traverse((c: any) => { if (c instanceof Text) c.quaternion.copy(_gizmoCam!.quaternion); });
 
+    const el = renderer.domElement;
     const px = renderer.getPixelRatio();
-    const gx = 8 * px, gy = 60 * px, gs = GIZMO_SIZE * px;
+    const gs = GIZMO_SIZE * px;
+    const gx = el.width - gs - 8 * px, gy = 8 * px;
     renderer.setViewport(gx, gy, gs, gs);
     renderer.setScissor(gx, gy, gs, gs);
     renderer.setScissorTest(true);
@@ -1726,7 +1729,6 @@ function animate() {
     renderer.render(_gizmoScene, _gizmoCam);
     renderer.setScissorTest(false);
     renderer.autoClear = true;
-    const el = renderer.domElement;
     renderer.setViewport(0, 0, el.width, el.height);
   }
 }
