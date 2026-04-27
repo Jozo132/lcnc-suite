@@ -597,8 +597,8 @@ label:has(input:disabled, select:disabled) {
 
 .helpIcon {
   appearance: none;
-  background: color-mix(in oklab, var(--info) 22%, transparent);
-  border: 1px solid color-mix(in oklab, var(--info) 60%, transparent);
+  background: color-mix(in oklab, var(--info) 15%, transparent);
+  border: 1px solid color-mix(in oklab, var(--info) 40%, transparent);
   border-radius: var(--radius-round);
   color: var(--info);
   font-family: var(--font-sans);
@@ -616,7 +616,7 @@ label:has(input:disabled, select:disabled) {
 }
 .helpIcon:hover,
 .helpIcon:focus-visible {
-  background: color-mix(in oklab, var(--info) 35%, transparent);
+  background: color-mix(in oklab, var(--info) 20%, transparent);
   border-color: var(--info);
 }
 .helpIcon:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
