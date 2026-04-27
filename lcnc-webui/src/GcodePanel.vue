@@ -445,7 +445,7 @@ async function saveEdit() {
       </div>
 
       <!-- Code viewer (virtual scroll) -->
-      <div class="codeViewer" v-else-if="gcodeContent" ref="codeViewerRef" @scroll="onCodeScroll">
+      <div class="codeViewer scroll-thin" v-else-if="gcodeContent" ref="codeViewerRef" @scroll="onCodeScroll">
         <div :style="{ height: totalHeight + 'px', position: 'relative' }">
           <div :style="{ position: 'absolute', top: offsetY + 'px', left: 0, right: 0 }">
             <div class="codeLine"
