@@ -214,16 +214,12 @@ button {
   transition: background 0.12s, border-color 0.12s, opacity 0.15s;
 }
 
-@media (hover: hover) {
-  button:hover:not(:disabled) {
-    background: var(--hl-hover);
-  }
+html:not(.touch-device) button:hover:not(:disabled) {
+  background: var(--hl-hover);
 }
 
-@media (hover: hover) {
-  button:active:not(:disabled) {
-    background: var(--hl-active);
-  }
+html:not(.touch-device) button:active:not(:disabled) {
+  background: var(--hl-active);
 }
 
 button:disabled {
@@ -313,7 +309,6 @@ input[type="range"]::-moz-range-thumb:hover {
   line-height: 1.5;
   padding: 4px 8px;
   border-radius: var(--radius-md);
-  outline: none;
 }
 
 .inputField:focus {
@@ -460,7 +455,6 @@ textarea {
   font-size: var(--fs-base);
   padding: 8px 12px;
   border-radius: var(--radius-xl);
-  outline: none;
   resize: none;
 }
 

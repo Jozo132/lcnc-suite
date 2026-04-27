@@ -180,9 +180,7 @@ function stopJog(btn: JogDef, e: PointerEvent) {
   }
 
   unregisterJog(e.pointerId);
-  const el = e.currentTarget as HTMLElement;
-  try { el?.releasePointerCapture?.(e.pointerId); } catch {}
-  if (e.pointerType !== "mouse") el?.blur?.();
+  try { (e.currentTarget as HTMLElement)?.releasePointerCapture?.(e.pointerId); } catch {}
 }
 
 // ─── Generic single-axis jog (Z, A, B, C, U, V, W) ─────────
@@ -214,9 +212,7 @@ function stopAxisJog(axisIndex: number, dir: 1 | -1, e: PointerEvent) {
   }
 
   unregisterJog(e.pointerId);
-  const el = e.currentTarget as HTMLElement;
-  try { el?.releasePointerCapture?.(e.pointerId); } catch {}
-  if (e.pointerType !== "mouse") el?.blur?.();
+  try { (e.currentTarget as HTMLElement)?.releasePointerCapture?.(e.pointerId); } catch {}
 }
 </script>
 

@@ -105,10 +105,9 @@ function stopJog(e?: PointerEvent) {
   sendStop();
   unregisterJog(e.pointerId);
 
-  const el = e.currentTarget as HTMLElement;
-  try { el?.releasePointerCapture?.(e.pointerId); } catch {}
-  // Blur clears sticky CSS :active state on touch browsers that report hover:hover
-  if (e.pointerType !== "mouse") el?.blur?.();
+  try {
+    (e.currentTarget as HTMLElement)?.releasePointerCapture?.(e.pointerId);
+  } catch {}
 }
 </script>
 
@@ -151,8 +150,7 @@ function stopJog(e?: PointerEvent) {
    All highlights are JS-driven classes (no :hover/:active pseudo-classes)
    to prevent sticky highlights on touchscreens. */
 .jbtn.hover:not(:disabled),
-.jbtn.active:not(:disabled),
-.jbtn:active:not(:disabled) {
+.jbtn.active:not(:disabled) {
   background: transparent;
   border: none;
 }

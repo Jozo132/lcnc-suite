@@ -45,8 +45,8 @@ defineProps<{
   transition: background 0.12s, border-color 0.12s, opacity 0.15s;
   overflow: hidden;
 }
-@media (hover: hover) { .b:hover:not(:disabled) { background: var(--hl-hover); } }
-@media (hover: hover) { .b:active:not(:disabled) { background: var(--hl-active); } }
+html:not(.touch-device) .b:hover:not(:disabled) { background: var(--hl-hover); }
+html:not(.touch-device) .b:active:not(:disabled) { background: var(--hl-active); }
 .b:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 
 /* ---- Sizes ---- */
@@ -127,7 +127,7 @@ defineProps<{
 
 /* ---- Muted (dimmed until active/selected/hover) ---- */
 .b.muted { opacity: var(--opacity-muted); }
-@media (hover: hover) { .b.muted:hover:not(:disabled) { opacity: 1; } }
+html:not(.touch-device) .b.muted:hover:not(:disabled) { opacity: 1; }
 .b.muted.active,
 .b.muted.selected { opacity: 1; }
 
@@ -154,8 +154,8 @@ defineProps<{
 }
 .b-icon.xs { padding: 2px 4px; font-size: var(--fs-xs); }
 .b-icon.sm { padding: 3px 6px; font-size: var(--fs-sm); }
-@media (hover: hover) { .b-icon:hover:not(:disabled) { opacity: var(--opacity-secondary); background: color-mix(in oklab, var(--fg) 10%, transparent); } }
-@media (hover: hover) { .b-icon:active:not(:disabled) { opacity: 1; } }
+html:not(.touch-device) .b-icon:hover:not(:disabled) { opacity: var(--opacity-secondary); background: color-mix(in oklab, var(--fg) 10%, transparent); }
+html:not(.touch-device) .b-icon:active:not(:disabled) { opacity: 1; }
 .b-icon:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 
 /* ---- Inline button ---- */
@@ -171,7 +171,7 @@ defineProps<{
   cursor: pointer;
   transition: background 0.12s, border-color 0.12s, opacity 0.15s;
 }
-@media (hover: hover) { .b-inline:hover:not(:disabled) { background: var(--hl-hover); } }
-@media (hover: hover) { .b-inline:active:not(:disabled) { background: var(--hl-active); } }
+html:not(.touch-device) .b-inline:hover:not(:disabled) { background: var(--hl-hover); }
+html:not(.touch-device) .b-inline:active:not(:disabled) { background: var(--hl-active); }
 .b-inline:disabled { opacity: var(--opacity-disabled); cursor: not-allowed; }
 </style>
