@@ -1081,6 +1081,7 @@ def get_ini_config() -> dict:
             if v is not None:
                 config["max_spindle_speed"] = v
                 config["min_spindle_speed"] = _ini_float(ini, section, "MIN_FORWARD_VELOCITY")
+                config["spindle_increment"] = _ini_float(ini, section, "INCREMENT")
                 break
 
         # Subroutine paths for probe macros [RS274NGC]SUBROUTINE_PATH

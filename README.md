@@ -871,7 +871,7 @@ All velocity values are in **machine units per second** (mm/s or in/s). The gate
 |-----|----------|-------------|
 | `MAX_FORWARD_VELOCITY` | recommended | Maximum spindle RPM (slider upper bound) |
 | `MIN_FORWARD_VELOCITY` | optional | Minimum spindle RPM |
-| `INCREMENT` | optional | RPM step applied by the spindle `+` / `−` buttons while running (default: `100.0`) |
+| `INCREMENT` | optional | RPM step applied by the spindle `+` / `−` buttons (default: `100.0`). Used by the motion controller when running and client-side when staging. |
 
 The gateway checks `SPINDLE_0` through `SPINDLE_9` and uses the first section found.
 

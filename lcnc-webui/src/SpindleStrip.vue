@@ -47,11 +47,11 @@ const emit = defineEmits<{
       </div>
 
       <div class="spRpmRow row-tight">
-        <MachineBtn type="spindleDecrease" :disabled="!isSpinning" @click="emit('spindleDecrease')">
+        <MachineBtn type="spindleDecrease" @click="emit('spindleDecrease')">
           <Minus :size="14" />
         </MachineBtn>
         <MachineInput gate="stripInput" type="number" class="spRpmInput" :value="rpmInput" :disabled="isSpinning || isRunning" @input="emit('update:rpmInput', +($event.target as HTMLInputElement).value)" :min="minSpindleSpeed" :max="maxSpindleSpeed" :step="STEP_RPM" />
-        <MachineBtn type="spindleIncrease" :disabled="!isSpinning" @click="emit('spindleIncrease')">
+        <MachineBtn type="spindleIncrease" @click="emit('spindleIncrease')">
           <Plus :size="14" />
         </MachineBtn>
       </div>

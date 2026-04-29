@@ -612,6 +612,12 @@ const maxSpindleSpeed = computed(() => {
   const v = ini.value.max_spindle_speed;
   return (v != null && Number.isFinite(v) && v > 0) ? v : 99999;
 });
+// [SPINDLE_n] INCREMENT — RPM step for +/- buttons. Used by motion controller
+// when spinning (SPINDLE_INCREASE/DECREASE); applied client-side when staging.
+const spindleIncrement = computed(() => {
+  const v = ini.value.spindle_increment;
+  return (v != null && Number.isFinite(v) && v > 0) ? v : 100;
+});
 
 // INI config: overrides (INI 0-1 fractions → percentage integers)
 const minSpindleOverride = computed(() => {
@@ -1005,11 +1011,21 @@ function spindleStop() {
 }
 
 function spindleIncrease() {
-  fire({ cmd: "spindle_increase" }, 'ready');
+  if (isSpinning.value) {
+    fire({ cmd: "spindle_increase" }, 'ready');
+  } else {
+    if (!permissions.value.ready) return;
+    rpmInput.value = Math.min(maxSpindleSpeed.value, rpmInput.value + spindleIncrement.value);
+  }
 }
 
 function spindleDecrease() {
-  fire({ cmd: "spindle_decrease" }, 'ready');
+  if (isSpinning.value) {
+    fire({ cmd: "spindle_decrease" }, 'ready');
+  } else {
+    if (!permissions.value.ready) return;
+    rpmInput.value = Math.max(minSpindleSpeed.value, rpmInput.value - spindleIncrement.value);
+  }
 }
 
 function loadFile(path: string) {
