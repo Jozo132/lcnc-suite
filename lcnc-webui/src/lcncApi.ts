@@ -78,7 +78,7 @@ export async function fetchG30(): Promise<G30Response> {
 
 export async function fetchSettings(): Promise<Record<string, any>> {
   const resp = await fetch(`${getBaseUrl()}/settings`);
-  if (!resp.ok) return {};
+  if (!resp.ok) await throwHttpError(resp);
   const json = await resp.json();
   return json.settings ?? {};
 }

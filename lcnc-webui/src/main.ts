@@ -17,8 +17,8 @@ async function bootstrap() {
   try {
     serverSettings = await fetchSettings();
     fetchOk = true;
-  } catch {
-    // Gateway unreachable — WS handshake will deliver settings later
+  } catch (e) {
+    console.error("[settings] initial fetch failed; deferring to WS settings_init:", e);
   }
 
   const migrations: Promise<void>[] = [];
@@ -42,7 +42,9 @@ async function bootstrap() {
       }
       localStorage.setItem("lcnc-defaults", JSON.stringify(localOnly));
     }
-  } catch { /* ignore corrupt localStorage */ }
+  } catch (e) {
+    console.warn("[migrate] lcnc-defaults migration failed", e);
+  }
 
   // One-time migration: legacy lcnc-probe-params → server "probe" section
   if (fetchOk) try {
@@ -53,7 +55,9 @@ async function bootstrap() {
       migrations.push(saveSettingsSection("probe", probeLocal));
     }
     if (probeRaw) localStorage.removeItem("lcnc-probe-params");
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.warn("[migrate] lcnc-probe-params migration failed", e);
+  }
 
   // One-time migration: legacy lcnc-toolsetter-params → server "toolsetter" section
   if (fetchOk) try {
@@ -65,7 +69,9 @@ async function bootstrap() {
       migrations.push(saveSettingsSection("toolsetter", tsLocal));
     }
     if (tsRaw) localStorage.removeItem("lcnc-toolsetter-params");
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.warn("[migrate] lcnc-toolsetter-params migration failed", e);
+  }
 
   if (migrations.length) {
     try {

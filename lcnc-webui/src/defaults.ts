@@ -118,7 +118,15 @@ export function loadSection<T>(key: string): T {
 
   const all = readAll();
   const saved = all[key];
-  return def.merge(saved, def.fallback);
+  try {
+    return def.merge(saved, def.fallback);
+  } catch (e) {
+    // Section merge functions can throw on malformed server data (e.g. wrong
+    // shape after a manual settings.json edit). Fall back to defaults loudly
+    // so the issue is visible rather than masked by a partial merge.
+    console.warn(`[defaults] merge failed for section "${key}", using fallback:`, e);
+    return JSON.parse(JSON.stringify(def.fallback));
+  }
 }
 
 /** Save a section. Routes server sections through WS, local sections to localStorage. */

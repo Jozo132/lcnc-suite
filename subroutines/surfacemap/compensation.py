@@ -47,9 +47,18 @@ class Compensation :
 
 		self.filename = sys.argv[1]
 
-		# Map CLI method name to U32 index (for HAL pin default)
-		_method_arg = sys.argv[2] if len(sys.argv) >= 3 else ""
-		self.default_method = {"nearest": 0, "linear": 1, "cubic": 2}.get(_method_arg, 2)
+		# Map CLI method name to U32 index (for HAL pin default).
+		# Validate strictly — a typo in HAL config (e.g. "cubuc") used to silently
+		# fall back to cubic, masking the misconfiguration.
+		_VALID_METHODS = {"nearest": 0, "linear": 1, "cubic": 2}
+		if len(sys.argv) < 3:
+			print("ERROR! No interpolation method specified (expected one of: nearest, linear, cubic)", file=sys.stderr)
+			sys.exit(2)
+		_method_arg = sys.argv[2]
+		if _method_arg not in _VALID_METHODS:
+			print(f"ERROR! Unknown interpolation method '{_method_arg}'. Expected one of: {sorted(_VALID_METHODS)}", file=sys.stderr)
+			sys.exit(2)
+		self.default_method = _VALID_METHODS[_method_arg]
 
 
 	# HAL U32 → scipy griddata method name
@@ -116,8 +125,8 @@ class Compensation :
 			print(f" Grid write failed: {e}")
 			try:
 				os.unlink(tmp_path)
-			except OSError:
-				pass
+			except OSError as cleanup_err:
+				print(f"  Warning: tmp cleanup failed for {tmp_path}: {cleanup_err}")
 
 
 	def compensate(self) :
@@ -194,7 +203,8 @@ class Compensation :
 					prevMapTime = 0
 					prevMethod = self.h['method']
 					prevReloadReq = self.h['reload-req']
-					
+					PrevResolution = None  # read at LOADMAP line 243 before assignment at 248
+
 					self.h["counts"] = 0
 					
 					# transition to IDLE state

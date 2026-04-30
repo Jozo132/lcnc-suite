@@ -10,6 +10,11 @@ loadusr -Wn compensation python3 ~/lcnc-suite/subroutines/surfacemap/compensatio
 # Web UI safety watchdog
 loadusr -Wn webui-safety ~/lcnc-suite/lcnc-gateway/hal_watchdog.py
 
+# Web UI HAL reader: observes pins for the gateway via Unix socket.
+# Independent of webui-safety so the safety supervisor stays single-purpose.
+# Gateway has no `import hal` of its own — all HAL access goes through this process.
+loadusr -Wn webui-reader ~/lcnc-suite/lcnc-gateway/hal_reader.py
+
 # Heartbeat watchdog: trips if gateway stops toggling heartbeat (freeze detection).
 # Uses retriggerable oneshot — each heartbeat edge restarts the 0.5s pulse.
 # Self-healing: when edges resume after a trip, out returns HIGH on the next edge.

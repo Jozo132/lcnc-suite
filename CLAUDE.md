@@ -92,14 +92,15 @@ HAL heartbeat runs in an independent asyncio task (`_heartbeat_loop`), decoupled
 
 Full layer behavior tables, pin semantics, and failure mode coverage in `safety-permissions.md` memory file.
 
-### HAL Monitor Component (`webui-monitor`)
+### HAL access via `webui-reader` sibling process
 
-`poll_status()` needs 6 HAL pin values not available through `STAT`. `hal.get_value(name)` acquires a mutex + linear search (~6-8ms each, ~40ms total). The `webui-monitor` HAL component creates input pins and wires them to the source signals, enabling direct pointer reads (<1μs each).
+The gateway never imports `hal`. All HAL access goes through three independent userspace processes connected by Unix sockets:
 
-- **Config**: `_HAL_MONITOR_PINS` list in `gateway.py` — add new pins here as `(source_pin, local_name, hal_type)` tuples
-- **Init**: `_init_hal_monitor()` called once from `try_connect_lcnc()` — creates component, connects pins via `halcmd net`
-- **Read**: `_hal_fast(local_pin, default)` — falls back to default if component unavailable
-- **Fallback**: if component creation fails, `poll_status()` falls back to `hal_get()` (original slow path)
+- **`hal_reader.py`** — owns the `webui-reader` HAL component. Pushes a snapshot of ~9 pins (`tool-change`, `tool-prep-number`, `spindle.0.speed-in`, `axis.z.eoffset`, `axis.z.eoffset-enable`, `motion.probe-input`, `compensation.method`, `compensation.grid-version`, `webui-safety.trip-count`) to the gateway at 30 Hz over `/tmp/webui-reader.sock`. Also serves request/reply RPC for `set_p` (compensation reload bumps) and `halshow_dump` (diagnostics tab). Any pin read failure logs every tick — no silent fallback.
+- **`hal_watchdog.py`** — single-purpose safety supervisor. Owns `oneshot.0.out` edge detection and the `webui-safety.trip-latch`. Independent process so trips survive gateway freezes (100 ms select loop).
+- **`gateway.py`** — connects to both sockets. `_reader_recv_loop` updates `_reader_state: Tuple[snapshot, monotonic_ts]` (single-rebind so reads are torn-free). `poll_status()` calls `_reader_get(field)` which returns `None` if the snapshot is absent or the field is missing — the absent value propagates to the frontend so consumers see "no data" honestly rather than a synthetic default. If no snapshot has arrived in 2 s, `status_msg.reader_stale = True` is broadcast and the UI shows a banner.
+
+Why this split: the previous in-process approach had `webui-monitor` mirror-pin shadowing for sub-µs reads, but a SIGKILL orphan left stale shadow values readable by `hal.get_value` while the real pin was disconnected — silent-fallback failure mode that masked a safety-trip read. See GitHub issue #9 for full history. Driving rule: [feedback_no_silent_fallbacks.md](.claude/projects/-home-cnc-lcnc-suite/memory/feedback_no_silent_fallbacks.md).
 
 ## Permission System & Machine Controls Catalog
 
@@ -305,7 +306,7 @@ The `tool_touch_off.ngc` subroutine reads parameters from the LinuxCNC var file 
 - Don't use CSS grid overlay (visibility:hidden) for tab panes with ThreeViewer — ResizeObserver feedback loops
 - `CMD.wait_complete()` in gateway blocks the WebSocket receive loop → heartbeat timeout → disarm. Use fire-and-forget instead.
 - Scoped CSS styles (e.g. `button.primary` in App.vue) don't apply in child components — put shared button styles in global `style.css`
-- `hal.get_value(name)` takes ~6-8ms (mutex + linear search). Use HAL component input pins (`comp['pin']`) for hot-path reads (<1μs)
+- HAL access is now in a sibling process (`hal_reader.py`) — the gateway never imports `hal`. Benchmarks (`hal.get_value` ~2 µs; `hal.get_info_pins()` ~1 ms typical with ~276 ms tails under load) remain accurate but the gateway no longer pays the cost on its hot path. See GitHub issue #9 and `hal-cost-benchmarks.md` for history. Custom mirror components (direct pointer reads, <1 µs) are theoretically faster but introduce orphan-cleanup complexity and silent-fallback risk; do not re-introduce without measured perf pressure.
 - Never use `:deep()` to override visual CSS properties (background, color, border) in scoped styles — it bypasses Btn.vue's design system. Layout overrides (flex, width, padding) are acceptable.
 - Always use `with open()` for file I/O in Python — bare `open()` in loops leaks handles until GC
 - `.get()` is a dict method — calling it on a list silently raises AttributeError. Use `[index]` for list access.

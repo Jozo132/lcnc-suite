@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
 import { evaluatePermissions, PERMISSIONS_KEY, type Permissions } from "./permissions";
-import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, gcodeContent, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, safetyTrip, acknowledgeSafetyTrip, type LcncMessage } from "./lcncWs";
+import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, gcodeContent, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, safetyTrip, acknowledgeSafetyTrip, readerStale, previewLoadError, type LcncMessage } from "./lcncWs";
 import ThreeViewer from "./ThreeViewer.vue";
 import TabPanel from "./TabPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
@@ -100,7 +100,7 @@ function armStartFullscreen() {
     document.removeEventListener("keydown", enterFs);
     _fsListenersActive = false;
     if (!document.fullscreenElement) {
-      document.documentElement.requestFullscreen().catch(() => {});
+      document.documentElement.requestFullscreen().catch(e => console.info("[fs] requestFullscreen denied or failed:", e?.message ?? e));
     }
   };
   document.addEventListener("pointerdown", enterFs, { once: true });
@@ -158,9 +158,12 @@ const STATE_COLORS: Record<MachineStateKey, string> = {
   paused: '--state-warn',
   idle: '--state-ok',
 };
-const machineStateColor = computed(() =>
-  safetyTrip.value ? '--state-danger' : STATE_COLORS[machineState.value],
-);
+const machineStateColor = computed(() => {
+  if (safetyTrip.value) return '--state-danger';
+  if (readerStale.value) return '--state-warn';
+  if (previewLoadError.value) return '--state-warn';
+  return STATE_COLORS[machineState.value];
+});
 
 const STATE_LABELS: Record<MachineStateKey, string> = {
   disconnected: 'DISCONNECTED',
@@ -199,6 +202,8 @@ const bannerFlashMode = computed<'none' | 'pulse' | 'flash'>(() => {
   if (safetyTrip.value) return 'flash';
   const s = machineState.value;
   if (s === 'estop' || s === 'disconnected') return 'flash';
+  if (readerStale.value) return 'pulse';
+  if (previewLoadError.value) return 'pulse';
   if (s === 'unhomed' || s === 'toolchange' || s === 'idle') return 'pulse';
   return 'none';
 });
@@ -1316,6 +1321,12 @@ watch(viewerGcode, (newGcode) => {
           <span v-if="safetyTrip" :key="'safety'" class="bannerError">
             SAFETY TRIPPED at <span class="mono">{{ fmtTimestamp(safetyTrip.ts) }}</span>
             — press Acknowledge to recover
+          </span>
+          <span v-else-if="readerStale" :key="'reader-stale'" class="bannerError">
+            HAL reader stale — UI values may be out of date
+          </span>
+          <span v-else-if="previewLoadError" :key="'preview-error'" class="bannerError">
+            3D preview load failed — toolpath may be stale or missing
           </span>
           <span v-else-if="bannerMessage && !bannerShowAbort" :key="'msg'" :class="{ bannerError: bannerMessageKind <= 2 }">
             {{ bannerMessage }}

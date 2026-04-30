@@ -30,6 +30,19 @@ export const armed = ref(false);        // server-authoritative — driven by ga
 // reload + multi-tab because the gateway re-broadcasts it on every status
 // until acknowledged. While non-null, the server rejects {cmd:"arm",armed:true}.
 export const safetyTrip = ref<{ ts: number; reason: string } | null>(null);
+// HAL reader staleness: gateway sets `reader_stale: true` on status messages
+// when no snapshot has arrived from hal_reader.py within ~2 s. Auto-clears
+// when snapshots resume — distinct from safety_trip which requires operator
+// ack. UI surfaces this as a non-blocking banner so display values that
+// depend on the reader (spindle RPM, eoffset, probe input, comp state) are
+// known to be stale rather than silently frozen.
+export const readerStale = ref(false);
+// Most recent failure from the bulk-data fetches that feed the 3D viewer
+// (preview, surface points, comp grid). Set in the fetch catch handlers,
+// cleared on the next successful fetch. Surfaced in App.vue's status banner
+// so the operator sees "preview is stale" rather than viewing a possibly
+// outdated toolpath without warning.
+export const previewLoadError = ref<string | null>(null);
 // Message history is intentionally per-tab (localStorage, not server-synced).
 // Rationale: different tabs/browsers represent different user sessions;
 // federating error/status messages across sessions would cause confusing
@@ -42,13 +55,19 @@ function loadStoredMessages(): LcncMessage[] {
   try {
     const raw = localStorage.getItem(MSG_STORAGE_KEY);
     if (raw) return JSON.parse(raw);
-  } catch { /* ignore */ }
+  } catch (e) {
+    console.warn("[messages] localStorage parse failed", e);
+  }
   return [];
 }
 
 function persistMessages(msgs: LcncMessage[]) {
   const trimmed = msgs.slice(-MSG_MAX);
-  try { localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(trimmed)); } catch { /* ignore */ }
+  try {
+    localStorage.setItem(MSG_STORAGE_KEY, JSON.stringify(trimmed));
+  } catch (e) {
+    console.warn("[messages] localStorage write failed", e);
+  }
 }
 
 const _stored = loadStoredMessages();
@@ -218,10 +237,12 @@ function _fetchBulk(
       if (getLast() !== version) return;  // newer version already won
       const data = msgpackDecode(new Uint8Array(buf));
       apply(data);
+      previewLoadError.value = null;
     })
     .catch(err => {
       if (err?.name !== "AbortError") {
         console.error(`GET ${url} failed`, err);
+        previewLoadError.value = `${url} failed: ${err?.message ?? err}`;
         if (getLast() === version) setLast(-1);  // let next bump retry
       }
     });
@@ -263,10 +284,12 @@ function _fetchPreview(version: number) {
     .then(buf => {
       if (_previewLastVersion !== version) return;
       viewerGcode.value = msgpackDecode(new Uint8Array(buf)) as any;
+      previewLoadError.value = null;
     })
     .catch(err => {
       if (err?.name !== "AbortError") {
         console.error("GET /preview failed", err);
+        previewLoadError.value = `/preview failed: ${err?.message ?? err}`;
         // Let next version_bump retry; clear sentinel so retry fires.
         if (_previewLastVersion === version) _previewLastVersion = -1;
       }
@@ -286,7 +309,7 @@ let _rtSentAt = 0;           // used for round-trip latency (next status)
 
 function _stopHeartbeatWorker() {
   if (_hbWorker) {
-    try { _hbWorker.postMessage({ cmd: "stop" }); } catch { /* ignore */ }
+    try { _hbWorker.postMessage({ cmd: "stop" }); } catch (e) { console.warn("[ws] heartbeat worker stop postMessage failed", e); }
     _hbWorker.terminate();
     _hbWorker = null;
   }
@@ -428,6 +451,9 @@ export function connectWs() {
       } else if (safetyTrip.value !== null) {
         safetyTrip.value = null;
       }
+      // Reader staleness — set when gateway flag present, clear otherwise.
+      const stale = msg.reader_stale === true;
+      if (readerStale.value !== stale) readerStale.value = stale;
 
       // Buffer status as plain data — flush to reactive ref once per rAF.
       // When messages queue up, only the latest triggers Vue reactivity.

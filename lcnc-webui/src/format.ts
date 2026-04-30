@@ -26,9 +26,15 @@ export function fmtCell(val: any, decimals = 4): string {
   return Number.isFinite(x) ? x.toFixed(decimals) : "-";
 }
 
-/** Offset value — always shows a number (for editable cells) */
+/** Offset value — em-dash when source is null/missing, fixed-4 otherwise.
+ *
+ * Returning "0.0000" for null was a silent fallback: editable DRO cells
+ * couldn't distinguish "real zero" from "data missing", and the user could
+ * write the synthetic zero back to the machine. Callers that render this
+ * inside an editable cell should treat "—" as read-only / not user-edited.
+ */
 export function fmtOffset(val: number | null | undefined): string {
-  if (val == null || !Number.isFinite(val)) return "0.0000";
+  if (val == null || !Number.isFinite(val)) return "—";
   return val.toFixed(4);
 }
 

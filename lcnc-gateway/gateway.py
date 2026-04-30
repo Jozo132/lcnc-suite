@@ -8,7 +8,6 @@ import subprocess
 import threading
 from pathlib import Path
 import linuxcnc
-import hal  # must import in main thread — _hal C extension registers signal handlers on init
 
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional, List, Tuple
@@ -172,121 +171,6 @@ signal.signal(signal.SIGTERM, _shutdown_signal_handler)
 signal.signal(signal.SIGINT, _shutdown_signal_handler)
 
 
-# ---- HAL monitor component for fast pin reads ----
-# hal.get_value(name) does mutex + linear search (~6-8ms per call).
-# A HAL component's h['pin'] is a direct pointer dereference (<1μs).
-# We create input pins and connect them to the source pins' signals.
-_hal_comp = None  # type: Optional[hal.component]
-_hal_connected_pins: set = set()  # local pin names that were successfully wired
-
-# (source_pin, local_pin_name, hal_type)
-_HAL_MONITOR_PINS = [
-    ("iocontrol.0.tool-change",      "tool-change",      hal.HAL_BIT),
-    ("iocontrol.0.tool-prep-number", "tool-prep-number", hal.HAL_S32),
-    ("spindle.0.speed-in",           "spindle-speed-in", hal.HAL_FLOAT),
-    ("axis.z.eoffset",               "z-eoffset",        hal.HAL_FLOAT),
-    ("axis.z.eoffset-enable",        "z-eoffset-enable", hal.HAL_BIT),
-    ("compensation.method",          "comp-method",       hal.HAL_U32),
-    ("compensation.grid-version",    "comp-grid-ver",     hal.HAL_U32),
-    ("motion.probe-input",           "probe-input",       hal.HAL_BIT),
-    ("oneshot.0.out",                "webui-hb-ok",       hal.HAL_BIT),
-    ("webui-safety.trip-count",      "safety-trip-count", hal.HAL_U32),
-]
-
-
-def _init_hal_monitor():
-    """Create webui-monitor HAL component with input pins for fast reads.
-
-    Called once on first successful LinuxCNC connection.  Each input pin is
-    connected to the same signal as the corresponding source pin so reads
-    go through a direct pointer instead of the slow hal.get_value() path.
-    """
-    global _hal_comp
-    if _hal_comp is not None:
-        return
-    try:
-        comp = hal.component("webui-monitor")
-        for _, pin_name, pin_type in _HAL_MONITOR_PINS:
-            comp.newpin(pin_name, pin_type, hal.HAL_IN)
-        comp.ready()
-        _hal_comp = comp
-        print("[HAL] webui-monitor component ready", flush=True)
-    except Exception as e:
-        print(f"[HAL] webui-monitor creation failed: {e}", flush=True)
-        _hal_comp = None
-        return
-
-    # Connect each input pin to the source pin's signal
-    for source_pin, local_pin, _ in _HAL_MONITOR_PINS:
-        _hal_connect_monitor_pin(source_pin, local_pin)
-
-
-
-def _hal_connect_monitor_pin(source_pin: str, local_pin: str):
-    """Connect webui-monitor.<local_pin> to the same signal as <source_pin>."""
-    full_local = f"webui-monitor.{local_pin}"
-    try:
-        # Check if source pin exists and what signal it's on
-        result = subprocess.run(
-            ['halcmd', '-s', 'show', 'pin', source_pin],
-            capture_output=True, text=True, timeout=2
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            print(f"[HAL] pin {source_pin} not found, skipping", flush=True)
-            return
-
-        # halcmd -s output: "owner type dir value name [arrow signal_name]"
-        # e.g. "motmod float IN 0.005 spindle.0.speed-in <== spindle-rps-filtered"
-        # show pin returns prefix matches, so find the exact pin line
-        signal_name = None
-        found = False
-        for line in result.stdout.strip().split('\n'):
-            parts = line.split()
-            if len(parts) >= 5 and parts[4] == source_pin:
-                found = True
-                if len(parts) >= 7:
-                    # parts[5] is arrow (<== or ==>), parts[6] is signal name
-                    signal_name = parts[6]
-                break
-
-        if not found:
-            print(f"[HAL] pin {source_pin} not found in halcmd output", flush=True)
-            return
-
-        if signal_name is None:
-            # Source pin not connected — create a new signal
-            signal_name = f"webui-mon-{local_pin}"
-            r = subprocess.run(
-                ['halcmd', 'net', signal_name, source_pin],
-                capture_output=True, text=True, timeout=2
-            )
-            if r.returncode != 0:
-                print(f"[HAL] net {signal_name} {source_pin} failed: "
-                      f"{r.stderr.strip()}", flush=True)
-                return
-
-        # Connect our input pin to the signal
-        r = subprocess.run(
-            ['halcmd', 'net', signal_name, full_local],
-            capture_output=True, text=True, timeout=2
-        )
-        if r.returncode != 0:
-            print(f"[HAL] net {signal_name} {full_local} failed: "
-                  f"{r.stderr.strip()}", flush=True)
-        else:
-            _hal_connected_pins.add(local_pin)
-            print(f"[HAL] {full_local} <= {signal_name}", flush=True)
-    except Exception as e:
-        print(f"[HAL] connect {source_pin} failed: {e}", flush=True)
-
-
-def _hal_fast(local_pin: str, default=None):
-    """Read HAL pin from webui-monitor component. Returns default if not wired."""
-    if _hal_comp is not None and local_pin in _hal_connected_pins:
-        return _hal_comp[local_pin]
-    return default
-
-
 def _hal_send(msg: dict):
     """Send a pin-update message to the HAL watchdog via socket."""
     global _hal_sock
@@ -297,6 +181,131 @@ def _hal_send(msg: dict):
             _hal_sock.sendall((json.dumps(msg) + "\n").encode())
         except (OSError, BrokenPipeError):
             _hal_sock = None  # will reconnect on next send
+
+
+# ---- HAL reader (sibling process: webui-reader) ----
+# hal_reader.py owns the `webui-reader` HAL component and pushes a snapshot
+# of the pins poll_status() needs at 30 Hz. The gateway never imports `hal`;
+# all HAL access goes over this socket.  set_p() and halshow_dump() are
+# served as request/reply on the same socket.
+_READER_SOCK_PATH = "/tmp/webui-reader.sock"
+# Single-rebind state: (snapshot, monotonic_ts). Both halves always come from
+# the same tick — no torn reads even if a future caller reads both values
+# across an `await`.
+_reader_state: Optional[Tuple[dict, float]] = None
+_reader_writer: Optional[asyncio.StreamWriter] = None
+_reader_lock = asyncio.Lock()
+_reader_pending: Dict[int, asyncio.Future] = {}
+_reader_next_id = 0
+# A snapshot is "stale" if no message has arrived within this window.
+# The reader pushes at 30 Hz (~33 ms) so 2 s = ~60 missed ticks.
+_READER_STALE_SEC = 2.0
+
+
+async def _reader_recv_loop():
+    """Connect to hal_reader.py and dispatch incoming messages.
+
+    Snapshots update _reader_state. Replies resolve pending futures keyed by
+    request id. Reconnects on socket close with a 1 s backoff.
+    """
+    global _reader_writer, _reader_state
+    while True:
+        try:
+            reader, writer = await asyncio.open_unix_connection(_READER_SOCK_PATH)
+        except Exception as e:
+            print(f"[READER] connect failed: {e}", flush=True)
+            await asyncio.sleep(1.0)
+            continue
+        _reader_writer = writer
+        print("Connected to HAL reader socket", flush=True)
+        try:
+            while True:
+                line = await reader.readline()
+                if not line:
+                    break
+                try:
+                    msg = json.loads(line.decode())
+                except Exception as e:
+                    print(f"[READER] bad json from reader: {e}", flush=True)
+                    continue
+                mtype = msg.get("type")
+                if mtype == "snapshot":
+                    _reader_state = (msg, time.monotonic())
+                elif mtype == "reply":
+                    fut = _reader_pending.pop(msg.get("id"), None)
+                    if fut is not None and not fut.done():
+                        fut.set_result(msg)
+        except Exception as e:
+            print(f"[READER] recv loop error: {type(e).__name__}: {e}", flush=True)
+        finally:
+            try:
+                writer.close()
+                await writer.wait_closed()
+            except Exception:
+                pass
+            _reader_writer = None
+            # Fail any pending requests so callers don't hang.
+            for fut in _reader_pending.values():
+                if not fut.done():
+                    fut.set_exception(ConnectionError("HAL reader disconnected"))
+            _reader_pending.clear()
+        await asyncio.sleep(1.0)
+
+
+async def _reader_request(req: str, timeout: float = 2.0, **kwargs) -> dict:
+    """Send a request to hal_reader.py and await the reply.
+
+    Raises ConnectionError if the reader is not connected, TimeoutError if
+    the reply doesn't arrive in time, RuntimeError if the reader returned ok=False.
+    """
+    global _reader_next_id
+    if _reader_writer is None:
+        raise ConnectionError("HAL reader not connected")
+    # Lock guards only the ID-increment + future-registration handshake.
+    # The actual write+drain happens unlocked: each call writes one complete
+    # `{...}\n` framed message in a single StreamWriter.write() (atomic on
+    # the buffer), so concurrent senders can't interleave bytes.
+    async with _reader_lock:
+        _reader_next_id += 1
+        req_id = _reader_next_id
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        _reader_pending[req_id] = fut
+    try:
+        _reader_writer.write((json.dumps({"id": req_id, "req": req, **kwargs}) + "\n").encode())
+        await _reader_writer.drain()
+    except Exception:
+        _reader_pending.pop(req_id, None)
+        raise
+    try:
+        reply = await asyncio.wait_for(fut, timeout=timeout)
+    except asyncio.TimeoutError:
+        _reader_pending.pop(req_id, None)
+        raise
+    if not reply.get("ok"):
+        raise RuntimeError(reply.get("error", "reader request failed"))
+    return reply.get("result")
+
+
+def _reader_get(field: str):
+    """Return field from latest snapshot, or None if snapshot absent / field missing.
+
+    No `default` param by design — every absent value must surface as None all
+    the way to the frontend so consumers see "no data" honestly. See
+    feedback_no_silent_fallbacks.md.
+    """
+    state = _reader_state
+    if state is None:
+        return None
+    return state[0].get(field)
+
+
+def _reader_is_stale() -> bool:
+    """True if no snapshot has arrived within _READER_STALE_SEC."""
+    state = _reader_state
+    if state is None:
+        return True
+    return (time.monotonic() - state[1]) > _READER_STALE_SEC
 
 
 async def _disconnect_grace():
@@ -389,8 +398,8 @@ def _start_heartbeat():
 
 # ---- Shared status poller ----
 # Single global task that calls poll_status() + read_errors_nonblocking() once
-# per cycle for all clients, eliminating redundant STAT.poll() / hal_get() / GIL
-# contention when multiple clients are connected.
+# per cycle for all clients, eliminating redundant STAT.poll() / GIL contention
+# when multiple clients are connected.
 
 _shared_status: Optional["StatusPayload"] = None
 _shared_status_dict: Optional[dict] = None  # cached asdict(_shared_status)
@@ -454,6 +463,14 @@ _GCODE_WORKER_PATH = str(BASE_DIR / "gcode_parse_worker.py")
 # Lives server-side (not per-client) so reload / multi-tab all see the same trip.
 _unacked_trip: Optional[dict] = None  # {"ts": unix_ms, "reason": str}
 _last_trip_count: Optional[int] = None  # webui-safety.trip-count at last poll
+
+# Warn-once flags for STAT field absence — the cascade itself is correct (different
+# LinuxCNC versions expose different fields), but exhausting all candidates without
+# a log leaves the operator staring at a blank DRO with no idea why. Reset on every
+# successful try_connect_lcnc() so a real failure isn't masked across reconnects.
+_machine_pos_warned = False
+_spindle_warned = False
+_err_poll_warned = False
 
 _status_gen = 0  # incremented each poll; clients compare to skip redundant sends
 _status_poller_task: Optional[asyncio.Task] = None
@@ -677,7 +694,7 @@ async def _status_poller():
                 # Tell compensation.py the file is complete and ready to load.
                 # Wrapped: compensation.py may not be loaded in all configs.
                 try:
-                    hal.set_p("compensation.reload-req", str(int(time.time())))
+                    await _reader_request("set_p", pin="compensation.reload-req", value=str(int(time.time())))
                 except Exception as e:
                     print(f"[COMP] reload-req set failed (compensation.py not loaded?): {e}", flush=True)
 
@@ -751,18 +768,19 @@ async def _status_poller():
             # stalls: even if the poller was frozen during the FALSE window,
             # the counter records the trip for us to observe on resume.
             global _last_trip_count, _unacked_trip
-            trip_count = _hal_fast("safety-trip-count", None)
-            if trip_count is not None:
-                if _last_trip_count is None:
-                    _last_trip_count = trip_count  # sync on first poll
-                elif trip_count > _last_trip_count:
-                    if _unacked_trip is None:
-                        _unacked_trip = {
-                            "ts": int(time.time() * 1000),
-                            "reason": "hal_heartbeat_timeout",
-                        }
-                        print(f"[SAFETY] HAL heartbeat watchdog tripped at {_unacked_trip['ts']} (trip-count {trip_count})", flush=True)
-                    _last_trip_count = trip_count
+            trip_count = _reader_get("trip_count")
+            if trip_count is None:
+                pass  # reader hasn't pushed a snapshot yet — skip this tick
+            elif _last_trip_count is None:
+                _last_trip_count = trip_count  # sync on first reader snapshot
+            elif trip_count > _last_trip_count:
+                if _unacked_trip is None:
+                    _unacked_trip = {
+                        "ts": int(time.time() * 1000),
+                        "reason": "hal_heartbeat_timeout",
+                    }
+                    print(f"[SAFETY] HAL heartbeat watchdog tripped at {_unacked_trip['ts']} (trip-count {trip_count})", flush=True)
+                _last_trip_count = trip_count
 
             # Cache results for per-client loops
             _shared_status = st
@@ -881,6 +899,16 @@ def _start_status_poller():
         _status_poller_task = asyncio.get_event_loop().create_task(_status_poller())
 
 
+_reader_task: Optional[asyncio.Task] = None
+
+
+def _start_reader_recv_loop():
+    """Start the long-running webui-reader IPC client task once."""
+    global _reader_task
+    if _reader_task is None or _reader_task.done():
+        _reader_task = asyncio.get_event_loop().create_task(_reader_recv_loop())
+
+
 def _get_lcnc_pid() -> Optional[int]:
     """Return PID of linuxcncsvr if running, else None.
     Fast path: check /proc/<pid>/comm for known PID (<0.1ms).
@@ -892,8 +920,12 @@ def _get_lcnc_pid() -> Optional[int]:
             with open(f"/proc/{_lcnc_pid}/comm") as f:
                 if f.read().strip() == "linuxcncsvr":
                     return _lcnc_pid
-        except (OSError, IOError):
-            pass
+        except FileNotFoundError:
+            pass  # PID is stale — process exited, fall through to pgrep
+        except OSError as e:
+            # ENOENT is "process gone" (legit). Anything else (EACCES, EIO)
+            # is unexpected on /proc and worth surfacing.
+            print(f"[PID] /proc/{_lcnc_pid}/comm read failed: {type(e).__name__}: {e}", flush=True)
     # Slow path: discover PID via pgrep (only when PID unknown or stale)
     try:
         result = subprocess.run(
@@ -902,8 +934,11 @@ def _get_lcnc_pid() -> Optional[int]:
         )
         if result.returncode == 0:
             return int(result.stdout.strip().split('\n')[0])
-    except Exception:
-        pass
+    except Exception as e:
+        # rc != 0 from pgrep = "no match" (legit, returns None below). This
+        # except catches subprocess raising (timeout, OSError, ValueError on
+        # parse) — all worth surfacing.
+        print(f"[PID] pgrep linuxcncsvr failed: {type(e).__name__}: {e}", flush=True)
     return None
 
 
@@ -931,13 +966,17 @@ def _self_restart():
     """Spawn a fresh gateway process and exit. Last resort for NML poisoning."""
     print("NML POISONED: self-restarting gateway process", flush=True)
     _hal_disconnect()
-    subprocess.Popen([sys.executable, "-m", "uvicorn"] + sys.argv[1:])
+    try:
+        subprocess.Popen([sys.executable, "-m", "uvicorn"] + sys.argv[1:])
+    except Exception as e:
+        print(f"[RESTART] Popen failed ({type(e).__name__}: {e}) — exiting; launcher will respawn", flush=True)
     os._exit(1)
 
 
 def try_connect_lcnc() -> bool:
     """Attempt to connect to LinuxCNC. Returns True on success."""
     global STAT, CMD, ERR, lcnc_connected, _lcnc_pid, _nc_files_dir, _ini_config, _ever_connected
+    global _machine_pos_warned, _spindle_warned, _err_poll_warned
     _nc_files_dir = None        # re-resolve on reconnect
     _ini_config = None          # re-read INI config on reconnect
     if not _nml_connectable():
@@ -950,8 +989,11 @@ def try_connect_lcnc() -> bool:
         lcnc_connected = True
         _ever_connected = True
         _lcnc_pid = _get_lcnc_pid()
-        # Create HAL monitor component for fast pin reads (once)
-        _init_hal_monitor()
+        # Re-arm warn-once flags so a STAT field that disappears across a
+        # reconnect produces a fresh log line instead of being suppressed.
+        _machine_pos_warned = False
+        _spindle_warned = False
+        _err_poll_warned = False
         print(f"[VINIT] try_connect_lcnc OK, pid={_lcnc_pid}", flush=True)
         return True
     except Exception as e:
@@ -1101,8 +1143,8 @@ def get_ini_config() -> dict:
             config["subroutine_paths"] = sub_dirs
 
         _ini_config = config
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[INI] config parse failed: {type(e).__name__}: {e}", flush=True)
 
     return config
 
@@ -1285,14 +1327,19 @@ def _load_tool_library_all() -> dict:
         return {}
     try:
         mtime = TOOL_LIBRARY_PATH.stat().st_mtime
-    except OSError:
+    except OSError as e:
+        print(f"[TOOL_LIB] stat failed on {TOOL_LIBRARY_PATH}: {e}", flush=True)
         return _tool_lib_cache[1] if _tool_lib_cache else {}
     if _tool_lib_cache is not None and _tool_lib_cache[0] == mtime:
         return _tool_lib_cache[1]
     try:
         with open(TOOL_LIBRARY_PATH, "r") as f:
             data = json.load(f)
-    except (OSError, json.JSONDecodeError):
+    except json.JSONDecodeError as e:
+        print(f"[TOOL_LIB] {TOOL_LIBRARY_PATH} is corrupt: {e}", flush=True)
+        return _tool_lib_cache[1] if _tool_lib_cache else {}
+    except OSError as e:
+        print(f"[TOOL_LIB] read failed on {TOOL_LIBRARY_PATH}: {e}", flush=True)
         return _tool_lib_cache[1] if _tool_lib_cache else {}
     _tool_lib_cache = (mtime, data)
     return data
@@ -1362,8 +1409,8 @@ def _load_settings_all() -> dict:
             with open(SETTINGS_PATH, "r") as f:
                 _settings_cache = json.load(f)
                 return _settings_cache
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[SETTINGS] load failed on {SETTINGS_PATH}: {type(e).__name__}: {e}", flush=True)
     _settings_cache = {}
     return _settings_cache
 
@@ -1545,13 +1592,6 @@ class StatusPayload:
     mist: Optional[bool]
 
 
-
-
-def hal_get(pin: str, default=None):
-    try:
-        return hal.get_value(pin)
-    except Exception:
-        return default
 
 
 def safe_get(attr: str, default=None):
@@ -1815,6 +1855,11 @@ def poll_status() -> StatusPayload:
         machine_pos = to_float_list(safe_get("actual_position", None))
     if machine_pos is None:
         machine_pos = to_float_list(safe_get("position", None))
+    if machine_pos is None:
+        global _machine_pos_warned
+        if not _machine_pos_warned:
+            print("[POLLER] STAT exposes no joint_actual_position / actual_position / position — DRO blank", flush=True)
+            _machine_pos_warned = True
 
     # Tool offset vector (active tool length comp)
     tool_offset = to_float_list(safe_get("tool_offset", None))
@@ -1872,6 +1917,11 @@ def poll_status() -> StatusPayload:
         s0 = spindles[0]
         spindle_speed = float(s0['speed'])
         spindle_direction = int(s0['direction'])
+    else:
+        global _spindle_warned
+        if not _spindle_warned:
+            print("[POLLER] STAT.spindle empty/missing — commanded spindle speed unavailable", flush=True)
+            _spindle_warned = True
 
 
 
@@ -1898,13 +1948,13 @@ def poll_status() -> StatusPayload:
             tool_length = abs(float(tofs[2]))
 
 
-    # Tool change request from HAL iocontrol
-    _tc_req = _hal_fast('tool-change', 0)
-    tool_change_requested = bool(_tc_req)
+    # Tool change request from HAL iocontrol (via webui-reader snapshot).
+    # None means reader has no snapshot yet — pass that through honestly.
+    tool_change_requested = _reader_get("tool_change")  # Optional[bool]
     tool_change_tool = None
     tool_change_info = None
-    if tool_change_requested:
-        _tc_num = _hal_fast('tool-prep-number', 0)
+    if tool_change_requested is True:
+        _tc_num = _reader_get("tool_prep_number")
         tool_change_tool = int(_tc_num) if _tc_num else None
         if tool_change_tool is not None:
             try:
@@ -1923,6 +1973,11 @@ def poll_status() -> StatusPayload:
                 print(f"[TOOLCHANGE] info lookup failed for T{tool_change_tool}: {type(e).__name__}: {e}", flush=True)
 
     spindle_ovr = get_spindle_override()
+
+    # Spindle speed: pass None through if reader has no snapshot yet (or the
+    # pin failed to read this tick). UI consumers handle null with `?? null`.
+    _sp_in = _reader_get("spindle_speed_in")
+    spindle_speed_actual = _sp_in * _fb_scale if _sp_in is not None else None
 
     return StatusPayload(
         ts=time.time(),
@@ -1962,8 +2017,8 @@ def poll_status() -> StatusPayload:
         adaptive_feed_enabled=bool(safe_get("adaptive_feed_enabled", 0)),
         current_vel=current_vel,
         spindle_speed=spindle_speed,
-        spindle_speed_actual=_hal_fast('spindle-speed-in', 0) * _fb_scale,
-        spindle_load=hal_get(_spindle_load_pin) if _spindle_load_pin else None,
+        spindle_speed_actual=spindle_speed_actual,
+        spindle_load=None,  # TODO: configurable extra pin via reader configure protocol
         spindle_direction=spindle_direction,
         active_file=safe_get("file", None),
         motion_line=safe_get("motion_line", None),
@@ -1976,20 +2031,21 @@ def poll_status() -> StatusPayload:
         tool_change_tool=tool_change_tool,
         tool_change_info=tool_change_info,
         probe_tripped=bool(safe_get("probe_tripped", 0)),
-        probe_input=bool(_hal_fast("probe-input", False)),
+        probe_input=_reader_get("probe_input"),
         probing=bool(safe_get("probing", 0)),
         probed_position=to_float_list(safe_get("probed_position", None)),
         flood=bool(safe_get("flood", 0)),
         mist=bool(safe_get("mist", 0)),
-        eoffset_z=_hal_fast("z-eoffset", None),
-        eoffset_enabled=bool(_hal_fast("z-eoffset-enable", False)),
-        comp_method=_hal_fast("comp-method", None),
-        comp_grid_version=_hal_fast("comp-grid-ver", None),
+        eoffset_z=_reader_get("z_eoffset"),
+        eoffset_enabled=_reader_get("z_eoffset_enable"),
+        comp_method=_reader_get("comp_method"),
+        comp_grid_version=_reader_get("comp_grid_version"),
     )
 
 
 
 def read_errors_nonblocking() -> list:
+    global _err_poll_warned
     if ERR is None:
         return []
     out = []
@@ -1999,8 +2055,13 @@ def read_errors_nonblocking() -> list:
             if not e:
                 break
             out.append(e)
-    except Exception:
-        pass  # Error buffer may be briefly invalid after reconnect
+    except Exception as e:
+        # Error buffer may be briefly invalid after reconnect — log first
+        # failure per reconnect window so a persistent issue surfaces; reset
+        # in try_connect_lcnc() so each reconnect gets one log line max.
+        if not _err_poll_warned:
+            print(f"[ERR-CHAN] poll failed: {type(e).__name__}: {e}", flush=True)
+            _err_poll_warned = True
     return out
 
 
@@ -3668,8 +3729,10 @@ def _parse_hal_pins() -> list:
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
+            print(f"[HALCMD] show pin failed (rc={result.returncode}): {result.stderr.strip()}", flush=True)
             return []
-    except Exception:
+    except Exception as e:
+        print(f"[HALCMD] show pin raised: {type(e).__name__}: {e}", flush=True)
         return []
     pins = []
     for line in result.stdout.splitlines():
@@ -3698,8 +3761,10 @@ def _parse_hal_signals() -> list:
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
+            print(f"[HALCMD] show sig failed (rc={result.returncode}): {result.stderr.strip()}", flush=True)
             return []
-    except Exception:
+    except Exception as e:
+        print(f"[HALCMD] show sig raised: {type(e).__name__}: {e}", flush=True)
         return []
     signals = []
     for line in result.stdout.splitlines():
@@ -3731,8 +3796,10 @@ def _parse_hal_params() -> list:
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode != 0:
+            print(f"[HALCMD] show param failed (rc={result.returncode}): {result.stderr.strip()}", flush=True)
             return []
-    except Exception:
+    except Exception as e:
+        print(f"[HALCMD] show param raised: {type(e).__name__}: {e}", flush=True)
         return []
     params = []
     for line in result.stdout.splitlines():
@@ -3761,26 +3828,19 @@ async def _halshow_topology() -> dict:
     return {"pins": pins, "signals": signals, "params": params}
 
 
-def _format_hal_value(v) -> str:
-    """Format a HAL value as a string matching halcmd's output (TRUE/FALSE for bits, %g for floats)."""
-    if isinstance(v, bool):
-        return "TRUE" if v else "FALSE"
-    if isinstance(v, float):
-        return f"{v:g}"
-    return str(v)
-
-
-def _halshow_value_snapshot() -> dict:
-    """Flat {'section/name': value-string} map via hal.get_info_*. ~1 ms for the full HAL.
-    Values are halcmd-formatted strings so they merge cleanly with the topology snapshot."""
+async def _halshow_value_snapshot() -> dict:
+    """Flat {'section/name': value-string} map via webui-reader's halshow_dump RPC.
+    Reader runs hal.get_info_* in its own process (~1 ms typical, see hal-bench memory).
+    Values arrive as halcmd-formatted strings so they merge cleanly with the topology snapshot."""
     out: Dict[str, str] = {}
     try:
-        for entry in hal.get_info_pins():
-            out[f"pins/{entry['NAME']}"] = _format_hal_value(entry['VALUE'])
-        for entry in hal.get_info_signals():
-            out[f"signals/{entry['NAME']}"] = _format_hal_value(entry['VALUE'])
-        for entry in hal.get_info_params():
-            out[f"params/{entry['NAME']}"] = _format_hal_value(entry['VALUE'])
+        result = await _reader_request("halshow_dump", timeout=3.0)
+        for name, value in result.get("pins", {}).items():
+            out[f"pins/{name}"] = value
+        for name, value in result.get("signals", {}).items():
+            out[f"signals/{name}"] = value
+        for name, value in result.get("params", {}).items():
+            out[f"params/{name}"] = value
     except Exception as e:
         print(f"[HALSHOW] value snapshot failed: {type(e).__name__}: {e}", flush=True)
     return out
@@ -3815,7 +3875,7 @@ async def _halshow_loop() -> None:
                     print(f"[HALSHOW] snapshot send failed: {type(e).__name__}: {e}", flush=True)
 
             # Value diff for everyone with topology already in hand
-            new_values = await asyncio.to_thread(_halshow_value_snapshot)
+            new_values = await _halshow_value_snapshot()
             if _halshow_last_values:
                 delta = {k: v for k, v in new_values.items() if _halshow_last_values.get(k) != v}
                 if delta:
@@ -3886,6 +3946,7 @@ async def ws_endpoint(ws: WebSocket):
     _cancel_disconnect_grace()
     _start_heartbeat()
     _start_status_poller()
+    _start_reader_recv_loop()
 
     # Restore lcnc_connected if LinuxCNC is still running but the flag was
     # cleared by a previous connection's WebSocket error
@@ -4069,6 +4130,8 @@ async def ws_endpoint(ws: WebSocket):
                 }
                 if _unacked_trip is not None:
                     status_msg["safety_trip"] = _unacked_trip
+                if _reader_is_stale():
+                    status_msg["reader_stale"] = True
                 if _probe_results:
                     status_msg["probe_results"] = _probe_results
 
@@ -4377,10 +4440,16 @@ async def ws_endpoint(ws: WebSocket):
                 try:
                     _loop = asyncio.get_event_loop()
                     # Unlink any existing writer on probe-in (e.g. qtpyvcp.probe-in.out)
-                    # so halcmd sets works. Ignore errors if already unlinked.
-                    await _loop.run_in_executor(None, lambda: subprocess.run(
+                    # so halcmd sets works. The pin may not exist in non-qtpyvcp
+                    # configs — that's fine. Log other failures (halcmd missing,
+                    # permission denied, syntax error) so they don't disappear.
+                    _unlink_res = await _loop.run_in_executor(None, lambda: subprocess.run(
                         ['halcmd', 'unlinkp', 'qtpyvcp.probe-in.out'],
                         capture_output=True, text=True, timeout=2))
+                    if _unlink_res.returncode != 0:
+                        _err = (_unlink_res.stderr or "").strip()
+                        if _err and "does not exist" not in _err and "no such" not in _err.lower():
+                            print(f"[HALCMD] unlinkp qtpyvcp.probe-in.out failed (rc={_unlink_res.returncode}): {_err}", flush=True)
                     await _loop.run_in_executor(None, lambda: subprocess.run(
                         ['halcmd', 'sets', 'probe-in', '1'],
                         capture_output=True, text=True, timeout=2, check=True))

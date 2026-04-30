@@ -285,8 +285,13 @@ async function onImportFileSelect(e: Event) {
     form.append("file", file);
     const resp = await fetch("/import-tool-library", { method: "POST", body: form });
     if (!resp.ok) {
-      const body = await resp.json().catch(() => ({}));
-      throw new Error(body.detail || `HTTP ${resp.status}`);
+      let body: any = null;
+      try {
+        body = await resp.json();
+      } catch {
+        body = { detail: await resp.text().catch(() => "(no body)") };
+      }
+      throw new Error(body?.detail ? `${body.detail}` : `HTTP ${resp.status}: ${body}`);
     }
     const data = await resp.json();
     importPreview.value = data.tools;
@@ -309,8 +314,13 @@ async function confirmImport() {
     form.append("file", importFile.value);
     const resp = await fetch("/import-tool-library/apply", { method: "POST", body: form });
     if (!resp.ok) {
-      const body = await resp.json().catch(() => ({}));
-      throw new Error(body.detail || `HTTP ${resp.status}`);
+      let body: any = null;
+      try {
+        body = await resp.json();
+      } catch {
+        body = { detail: await resp.text().catch(() => "(no body)") };
+      }
+      throw new Error(body?.detail ? `${body.detail}` : `HTTP ${resp.status}: ${body}`);
     }
     const data = await resp.json();
     importResult.value = { added: data.added, skipped: data.skipped };

@@ -48,6 +48,10 @@ const hasRotation = computed(() => {
 // ─── Cell editing ────────────────────────────────────────────
 function startEditCell(wcs: string, axis: string, current: number) {
   if (!can.value.zero) return;
+  // Read-only when source data is null/missing — see fmtOffset() in format.ts.
+  // Editing a "—" cell with a synthesized 0 would silently replace missing
+  // data with a real value the user didn't intend.
+  if (!Number.isFinite(current)) return;
   openKeypad({
     value: current,
     label: `${wcs} ${axis.toUpperCase()}`,
@@ -101,9 +105,9 @@ function clearAll() {
             <td v-for="axis in offsetColumns" :key="axis"
                 :class="{
                   warn: axis === 'r' && row[axis] !== 0,
-                  editableCell: can.zero
+                  editableCell: can.zero && Number.isFinite(Number(row[axis]))
                 }"
-                @dblclick.stop="startEditCell(row.name as string, axis, Number(row[axis]) || 0)">
+                @dblclick.stop="startEditCell(row.name as string, axis, Number(row[axis]))">
               <span class="cellValue">{{ fmtOffset(Number(row[axis])) }}</span>
             </td>
           </tr>

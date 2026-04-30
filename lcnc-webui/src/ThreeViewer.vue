@@ -11,6 +11,7 @@ const _toolMetaCache = new Map<number, ToolMeta>();  // tool_number → ToolMeta
 let _loadPromise: Promise<void> | null = null;
 let _loadedInitJson: string | null = null;
 export const machineReady = _ref(false);
+export const failedParts = _ref<string[]>([]);
 
 async function fetchAndParseStl(url: string, signal?: AbortSignal): Promise<THREE.BufferGeometry> {
   const res = await fetch(url, { signal });
@@ -39,6 +40,7 @@ export function loadMachineAssets(init: any, onProgress?: (msg: string) => void)
 
   _loadedInitJson = json;
   machineReady.value = false;
+  failedParts.value = [];
 
   _loadPromise = (async () => {
     const abort = new AbortController();
@@ -51,7 +53,7 @@ export function loadMachineAssets(init: any, onProgress?: (msg: string) => void)
         onProgress?.("All STLs already cached");
       }
 
-      await Promise.all(toFetch.map(async (p: any) => {
+      const results = await Promise.allSettled(toFetch.map(async (p: any) => {
         const url = base.endsWith("/") ? `${base}${p.file}` : `${base}/${p.file}`;
         const t0 = performance.now();
         onProgress?.(`Fetching ${p.id}…`);
@@ -61,6 +63,16 @@ export function loadMachineAssets(init: any, onProgress?: (msg: string) => void)
         _geometryCache.set(p.id, geom);
         onProgress?.(`✓ ${p.id} (${((performance.now() - t0) / 1000).toFixed(1)}s)`);
       }));
+
+      const failed: string[] = [];
+      results.forEach((r, i) => {
+        if (r.status === "rejected") {
+          const id = toFetch[i].id;
+          failed.push(id);
+          console.error(`[STL] failed to load ${id}:`, r.reason);
+        }
+      });
+      failedParts.value = failed;
 
       machineReady.value = true;
     } catch (err) {
@@ -2191,6 +2203,11 @@ defineExpose({
     <!-- Camera PIP overlay -->
     <CameraPip :visible="pipVisible" @close="closePip" />
 
+    <!-- STL load failure chip (bottom-left, never blocks render) -->
+    <div v-if="failedParts.length" class="stlFailedChip" :title="failedParts.join(', ')">
+      {{ failedParts.length }} machine part{{ failedParts.length === 1 ? '' : 's' }} failed to load (see console)
+    </div>
+
   </div>
 </template>
 
@@ -2211,6 +2228,21 @@ defineExpose({
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--gap-tight);
+}
+
+.stlFailedChip {
+  position: absolute;
+  z-index: 1;
+  bottom: 12px;
+  left: 12px;
+  padding: var(--gap-tight) var(--gap-controls);
+  border-radius: var(--radius-xl);
+  background: color-mix(in oklab, var(--warn) 20%, var(--panel));
+  border: 1px solid var(--warn);
+  color: var(--warn);
+  font-family: var(--font-mono);
+  font-size: var(--fs-base);
+  pointer-events: auto;
 }
 
 .viewerHost {
