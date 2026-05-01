@@ -160,6 +160,39 @@ UVICORN_COLOR=(--use-colors)
 # enough to feel instant. Validated against probe data 2026-05-01.
 UVICORN_GRACEFUL=(--timeout-graceful-shutdown 1)
 
+# Bounded SIGTERM→SIGKILL escalation. The gateway's clean shutdown path
+# (uvicorn graceful drain + FastAPI lifespan teardown) only works while
+# the asyncio event loop is responsive. Under stuck-peer scenarios (LAN
+# browser holding HTTP keep-alive open, transport.close() deferred on a
+# non-empty write buffer) the loop can stall for 40 s, during which
+# --timeout-graceful-shutdown 1 cannot fire (its timer needs a healthy
+# loop). The kernel does not have that problem.
+#
+# Pattern: SIGTERM, poll up to 2 s for exit, SIGKILL if still alive.
+# Belt + suspenders: --timeout-graceful-shutdown gives clean lifespan
+# logs in the 99 % case; this kill is the load-bearing backstop.
+#
+# Why SIGKILL is acceptable: the HAL safety layer (oneshot.0.out →
+# webui-safety.trip-latch) latches ESTOP within 500 ms of gateway
+# silence regardless of how the gateway died. Lifespan teardown is
+# nice-to-have for log cleanliness, not a safety requirement. The
+# cooperative SIGTERM in hal_reader / hal_watchdog / compensation
+# means the HAL components shut down cleanly even when the gateway
+# is killed mid-flight.
+_wait_or_kill() {
+    local pid="$1" tag="$2"
+    local i
+    for i in {1..20}; do
+        kill -0 "$pid" 2>/dev/null || break
+        sleep 0.1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        _log "$tag _term: gateway pid=$pid did not exit in 2s, SIGKILL"
+        kill -KILL "$pid" 2>/dev/null
+    fi
+    wait "$pid" 2>/dev/null || true
+}
+
 # ── Dev mode: Vite hot-reload + gateway ──
 if [[ "$DEV" == "1" ]]; then
   echo "lcnc-suite: DEV mode — Vite on :$VITE_PORT, gateway on :$PORT"
@@ -186,11 +219,8 @@ if [[ "$DEV" == "1" ]]; then
       _log "DEV _term: SIGTERM → vite pgid=$VITE_PGID"
       kill -TERM -- -"$VITE_PGID" 2>/dev/null
     fi
-    _log "DEV _term: waiting for gateway pid=$GATEWAY_PID"
-    # `wait $PID` returns the gateway's exit status (143 if killed by
-    # SIGTERM). `|| true` is required because set -e would otherwise
-    # terminate the trap right here, skipping the rest of teardown.
-    wait "$GATEWAY_PID" 2>/dev/null || true
+    _log "DEV _term: waiting for gateway pid=$GATEWAY_PID (≤2s, then SIGKILL)"
+    _wait_or_kill "$GATEWAY_PID" "DEV"
     _log "DEV _term: gateway reaped, exit 0"
     exit 0
   }
@@ -257,11 +287,8 @@ _term() {
     _log "PROD _term: SIGTERM → gateway pid=$GATEWAY_PID"
     kill -TERM "$GATEWAY_PID" 2>/dev/null
   fi
-  _log "PROD _term: waiting for gateway to reap"
-  # `wait $PID` returns the gateway's exit status (143 if killed by
-  # SIGTERM). `|| true` is required because set -e would otherwise
-  # terminate the trap right here, skipping the rest of teardown.
-  wait "$GATEWAY_PID" 2>/dev/null || true
+  _log "PROD _term: waiting for gateway pid=$GATEWAY_PID (≤2s, then SIGKILL)"
+  _wait_or_kill "$GATEWAY_PID" "PROD"
   _log "PROD _term: gateway reaped, exit 0"
   exit 0
 }
