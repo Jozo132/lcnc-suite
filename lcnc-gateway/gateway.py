@@ -4365,460 +4365,466 @@ async def get_g30():
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
     _conn_t0 = time.monotonic()  # === TEMP LIFECYCLE PROBE anchor for [CONN] deltas ===
-    await ws.accept()
-    armed = False  # connection-local arming
+    # Per-client init under the WS-init semaphore. Released at block
+    # exit (before the recv loop) so live connections aren't capped by
+    # WEBUI_WS_INIT_CONCURRENCY. With cached build_viewer_init() this
+    # is almost always a no-op; the limit only matters during a real
+    # overload (e.g. >20 tabs reconnecting in lockstep).
+    async with _ws_init_sem:
+        await ws.accept()
+        armed = False  # connection-local arming
 
-    global _next_client_id, _estop_hold, _unacked_trip
-    global _gcode_preview_pending, _gcode_preview_version
-    global _gcode_last_file
-    global _gcode_preview_bytes, _gcode_refresh_running
-    client_id = _next_client_id
-    _next_client_id += 1
-    client_ip = ws.client.host if ws.client else "unknown"
-    _clients[client_id] = {"ip": client_ip, "armed": False, "last_hb": time.time(), "hb_mono": 0.0,
-                           "ws": ws, "halshow_live": False}
-    _cancel_disconnect_grace()
-    _start_heartbeat()
-    _start_status_poller()
-    _start_reader_recv_loop()
-    _dbg("CONN", f"client#{client_id} ip={client_ip} accept+register+bg-tasks dt={(time.monotonic()-_conn_t0)*1000:.0f}ms")
+        global _next_client_id, _estop_hold, _unacked_trip
+        global _gcode_preview_pending, _gcode_preview_version
+        global _gcode_last_file
+        global _gcode_preview_bytes, _gcode_refresh_running
+        client_id = _next_client_id
+        _next_client_id += 1
+        client_ip = ws.client.host if ws.client else "unknown"
+        _clients[client_id] = {"ip": client_ip, "armed": False, "last_hb": time.time(), "hb_mono": 0.0,
+                               "ws": ws, "halshow_live": False}
+        _cancel_disconnect_grace()
+        _start_heartbeat()
+        _start_status_poller()
+        _start_reader_recv_loop()
+        _dbg("CONN", f"client#{client_id} ip={client_ip} accept+register+bg-tasks dt={(time.monotonic()-_conn_t0)*1000:.0f}ms")
 
-    # Restore lcnc_connected if LinuxCNC is still running but the flag was
-    # cleared by a previous connection's WebSocket error
-    global lcnc_connected
-    _t = time.monotonic()
-    _stat_path = "noop"
-    if not lcnc_connected:
-        if STAT is not None:
-            try:
-                STAT.poll()
-                lcnc_connected = True
-                _stat_path = "stat-poll"
-            except Exception:
-                try_connect_lcnc()
-                _stat_path = "stat-fail-reconnect"
-        else:
-            try_connect_lcnc()
-            _stat_path = "reconnect"
-    _dbg("CONN", f"client#{client_id} lcnc-restored dt={(time.monotonic()-_t)*1000:.0f}ms path={_stat_path} connected={lcnc_connected}")
-
-    # Viewer: send static model/init once per connection
-    host = ws.headers.get("host", "127.0.0.1:8000")  # includes port
-    # Use the gateway's own port (8000) for STL assets rather than the
-    # client-facing port.  In dev the client connects via Vite:5173 whose
-    # HTTP/1.1 proxy pool is shared with JS-chunk downloads — STL fetches
-    # stall behind them.  Gateway has CORS allow_origins=["*"] so a
-    # cross-origin fetch from :5173 → :8000 works fine.
-    host_only = host.split(":")[0]
-    stl_base_url = f"http://{host_only}:8000/assets/"
-
-    print(f"[VINIT] client#{client_id} connect-time viewer_init: lcnc_connected={lcnc_connected}, STAT={'OK' if STAT else 'None'}", flush=True)
-    _t = time.monotonic()
-    try:
-        await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-        viewer_init_sent = True  # prevents status_loop re-send; reset on LinuxCNC reconnect
-        print(f"[VINIT] client#{client_id} connect-time viewer_init SENT OK", flush=True)
-        _dbg("CONN", f"client#{client_id} viewer-init-sent dt={(time.monotonic()-_t)*1000:.0f}ms (since-accept={(time.monotonic()-_conn_t0)*1000:.0f}ms)")
-    except Exception as e:
-        print(f"[VINIT] client#{client_id} connect-time viewer_init FAILED: {e}", flush=True)
-
-    # Send initial settings snapshot (part of WS handshake)
-    _t = time.monotonic()
-    try:
-        _init_settings = await asyncio.get_event_loop().run_in_executor(None, load_settings)
-        await ws_send_json(ws, {"type": "settings_init", "settings": _init_settings, "armed": armed})
-        _dbg("CONN", f"client#{client_id} settings-sent dt={(time.monotonic()-_t)*1000:.0f}ms")
-    except Exception as e:
-        print(f"[SETTINGS] client#{client_id} settings_init FAILED: {e}", flush=True)
-
-    # Send initial G-code ping if a file is already loaded. The full preview
-    # payload (feed/rapid polylines, stats) is served over HTTP via GET
-    # /preview — we only broadcast a tiny "ready" notification over the WS
-    # so each client can fetch the cached msgpack bytes out of band.
-    # Cold path (file loaded but not yet parsed): schedule a refresh; the
-    # client's status_loop picks up the ping on the next version bump.
-    # File *content* is fetched separately via GET /gcode.
-    _init_preview_ver = _gcode_preview_version
-    _t = time.monotonic()
-    _gcode_path = "no-file"
-    try:
-        if STAT is not None:
-            STAT.poll()
-        initial_file = safe_get("file", None)
-        if initial_file:
-            cache_hit = (
-                _gcode_preview_pending is not None
-                and _gcode_preview_pending.get("file") == initial_file
-                and _gcode_preview_bytes is not None
-            )
-            if cache_hit:
-                await ws_send_json(ws, {
-                    "type": "viewer_gcode_ready",
-                    "version": _gcode_preview_version,
-                    "file": initial_file,
-                })
-                _gcode_path = "cache-hit-sent"
-            elif not _gcode_refresh_running:
-                _gcode_refresh_running = True
-                register_bg_task(asyncio.create_task(_refresh_gcode_preview(initial_file)))
-                _gcode_path = "refresh-scheduled"
+        # Restore lcnc_connected if LinuxCNC is still running but the flag was
+        # cleared by a previous connection's WebSocket error
+        global lcnc_connected
+        _t = time.monotonic()
+        _stat_path = "noop"
+        if not lcnc_connected:
+            if STAT is not None:
+                try:
+                    STAT.poll()
+                    lcnc_connected = True
+                    _stat_path = "stat-poll"
+                except Exception:
+                    try_connect_lcnc()
+                    _stat_path = "stat-fail-reconnect"
             else:
-                _gcode_path = "refresh-already-running"
-    except Exception as e:
-        print(f"Error loading initial G-code: {e}")
-    _dbg("CONN", f"client#{client_id} gcode-ping dt={(time.monotonic()-_t)*1000:.0f}ms path={_gcode_path}")
-    _dbg("CONN", f"client#{client_id} ready (total since accept={(time.monotonic()-_conn_t0)*1000:.0f}ms)")
+                try_connect_lcnc()
+                _stat_path = "reconnect"
+        _dbg("CONN", f"client#{client_id} lcnc-restored dt={(time.monotonic()-_t)*1000:.0f}ms path={_stat_path} connected={lcnc_connected}")
 
-    viewer_init_sent = False
-    _probe_results: dict = {}  # populated from shared poller probe updates
-    _prev_tc_req = False  # previous tool-change-requested state for edge detection
-    _prev_tool_num = None  # previous tool_number for metadata edge detection
+        # Viewer: send static model/init once per connection
+        host = ws.headers.get("host", "127.0.0.1:8000")  # includes port
+        # Use the gateway's own port (8000) for STL assets rather than the
+        # client-facing port.  In dev the client connects via Vite:5173 whose
+        # HTTP/1.1 proxy pool is shared with JS-chunk downloads — STL fetches
+        # stall behind them.  Gateway has CORS allow_origins=["*"] so a
+        # cross-origin fetch from :5173 → :8000 works fine.
+        host_only = host.split(":")[0]
+        stl_base_url = f"http://{host_only}:8000/assets/"
 
+        print(f"[VINIT] client#{client_id} connect-time viewer_init: lcnc_connected={lcnc_connected}, STAT={'OK' if STAT else 'None'}", flush=True)
+        _t = time.monotonic()
+        try:
+            await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
+            viewer_init_sent = True  # prevents status_loop re-send; reset on LinuxCNC reconnect
+            print(f"[VINIT] client#{client_id} connect-time viewer_init SENT OK", flush=True)
+            _dbg("CONN", f"client#{client_id} viewer-init-sent dt={(time.monotonic()-_t)*1000:.0f}ms (since-accept={(time.monotonic()-_conn_t0)*1000:.0f}ms)")
+        except Exception as e:
+            print(f"[VINIT] client#{client_id} connect-time viewer_init FAILED: {e}", flush=True)
 
-    async def status_loop():
-        nonlocal armed, viewer_init_sent, _probe_results, _prev_tc_req, _prev_tool_num
-        global _tool_meta_dirty, _fb_scale, _spindle_load_pin
-        loop = asyncio.get_event_loop()
-        _last_settings_ver = _settings_version
-        _last_gen = 0  # tracks which _status_gen we last processed
-        _consec_fails = 0  # consecutive status_loop exceptions — bail after 10
-        # Spindle feedback scale: 60 if pin outputs RPS (default), 1 if RPM
-        _ss_init = load_settings()
-        _machine_s = _ss_init.get("machine", {})
-        _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
-        _slp = _machine_s.get("spindleLoadPin", "")
-        _spindle_load_pin = _slp if isinstance(_slp, str) and _HAL_PIN_RE.match(_slp) else ""
-        _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
-        _prev_encode_ms = 0.0  # encode_ms from previous cycle (wire-format serialise time)
-        _last_surface_version = 0  # tracks which _surface_points_version was last sent to this client
-        _last_comp_grid_version = 0  # tracks which _comp_grid_version was last sent to this client
-        _last_tool_table_version = 0  # tracks which _tool_table_version was last sent to this client
-        _last_gcode_preview_version = _init_preview_ver  # initialized from connect-time snapshot
-        # Experiment 2: status-delta per-client state
-        _last_status_data: Optional[Dict[str, Any]] = None
-        _cycles_since_full = 0
-        while True:
-            try:
-                # Not connected — disarm and send error to this client
-                if not lcnc_connected:
-                    if viewer_init_sent:
-                        viewer_init_sent = False
-                    if armed:
-                        armed = False
-                        if client_id in _clients:
-                            _clients[client_id]["armed"] = False
-                    try:
-                        await ws_send_json(ws, {
-                            "type": "status_error",
-                            "error": "LinuxCNC not connected",
-                            "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
-                            "armed": armed,
-                        })
-                    except Exception:
-                        break
-                    await asyncio.sleep(2.0)
-                    continue
+        # Send initial settings snapshot (part of WS handshake)
+        _t = time.monotonic()
+        try:
+            _init_settings = await asyncio.get_event_loop().run_in_executor(None, load_settings)
+            await ws_send_json(ws, {"type": "settings_init", "settings": _init_settings, "armed": armed})
+            _dbg("CONN", f"client#{client_id} settings-sent dt={(time.monotonic()-_t)*1000:.0f}ms")
+        except Exception as e:
+            print(f"[SETTINGS] client#{client_id} settings_init FAILED: {e}", flush=True)
 
-                # Wait for new data from shared poller. Awaiting the broadcast
-                # event replaces a 500Hz tight-poll — wakeups now match the
-                # actual poll rate (~30Hz). The 1s timeout is a safety net:
-                # if the poller stalls, we re-check and fall through to the
-                # "poller not running" branch above on the next iteration.
-                if _status_gen == _last_gen:
-                    evt = _status_event
-                    if evt is None:
-                        # Poller hasn't emitted its first event yet.
-                        await asyncio.sleep(0.05)
-                        continue
-                    try:
-                        await asyncio.wait_for(evt.wait(), timeout=1.0)
-                    except asyncio.TimeoutError:
-                        pass  # re-check on next iteration
-                    continue
-                _last_gen = _status_gen
-                pickup_ts = time.monotonic()
-
-                st = _shared_status
-                if st is None:
-                    await asyncio.sleep(0.5)
-                    continue
-
-                # Send viewer_init on first successful poll for this client
-                if not viewer_init_sent:
-                    print(f"[VINIT] client#{client_id} sending viewer_init (post-poll), STAT={'OK' if STAT else 'None'}", flush=True)
-                    _t = time.monotonic()
-                    try:
-                        await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-                        viewer_init_sent = True
-                        print(f"[VINIT] client#{client_id} viewer_init SENT OK", flush=True)
-                        _dbg("CONN", f"client#{client_id} viewer-init-sent (post-poll) dt={(time.monotonic()-_t)*1000:.0f}ms (since-accept={(time.monotonic()-_conn_t0)*1000:.0f}ms)")
-                    except Exception as e:
-                        print(f"[VINIT] client#{client_id} viewer_init FAILED: {e}", flush=True)
-
-                # Merge shared probe updates into per-client results
-                if _shared_probe_updates:
-                    _probe_results.update(_shared_probe_updates)
-
-                # Build status message. When the wire format is msgpack and no
-                # delta is active, splice the poller's pre-encoded bytes via
-                # msgspec.Raw instead of re-encoding an identical dict for each
-                # client. tool_meta now lives at top-level (not inside data),
-                # so tool-change ticks no longer mutate the shared dict and the
-                # shared-encode path stays engaged.
-                _tool_meta_tick = (st.tool_number != _prev_tool_num or _tool_meta_dirty)
-                _use_shared = (
-                    _WIRE_FORMAT == "msgpack"
-                    and not _STATUS_DELTA_ENABLED
-                    and _shared_status_data_msgpack is not None
+        # Send initial G-code ping if a file is already loaded. The full preview
+        # payload (feed/rapid polylines, stats) is served over HTTP via GET
+        # /preview — we only broadcast a tiny "ready" notification over the WS
+        # so each client can fetch the cached msgpack bytes out of band.
+        # Cold path (file loaded but not yet parsed): schedule a refresh; the
+        # client's status_loop picks up the ping on the next version bump.
+        # File *content* is fetched separately via GET /gcode.
+        _init_preview_ver = _gcode_preview_version
+        _t = time.monotonic()
+        _gcode_path = "no-file"
+        try:
+            if STAT is not None:
+                STAT.poll()
+            initial_file = safe_get("file", None)
+            if initial_file:
+                cache_hit = (
+                    _gcode_preview_pending is not None
+                    and _gcode_preview_pending.get("file") == initial_file
+                    and _gcode_preview_bytes is not None
                 )
-                if _use_shared:
-                    status_data: Any = _msgspec.Raw(_shared_status_data_msgpack)
+                if cache_hit:
+                    await ws_send_json(ws, {
+                        "type": "viewer_gcode_ready",
+                        "version": _gcode_preview_version,
+                        "file": initial_file,
+                    })
+                    _gcode_path = "cache-hit-sent"
+                elif not _gcode_refresh_running:
+                    _gcode_refresh_running = True
+                    register_bg_task(asyncio.create_task(_refresh_gcode_preview(initial_file)))
+                    _gcode_path = "refresh-scheduled"
                 else:
-                    status_data = _shared_status_dict.copy() if _shared_status_dict else asdict(st)
-                status_msg: dict = {
-                    "type": "status",
-                    "data": status_data,
-                    "errors": _shared_errors,
-                    "clients": _shared_clients_list,
-                    "armed": armed,
-                }
-                if _unacked_trip is not None:
-                    status_msg["safety_trip"] = _unacked_trip
-                if _reader_is_stale():
-                    status_msg["reader_stale"] = True
-                if _probe_results:
-                    status_msg["probe_results"] = _probe_results
+                    _gcode_path = "refresh-already-running"
+        except Exception as e:
+            print(f"Error loading initial G-code: {e}")
+        _dbg("CONN", f"client#{client_id} gcode-ping dt={(time.monotonic()-_t)*1000:.0f}ms path={_gcode_path}")
+        _dbg("CONN", f"client#{client_id} ready (total since accept={(time.monotonic()-_conn_t0)*1000:.0f}ms)")
 
-                # Inject tool_meta on tool_number change or library edit (for
-                # 3D rendering). Lives at top level — sibling of `data` — so
-                # the shared-encode of `data` stays valid every tick.
-                if _tool_meta_tick:
-                    _prev_tool_num = st.tool_number
-                    _tool_meta_dirty = False
-                    if st.tool_number is not None:
-                        try:
-                            _lib = load_tool_library()
-                            _meta = _lib.get(str(st.tool_number), {})
-                            if _meta:
-                                _tm = {k: _meta[k] for k in (
-                                    "type", "oal", "flute_length", "shoulder_length",
-                                    "shoulder_diameter", "body_length",
-                                    "shaft_diameter", "taper_angle",
-                                    "point_angle", "tip_diameter", "corner_radius",
-                                    "holder_segments", "stl_file",
-                                ) if k in _meta}
-                                if _tm:
-                                    status_msg["tool_meta"] = _tm
-                        except (KeyError, TypeError, OSError) as e:
-                            print(f"[STATUS] tool_meta build failed for T{st.tool_number}: {type(e).__name__}: {e}", flush=True)
+        viewer_init_sent = False
+        _probe_results: dict = {}  # populated from shared poller probe updates
+        _prev_tc_req = False  # previous tool-change-requested state for edge detection
+        _prev_tool_num = None  # previous tool_number for metadata edge detection
 
-                # Experiment 2: delta encoding of the `data` field.
-                # After all mutations to status_msg["data"] are done, compare
-                # against this client's last-sent baseline and swap the full
-                # dict for a diff when delta mode is on. On a forced-full
-                # cadence (every _DELTA_FULL_INTERVAL cycles) or first send,
-                # stay with the full payload. `errors`, `clients`, `timing`,
-                # `surface_points`, etc. always go through as-is — they're
-                # already sparse or cheap.
-                if _STATUS_DELTA_ENABLED:
-                    if _last_status_data is None or _cycles_since_full >= _DELTA_FULL_INTERVAL:
-                        _cycles_since_full = 0
-                    else:
-                        status_msg["type"] = "status_delta"
-                        status_msg["data"] = _diff_status_data(_last_status_data, status_msg["data"])
-                        _cycles_since_full += 1
-                    _last_status_data = status_data
 
-                # Timing: only on first status after heartbeat so all
-                # components share the same ~1Hz sample rate.
-                # Two exact sums:
-                #   RT = Network + Server  (client-side, by construction)
-                #   Cycle = Poll + Errors + Parse + Overhead  (server-side)
-                hb_mono = _clients.get(client_id, {}).get("hb_mono", 0.0)
-                if hb_mono > 0:
-                    status_msg["timing"] = {
-                        "server_ms": round((time.monotonic() - hb_mono) * 1000, 2),
-                        "cycle_ms": _shared_timing.get("cycle_ms", 0),
-                        "poll_ms": _shared_timing.get("poll_ms", 0),
-                        "errors_ms": _shared_timing.get("errors_ms", 0),
-                        "parse_ms": _shared_timing.get("parse_ms", 0),
-                        "overhead_ms": _shared_timing.get("overhead_ms", 0),
-                        # shared_encode_ms: cost of the poller's one-per-tick
-                        # msgpack pre-encode that each client's envelope
-                        # splices via msgspec.Raw. Keeps the Debug tab honest
-                        # — per-client encode_ms drops to envelope-only when
-                        # shared-encode is active, masking the shared cost.
-                        "shared_encode_ms": _shared_timing.get("shared_encode_ms", 0),
-                        # Prior-cycle encode time (status_msg built before the
-                        # encode happens → we attach the last known value).
-                        # ws_bytes is measured client-side from the received frame.
-                        "encode_ms": _prev_encode_ms,
-                    }
-                    if client_id in _clients:
-                        _clients[client_id]["hb_mono"] = 0.0
-
-                pre_send = time.monotonic()
-                _prev_encode_ms, _bytes_sent = await ws_send_measured(ws, status_msg)
-                _prev_send_ms = round((time.monotonic() - pre_send) * 1000, 2)
-
-                # Contribute to per-tick aggregate stats (logged by poller on
-                # next cycle). Only record for the current generation to avoid
-                # double-counting if a client is slow and rolls into next tick.
-                if _status_tick_stats["gen"] == _last_gen:
-                    _status_tick_stats["done"] += 1
-                    _status_tick_stats["encode_sum"] += _prev_encode_ms
-                    _status_tick_stats["send_sum"] += _prev_send_ms
-                    if _prev_send_ms > _status_tick_stats["send_max"]:
-                        _status_tick_stats["send_max"] = _prev_send_ms
-                    # === TEMP STATUS-PAYLOAD PROBE === wire-size accounting.
-                    _status_tick_stats["bytes_sum"] += _bytes_sent
-                    if _bytes_sent > _status_tick_stats["bytes_max"]:
-                        _status_tick_stats["bytes_max"] = _bytes_sent
-                    if "tool_meta" in status_msg:
-                        _status_tick_stats["tool_meta_count"] += 1
-
-                # Log timing to file if enabled
-                if _timing_log_enabled and "timing" in status_msg:
-                    _log_timing({**status_msg["timing"], "send_ms": _prev_send_ms})
-
-                # Settings broadcast: send full settings when version changes
-                if _last_settings_ver != _settings_version:
-                    _last_settings_ver = _settings_version
-                    try:
-                        _ss = await loop.run_in_executor(None, load_settings)
-                        _machine_s = _ss.get("machine", {})
-                        _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
-                        _slp = _machine_s.get("spindleLoadPin", "")
-                        _spindle_load_pin = _slp if isinstance(_slp, str) and _HAL_PIN_RE.match(_slp) else ""
-                        await ws_send_json(ws, {
-                            "type": "settings_changed",
-                            "settings": _ss,
-                            "armed": armed,
-                        })
-                    except (OSError, json.JSONDecodeError, ValueError) as e:
-                        print(f"[STATUS] settings_changed broadcast failed: {type(e).__name__}: {e}", flush=True)
-
-                # Tool change: auto-deassert when request clears
-                if _prev_tc_req and not st.tool_change_requested:
-                    _hal_send({"tool_changed": False})
-                _prev_tc_req = st.tool_change_requested
-
-                # Viewer: gcode preview — send a tiny "ready" ping so each
-                # client fetches the cached msgpack bytes via GET /preview.
-                # Broadcasting the full (multi-MB) frame to every client on
-                # the single-threaded WS writer stalled the event loop past
-                # the HAL heartbeat window. File content is fetched via
-                # GET /gcode; preview data is fetched via GET /preview.
-                if _gcode_preview_version != _last_gcode_preview_version:
-                    _last_gcode_preview_version = _gcode_preview_version
-                    pending = _gcode_preview_pending
-                    if _gcode_preview_bytes is not None and pending is not None:
-                        try:
-                            await ws_send_json(ws, {
-                                "type": "viewer_gcode_ready",
-                                "version": _gcode_preview_version,
-                                "file": pending.get("file"),
-                            })
-                        except RuntimeError:
-                            pass
-                    else:
-                        await ws_send_json(ws, {
-                            "type": "viewer_gcode",
-                            "data": {"file": None, "feed": [], "feed_lines": [], "rapid": []},
-                        })
-
-                # Surface points: cached msgpack lives on the server; send a
-                # tiny version ping so each client fetches via GET /surface_points
-                # off the WS writer.
-                if _surface_points_version != _last_surface_version:
-                    _last_surface_version = _surface_points_version
-                    if _surface_points_bytes is not None:
-                        try:
-                            await ws_send_json(ws, {
-                                "type": "surface_points_ready",
-                                "version": _surface_points_version,
-                            })
-                        except RuntimeError:
-                            pass
-
-                # Compensation grid: same pattern — fetch via GET /comp_grid.
-                if _comp_grid_version != _last_comp_grid_version:
-                    _last_comp_grid_version = _comp_grid_version
-                    if _comp_grid_bytes is not None:
-                        try:
-                            await ws_send_json(ws, {
-                                "type": "comp_grid_ready",
-                                "version": _comp_grid_version,
-                            })
-                        except RuntimeError:
-                            pass
-
-                # Tool table: ping clients to refetch via WS RPC `get_tool_table`.
-                # Bumped by _reload_tool_table_and_bump() after every save/add/
-                # delete/import. Initial connect resyncs because _last_*=0.
-                if _tool_table_version != _last_tool_table_version:
-                    _last_tool_table_version = _tool_table_version
-                    try:
-                        await ws_send_json(ws, {
-                            "type": "tool_table_changed",
-                            "version": _tool_table_version,
-                        })
-                    except RuntimeError:
-                        pass
-
-                # Heartbeat timeout
-                if client_id in _clients:
-                    if time.time() - _clients[client_id].get("last_hb", 0) > 3.0:
+        async def status_loop():
+            nonlocal armed, viewer_init_sent, _probe_results, _prev_tc_req, _prev_tool_num
+            global _tool_meta_dirty, _fb_scale, _spindle_load_pin
+            loop = asyncio.get_event_loop()
+            _last_settings_ver = _settings_version
+            _last_gen = 0  # tracks which _status_gen we last processed
+            _consec_fails = 0  # consecutive status_loop exceptions — bail after 10
+            # Spindle feedback scale: 60 if pin outputs RPS (default), 1 if RPM
+            _ss_init = load_settings()
+            _machine_s = _ss_init.get("machine", {})
+            _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
+            _slp = _machine_s.get("spindleLoadPin", "")
+            _spindle_load_pin = _slp if isinstance(_slp, str) and _HAL_PIN_RE.match(_slp) else ""
+            _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
+            _prev_encode_ms = 0.0  # encode_ms from previous cycle (wire-format serialise time)
+            _last_surface_version = 0  # tracks which _surface_points_version was last sent to this client
+            _last_comp_grid_version = 0  # tracks which _comp_grid_version was last sent to this client
+            _last_tool_table_version = 0  # tracks which _tool_table_version was last sent to this client
+            _last_gcode_preview_version = _init_preview_ver  # initialized from connect-time snapshot
+            # Experiment 2: status-delta per-client state
+            _last_status_data: Optional[Dict[str, Any]] = None
+            _cycles_since_full = 0
+            while True:
+                try:
+                    # Not connected — disarm and send error to this client
+                    if not lcnc_connected:
+                        if viewer_init_sent:
+                            viewer_init_sent = False
                         if armed:
-                            # Armed client stalled — disarm and stop motion
                             armed = False
-                            _clients[client_id]["armed"] = False
+                            if client_id in _clients:
+                                _clients[client_id]["armed"] = False
+                        try:
+                            await ws_send_json(ws, {
+                                "type": "status_error",
+                                "error": "LinuxCNC not connected",
+                                "clients": [{"ip": c["ip"], "armed": c["armed"]} for c in _clients.values()],
+                                "armed": armed,
+                            })
+                        except Exception:
+                            break
+                        await asyncio.sleep(2.0)
+                        continue
+
+                    # Wait for new data from shared poller. Awaiting the broadcast
+                    # event replaces a 500Hz tight-poll — wakeups now match the
+                    # actual poll rate (~30Hz). The 1s timeout is a safety net:
+                    # if the poller stalls, we re-check and fall through to the
+                    # "poller not running" branch above on the next iteration.
+                    if _status_gen == _last_gen:
+                        evt = _status_event
+                        if evt is None:
+                            # Poller hasn't emitted its first event yet.
+                            await asyncio.sleep(0.05)
+                            continue
+                        try:
+                            await asyncio.wait_for(evt.wait(), timeout=1.0)
+                        except asyncio.TimeoutError:
+                            pass  # re-check on next iteration
+                        continue
+                    _last_gen = _status_gen
+                    pickup_ts = time.monotonic()
+
+                    st = _shared_status
+                    if st is None:
+                        await asyncio.sleep(0.5)
+                        continue
+
+                    # Send viewer_init on first successful poll for this client
+                    if not viewer_init_sent:
+                        print(f"[VINIT] client#{client_id} sending viewer_init (post-poll), STAT={'OK' if STAT else 'None'}", flush=True)
+                        _t = time.monotonic()
+                        try:
+                            await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
+                            viewer_init_sent = True
+                            print(f"[VINIT] client#{client_id} viewer_init SENT OK", flush=True)
+                            _dbg("CONN", f"client#{client_id} viewer-init-sent (post-poll) dt={(time.monotonic()-_t)*1000:.0f}ms (since-accept={(time.monotonic()-_conn_t0)*1000:.0f}ms)")
+                        except Exception as e:
+                            print(f"[VINIT] client#{client_id} viewer_init FAILED: {e}", flush=True)
+
+                    # Merge shared probe updates into per-client results
+                    if _shared_probe_updates:
+                        _probe_results.update(_shared_probe_updates)
+
+                    # Build status message. When the wire format is msgpack and no
+                    # delta is active, splice the poller's pre-encoded bytes via
+                    # msgspec.Raw instead of re-encoding an identical dict for each
+                    # client. tool_meta now lives at top-level (not inside data),
+                    # so tool-change ticks no longer mutate the shared dict and the
+                    # shared-encode path stays engaged.
+                    _tool_meta_tick = (st.tool_number != _prev_tool_num or _tool_meta_dirty)
+                    _use_shared = (
+                        _WIRE_FORMAT == "msgpack"
+                        and not _STATUS_DELTA_ENABLED
+                        and _shared_status_data_msgpack is not None
+                    )
+                    if _use_shared:
+                        status_data: Any = _msgspec.Raw(_shared_status_data_msgpack)
+                    else:
+                        status_data = _shared_status_dict.copy() if _shared_status_dict else asdict(st)
+                    status_msg: dict = {
+                        "type": "status",
+                        "data": status_data,
+                        "errors": _shared_errors,
+                        "clients": _shared_clients_list,
+                        "armed": armed,
+                    }
+                    if _unacked_trip is not None:
+                        status_msg["safety_trip"] = _unacked_trip
+                    if _reader_is_stale():
+                        status_msg["reader_stale"] = True
+                    if _probe_results:
+                        status_msg["probe_results"] = _probe_results
+
+                    # Inject tool_meta on tool_number change or library edit (for
+                    # 3D rendering). Lives at top level — sibling of `data` — so
+                    # the shared-encode of `data` stays valid every tick.
+                    if _tool_meta_tick:
+                        _prev_tool_num = st.tool_number
+                        _tool_meta_dirty = False
+                        if st.tool_number is not None:
                             try:
-                                async with _get_cmd_lock():
-                                    if bool(safe_get("enabled", False)):
-                                        mode = safe_get("task_mode", None)
-                                        interp = safe_get("interp_state", None)
-                                        if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-                                            CMD.abort()
-                                        else:
-                                            homed = normalize_homed(safe_get("homed", None))
-                                            if homed:
-                                                await set_mode(linuxcnc.MODE_MANUAL)
-                                                jf = _jog_joint_flag()
-                                                _nj = getattr(STAT, "joints", 3) if STAT else 3
-                                                for ax in range(_nj):
-                                                    CMD.jog(linuxcnc.JOG_STOP, jf, ax)
-                                            CMD.abort()
-                            except Exception:
-                                pass
+                                _lib = load_tool_library()
+                                _meta = _lib.get(str(st.tool_number), {})
+                                if _meta:
+                                    _tm = {k: _meta[k] for k in (
+                                        "type", "oal", "flute_length", "shoulder_length",
+                                        "shoulder_diameter", "body_length",
+                                        "shaft_diameter", "taper_angle",
+                                        "point_angle", "tip_diameter", "corner_radius",
+                                        "holder_segments", "stl_file",
+                                    ) if k in _meta}
+                                    if _tm:
+                                        status_msg["tool_meta"] = _tm
+                            except (KeyError, TypeError, OSError) as e:
+                                print(f"[STATUS] tool_meta build failed for T{st.tool_number}: {type(e).__name__}: {e}", flush=True)
+
+                    # Experiment 2: delta encoding of the `data` field.
+                    # After all mutations to status_msg["data"] are done, compare
+                    # against this client's last-sent baseline and swap the full
+                    # dict for a diff when delta mode is on. On a forced-full
+                    # cadence (every _DELTA_FULL_INTERVAL cycles) or first send,
+                    # stay with the full payload. `errors`, `clients`, `timing`,
+                    # `surface_points`, etc. always go through as-is — they're
+                    # already sparse or cheap.
+                    if _STATUS_DELTA_ENABLED:
+                        if _last_status_data is None or _cycles_since_full >= _DELTA_FULL_INTERVAL:
+                            _cycles_since_full = 0
+                        else:
+                            status_msg["type"] = "status_delta"
+                            status_msg["data"] = _diff_status_data(_last_status_data, status_msg["data"])
+                            _cycles_since_full += 1
+                        _last_status_data = status_data
+
+                    # Timing: only on first status after heartbeat so all
+                    # components share the same ~1Hz sample rate.
+                    # Two exact sums:
+                    #   RT = Network + Server  (client-side, by construction)
+                    #   Cycle = Poll + Errors + Parse + Overhead  (server-side)
+                    hb_mono = _clients.get(client_id, {}).get("hb_mono", 0.0)
+                    if hb_mono > 0:
+                        status_msg["timing"] = {
+                            "server_ms": round((time.monotonic() - hb_mono) * 1000, 2),
+                            "cycle_ms": _shared_timing.get("cycle_ms", 0),
+                            "poll_ms": _shared_timing.get("poll_ms", 0),
+                            "errors_ms": _shared_timing.get("errors_ms", 0),
+                            "parse_ms": _shared_timing.get("parse_ms", 0),
+                            "overhead_ms": _shared_timing.get("overhead_ms", 0),
+                            # shared_encode_ms: cost of the poller's one-per-tick
+                            # msgpack pre-encode that each client's envelope
+                            # splices via msgspec.Raw. Keeps the Debug tab honest
+                            # — per-client encode_ms drops to envelope-only when
+                            # shared-encode is active, masking the shared cost.
+                            "shared_encode_ms": _shared_timing.get("shared_encode_ms", 0),
+                            # Prior-cycle encode time (status_msg built before the
+                            # encode happens → we attach the last known value).
+                            # ws_bytes is measured client-side from the received frame.
+                            "encode_ms": _prev_encode_ms,
+                        }
+                        if client_id in _clients:
+                            _clients[client_id]["hb_mono"] = 0.0
+
+                    pre_send = time.monotonic()
+                    _prev_encode_ms, _bytes_sent = await ws_send_measured(ws, status_msg)
+                    _prev_send_ms = round((time.monotonic() - pre_send) * 1000, 2)
+
+                    # Contribute to per-tick aggregate stats (logged by poller on
+                    # next cycle). Only record for the current generation to avoid
+                    # double-counting if a client is slow and rolls into next tick.
+                    if _status_tick_stats["gen"] == _last_gen:
+                        _status_tick_stats["done"] += 1
+                        _status_tick_stats["encode_sum"] += _prev_encode_ms
+                        _status_tick_stats["send_sum"] += _prev_send_ms
+                        if _prev_send_ms > _status_tick_stats["send_max"]:
+                            _status_tick_stats["send_max"] = _prev_send_ms
+                        # === TEMP STATUS-PAYLOAD PROBE === wire-size accounting.
+                        _status_tick_stats["bytes_sum"] += _bytes_sent
+                        if _bytes_sent > _status_tick_stats["bytes_max"]:
+                            _status_tick_stats["bytes_max"] = _bytes_sent
+                        if "tool_meta" in status_msg:
+                            _status_tick_stats["tool_meta_count"] += 1
+
+                    # Log timing to file if enabled
+                    if _timing_log_enabled and "timing" in status_msg:
+                        _log_timing({**status_msg["timing"], "send_ms": _prev_send_ms})
+
+                    # Settings broadcast: send full settings when version changes
+                    if _last_settings_ver != _settings_version:
+                        _last_settings_ver = _settings_version
+                        try:
+                            _ss = await loop.run_in_executor(None, load_settings)
+                            _machine_s = _ss.get("machine", {})
+                            _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
+                            _slp = _machine_s.get("spindleLoadPin", "")
+                            _spindle_load_pin = _slp if isinstance(_slp, str) and _HAL_PIN_RE.match(_slp) else ""
+                            await ws_send_json(ws, {
+                                "type": "settings_changed",
+                                "settings": _ss,
+                                "armed": armed,
+                            })
+                        except (OSError, json.JSONDecodeError, ValueError) as e:
+                            print(f"[STATUS] settings_changed broadcast failed: {type(e).__name__}: {e}", flush=True)
+
+                    # Tool change: auto-deassert when request clears
+                    if _prev_tc_req and not st.tool_change_requested:
+                        _hal_send({"tool_changed": False})
+                    _prev_tc_req = st.tool_change_requested
+
+                    # Viewer: gcode preview — send a tiny "ready" ping so each
+                    # client fetches the cached msgpack bytes via GET /preview.
+                    # Broadcasting the full (multi-MB) frame to every client on
+                    # the single-threaded WS writer stalled the event loop past
+                    # the HAL heartbeat window. File content is fetched via
+                    # GET /gcode; preview data is fetched via GET /preview.
+                    if _gcode_preview_version != _last_gcode_preview_version:
+                        _last_gcode_preview_version = _gcode_preview_version
+                        pending = _gcode_preview_pending
+                        if _gcode_preview_bytes is not None and pending is not None:
                             try:
-                                await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
-                            except Exception:
+                                await ws_send_json(ws, {
+                                    "type": "viewer_gcode_ready",
+                                    "version": _gcode_preview_version,
+                                    "file": pending.get("file"),
+                                })
+                            except RuntimeError:
                                 pass
                         else:
-                            # Non-armed client stalled — evict to keep _clients accurate
-                            # Closing WS triggers finally block → removes from _clients → updates HAL pins
+                            await ws_send_json(ws, {
+                                "type": "viewer_gcode",
+                                "data": {"file": None, "feed": [], "feed_lines": [], "rapid": []},
+                            })
+
+                    # Surface points: cached msgpack lives on the server; send a
+                    # tiny version ping so each client fetches via GET /surface_points
+                    # off the WS writer.
+                    if _surface_points_version != _last_surface_version:
+                        _last_surface_version = _surface_points_version
+                        if _surface_points_bytes is not None:
                             try:
-                                await ws.close(code=1000, reason="Heartbeat timeout")
-                            except Exception:
+                                await ws_send_json(ws, {
+                                    "type": "surface_points_ready",
+                                    "version": _surface_points_version,
+                                })
+                            except RuntimeError:
                                 pass
-                            return  # exit status_loop; finally block handles cleanup
 
-                # Full iteration completed without exception — reset failure counter.
-                # (Healthy early-`continue` paths above are neutral: they don't
-                # reset but also don't increment, so the counter only grows when
-                # exceptions truly occur.)
-                _consec_fails = 0
+                    # Compensation grid: same pattern — fetch via GET /comp_grid.
+                    if _comp_grid_version != _last_comp_grid_version:
+                        _last_comp_grid_version = _comp_grid_version
+                        if _comp_grid_bytes is not None:
+                            try:
+                                await ws_send_json(ws, {
+                                    "type": "comp_grid_ready",
+                                    "version": _comp_grid_version,
+                                })
+                            except RuntimeError:
+                                pass
 
-            except Exception as e:
-                _consec_fails += 1
-                print(f"[STATUS] client#{client_id} status_loop exception ({_consec_fails}/10): {type(e).__name__}: {e}", flush=True)
-                if _consec_fails >= 10:
-                    print(f"[STATUS] client#{client_id} aborting status loop after 10 consecutive failures", flush=True)
-                    break
-                await asyncio.sleep(0.5)
+                    # Tool table: ping clients to refetch via WS RPC `get_tool_table`.
+                    # Bumped by _reload_tool_table_and_bump() after every save/add/
+                    # delete/import. Initial connect resyncs because _last_*=0.
+                    if _tool_table_version != _last_tool_table_version:
+                        _last_tool_table_version = _tool_table_version
+                        try:
+                            await ws_send_json(ws, {
+                                "type": "tool_table_changed",
+                                "version": _tool_table_version,
+                            })
+                        except RuntimeError:
+                            pass
 
-    status_task = register_bg_task(asyncio.create_task(status_loop()))
+                    # Heartbeat timeout
+                    if client_id in _clients:
+                        if time.time() - _clients[client_id].get("last_hb", 0) > 3.0:
+                            if armed:
+                                # Armed client stalled — disarm and stop motion
+                                armed = False
+                                _clients[client_id]["armed"] = False
+                                try:
+                                    async with _get_cmd_lock():
+                                        if bool(safe_get("enabled", False)):
+                                            mode = safe_get("task_mode", None)
+                                            interp = safe_get("interp_state", None)
+                                            if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
+                                                CMD.abort()
+                                            else:
+                                                homed = normalize_homed(safe_get("homed", None))
+                                                if homed:
+                                                    await set_mode(linuxcnc.MODE_MANUAL)
+                                                    jf = _jog_joint_flag()
+                                                    _nj = getattr(STAT, "joints", 3) if STAT else 3
+                                                    for ax in range(_nj):
+                                                        CMD.jog(linuxcnc.JOG_STOP, jf, ax)
+                                                CMD.abort()
+                                except Exception:
+                                    pass
+                                try:
+                                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
+                                except Exception:
+                                    pass
+                            else:
+                                # Non-armed client stalled — evict to keep _clients accurate
+                                # Closing WS triggers finally block → removes from _clients → updates HAL pins
+                                try:
+                                    await ws.close(code=1000, reason="Heartbeat timeout")
+                                except Exception:
+                                    pass
+                                return  # exit status_loop; finally block handles cleanup
+
+                    # Full iteration completed without exception — reset failure counter.
+                    # (Healthy early-`continue` paths above are neutral: they don't
+                    # reset but also don't increment, so the counter only grows when
+                    # exceptions truly occur.)
+                    _consec_fails = 0
+
+                except Exception as e:
+                    _consec_fails += 1
+                    print(f"[STATUS] client#{client_id} status_loop exception ({_consec_fails}/10): {type(e).__name__}: {e}", flush=True)
+                    if _consec_fails >= 10:
+                        print(f"[STATUS] client#{client_id} aborting status loop after 10 consecutive failures", flush=True)
+                        break
+                    await asyncio.sleep(0.5)
+
+        status_task = register_bg_task(asyncio.create_task(status_loop()))
 
     try:
         while True:
