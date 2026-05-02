@@ -214,6 +214,32 @@ def _wire_enc_hook(obj):
 _json_encoder = _msgspec.json.Encoder(enc_hook=_wire_enc_hook)
 _msgpack_encoder = _msgspec.msgpack.Encoder(enc_hook=_wire_enc_hook)
 
+# Dedicated thread-pool for status-tick envelope encoding. The default
+# asyncio executor is shared with load_settings, gcode parse, HAL helpers,
+# and STL HTTP responses — under a 10+ client reconnect storm, per-client
+# encode_ms ballooned to hundreds of ms (executor queue wait time, not
+# actual encode work) and tripped the HAL heartbeat watchdog. msgspec
+# releases the GIL during encode, so 2 dedicated workers give parallel
+# throughput without GIL thrashing. Lifespan teardown shuts this down
+# with cancel_futures so a stuck encode can't delay the deterministic
+# HAL LOW. See ws_send_measured() for the consumer.
+from concurrent.futures import ThreadPoolExecutor
+_status_encode_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="status-encode")
+
+# Optional WS-init concurrency limiter. Default of 20 is a no-op for the
+# documented 10–13-tab scenario. If a real overload manifests (HAL trip
+# even after viewer_init caching + dedicated encode pool), set
+# WEBUI_WS_INIT_CONCURRENCY=4 (or similar) in [DISPLAY] to serialize
+# per-client init at accept time. NOT wired in by default — the cache
+# (build_viewer_init) already drops per-connect cost to microseconds on
+# 2nd+ client, making this throttle redundant in practice. Wire-up when
+# needed: `async with _ws_init_sem:` around the accept→status_task span
+# at the top of ws_endpoint(). Keep the wrap-window short (release after
+# status_task spawn) so concurrent live connections aren't capped at the
+# init-concurrency limit.
+_WS_INIT_LIMIT = int(os.environ.get("WEBUI_WS_INIT_CONCURRENCY", "20"))
+_ws_init_sem = asyncio.Semaphore(_WS_INIT_LIMIT)
+
 
 def _json_encoder_encode(obj):
     return _json_encoder.encode(obj)  # returns bytes
@@ -2276,9 +2302,12 @@ async def ws_send_measured(ws: WebSocket, obj: Dict[str, Any]) -> Tuple[float, i
     loop = asyncio.get_event_loop()
     t0 = time.monotonic()
     if _WIRE_FORMAT == "msgpack":
-        data = await loop.run_in_executor(None, _msgpack_encoder.encode, obj)
+        # Dedicated encode pool — see _status_encode_executor docstring.
+        # Both wire-format branches use it so flipping WEBUI_WIRE_FORMAT=json
+        # doesn't silently revert to the contended default executor.
+        data = await loop.run_in_executor(_status_encode_executor, _msgpack_encoder.encode, obj)
     else:
-        data = await loop.run_in_executor(None, _json_encoder_encode, obj)
+        data = await loop.run_in_executor(_status_encode_executor, _json_encoder_encode, obj)
     encode_ms = round((time.monotonic() - t0) * 1000, 3)
     try:
         if _WIRE_FORMAT == "msgpack":
@@ -3170,8 +3199,58 @@ def _axes_from_mask(mask: int) -> List[str]:
     return [_AXIS_LETTERS[i] for i in range(9) if mask & (1 << i)]
 
 
+# Cache for build_viewer_init() output. Keyed on every input that can
+# change at runtime: stl_base_url (per-client host header), INI path +
+# mtime, STAT.axis_mask, STAT.max_velocity (frontend uses it as a jog-
+# velocity fallback), and per-STL mtimes. With ~10 clients reconnecting
+# in a storm, the second client onward gets a sub-µs cache hit instead
+# of paying the file-I/O cost of re-parsing the INI per connect — the
+# cost we measured at ~21 ms in [VINIT-T] worst-case. Bounded at 16
+# entries so distinct host headers can't grow it without limit.
+_viewer_init_cache: Dict[Tuple, Dict[str, Any]] = {}
+
+
+def _viewer_init_cache_key(stl_base_url: str) -> Tuple:
+    ini_filename = getattr(STAT, "ini_filename", None) if STAT else None
+    if ini_filename and os.path.exists(ini_filename):
+        try:
+            ini_mtime = int(os.path.getmtime(ini_filename))
+        except OSError:
+            ini_mtime = 0
+    else:
+        ini_mtime = 0
+    stl_mtimes: Tuple[int, ...] = tuple(
+        int((MACHINE_DIR / p["file"]).stat().st_mtime)
+        if (MACHINE_DIR / p["file"]).exists() else 0
+        for p in MACHINE_CFG.get("parts", [])
+    )
+    axis_mask = getattr(STAT, "axis_mask", 0) if STAT else 0
+    max_v = safe_get("max_velocity", 0.0) or 0.0
+    return (
+        stl_base_url,
+        ini_filename or "",
+        ini_mtime,
+        int(axis_mask),
+        round(float(max_v), 3),
+        stl_mtimes,
+    )
+
+
 def build_viewer_init(stl_base_url: str) -> Dict[str, Any]:
-    """Build viewer init payload from machine.json config + INI-derived bounds."""
+    """Build viewer init payload from machine.json config + INI-derived bounds.
+
+    Result is cached on (stl_base_url, ini mtime, axis_mask, max_velocity,
+    stl_mtimes). Storm of 10+ reconnecting clients pays the build cost
+    once and then hits cache; cache invalidates automatically if the
+    operator edits the INI, swaps a machine STL, or changes max_velocity
+    via the UI."""
+    # Cache lookup. Misses fall through to the existing build below.
+    _cache_key = _viewer_init_cache_key(stl_base_url)
+    _cached = _viewer_init_cache.get(_cache_key)
+    if _cached is not None:
+        _dbg("VINIT-T", "build_viewer_init total=0ms (cache hit)")
+        return _cached
+
     # Per-step timing collected for [CONN] probe; survives normal startup with
     # negligible cost (a few time.monotonic() calls).
     _bvi_t0 = time.monotonic()
@@ -3261,6 +3340,12 @@ def build_viewer_init(stl_base_url: str) -> Dict[str, Any]:
         f"build_viewer_init total={_bvi_total:.0f}ms "
         + " ".join(f"{k}={v:.0f}ms" for k, v in _bvi_steps.items()),
     )
+    # Store under the same key we looked up with at the top.
+    _viewer_init_cache[_cache_key] = out
+    # Bounded cache — if a fleet of clients with distinct host headers
+    # connects, evict oldest (insertion-order) so we don't grow forever.
+    if len(_viewer_init_cache) > 16:
+        _viewer_init_cache.pop(next(iter(_viewer_init_cache)))
     return out
 
 
@@ -3464,6 +3549,17 @@ async def lifespan(app: "FastAPI"):
         except asyncio.TimeoutError:
             print(f"[SHUTDOWN] {_elapsed()} {sum(1 for t in tasks if not t.done())} bg task(s) did not finish in 2s", flush=True)
         print(f"[SHUTDOWN] {_elapsed()} cancelled {len(tasks)} bg tasks", flush=True)
+
+    # 3b. Shut down the dedicated status-encode pool. wait=False because a
+    # mid-flight encode must not delay the deterministic HAL LOW below;
+    # cancel_futures=True abandons any encodes still queued. The default
+    # asyncio executor is shut down implicitly by the runtime — we only
+    # own this dedicated pool's lifecycle.
+    try:
+        _status_encode_executor.shutdown(wait=False, cancel_futures=True)
+        print(f"[SHUTDOWN] {_elapsed()} status encode pool shutdown", flush=True)
+    except Exception as e:
+        print(f"[SHUTDOWN] {_elapsed()} encode pool shutdown failed: {type(e).__name__}: {e}", flush=True)
 
     # 4. Final HAL state — deterministic LOW transition. hal_watchdog also
     # forces pins LOW on socket close (recv empty data), but explicit is
