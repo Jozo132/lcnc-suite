@@ -330,6 +330,48 @@ function _stopHeartbeatWorker() {
   }
 }
 
+// === TEMP RECONNECT-TIMING PROBE === (matches gateway-side LIFECYCLE PROBE).
+// In-memory event buffer of reconnect milestones. Each event records what
+// the browser saw locally — `ws.onclose` fired, reconnect attempt N
+// starting, etc. On the next successful WS open the buffer is flushed to
+// the gateway as a single `{cmd:"ws_probe_events"}` message; the gateway
+// prints them into /tmp/lcnc-gateway.log so we can read one log to see
+// the full client+server timeline. Remove with the rest of the probe
+// block once root cause is identified. Search `_wsProbe` to find call
+// sites.
+interface _WsProbeEvent { t: number; msg: string; }
+const _wsProbeBuf: _WsProbeEvent[] = [];
+const _WS_PROBE_TAB_ID: string = (() => {
+  try {
+    let id = sessionStorage.getItem("ws-probe-tab");
+    if (!id) {
+      id = Math.random().toString(36).slice(2, 8);
+      sessionStorage.setItem("ws-probe-tab", id);
+    }
+    return id;
+  } catch { return "?????"; }
+})();
+function _wsProbe(msg: string) {
+  _wsProbeBuf.push({ t: performance.now(), msg });
+  // Cap to last 200 events so a stuck tab doesn't grow this unboundedly.
+  if (_wsProbeBuf.length > 200) _wsProbeBuf.splice(0, _wsProbeBuf.length - 200);
+}
+function _wsProbeFlush() {
+  if (_wsProbeBuf.length === 0) return;
+  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+  const events = _wsProbeBuf.splice(0, _wsProbeBuf.length);
+  const nowPerf = performance.now();
+  // Translate to relative offsets (ms before now). Gateway emits these
+  // with its own +Nms anchor by adding the offset to its current ts.
+  const rel = events.map(e => ({ dt: Math.round(e.t - nowPerf), msg: e.msg }));
+  try {
+    ws.send(JSON.stringify({ cmd: "ws_probe_events", tab: _WS_PROBE_TAB_ID, events: rel }));
+  } catch {}
+}
+
+let _wsLastConnectAttemptAt = 0;
+let _wsAttemptCount = 0;
+
 export function connectWs() {
   // Close previous connection if any (prevents leaks during HMR)
   if (ws) {
@@ -340,12 +382,34 @@ export function connectWs() {
 
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${wsProto}//${location.host}/ws`;
+  _wsAttemptCount++;
+  _wsLastConnectAttemptAt = performance.now();
+  _wsProbe(`connect attempt #${_wsAttemptCount} → ${wsUrl}`);
   ws = new WebSocket(wsUrl);
   // Required so msgpack frames arrive as ArrayBuffer, not Blob (Blob decode
   // is async and would need an extra await). JSON text frames are unaffected.
   ws.binaryType = "arraybuffer";
 
+  // Connect-attempt timeout. Vite's WS proxy holds upstream upgrades open
+  // indefinitely while the gateway is down (browser sees a pending
+  // CONNECTING state with no error). Probe data on 2026-05-01 caught a
+  // single attempt sitting in CONNECTING for 272 s. We force-close after
+  // 3 s so onclose fires and the normal 2 s setTimeout reconnect cadence
+  // takes over — worst-case 5 s/cycle instead of "however long Vite
+  // waits." Inside the TEMP RECONNECT-TIMING PROBE block so removal is
+  // localised.
+  const _connectTimer = setTimeout(() => {
+    if (ws && ws.readyState === WebSocket.CONNECTING) {
+      _wsProbe(`forcing close on stuck CONNECTING (3000 ms)`);
+      try { ws.close(); } catch {}
+    }
+  }, 3000);
+
   ws.onopen = () => {
+    clearTimeout(_connectTimer);
+    const dt = Math.round(performance.now() - _wsLastConnectAttemptAt);
+    _wsProbe(`open after ${dt}ms (attempt #${_wsAttemptCount})`);
+    _wsAttemptCount = 0;
     connected.value = true;
     serverShuttingDown.value = false;
     _hbWorker = new Worker(new URL("./heartbeatWorker.ts", import.meta.url), { type: "module" });
@@ -358,15 +422,29 @@ export function connectWs() {
       }
     };
     _hbWorker.postMessage({ cmd: "start" });
+    // Flush probe buffer to the gateway log so the disconnect window
+    // becomes visible alongside [BOOT]/[CONN] markers.
+    _wsProbeFlush();
   };
 
-  ws.onclose = () => {
+  ws.onerror = (e) => {
+    const dtAttempt = Math.round(performance.now() - _wsLastConnectAttemptAt);
+    _wsProbe(`error event after ${dtAttempt}ms type=${(e as Event).type ?? "?"}`);
+  };
+
+  ws.onclose = (ev) => {
+    clearTimeout(_connectTimer);
+    const dtAttempt = Math.round(performance.now() - _wsLastConnectAttemptAt);
+    _wsProbe(
+      `close code=${ev.code} reason=${JSON.stringify(ev.reason ?? "")} clean=${ev.wasClean} sinceAttempt=${dtAttempt}ms`
+    );
     connected.value = false;
     armed.value = false;     // new connection starts disarmed
     latency.value = null;
     networkLatency.value = null;
     _heartbeatSentAt = _rtSentAt = 0;
     _stopHeartbeatWorker();
+    _wsProbe(`scheduling reconnect in 2000ms`);
     setTimeout(() => connectWs(), 2000);
   };
 

@@ -607,6 +607,11 @@ _status_event: Optional[asyncio.Event] = None
 _status_tick_stats: Dict[str, Any] = {
     "gen": 0, "tick_start": 0.0, "expected": 0, "done": 0,
     "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
+    # === TEMP STATUS-PAYLOAD PROBE === aggregate per-tick wire metrics so
+    # the [STATUS] outlier log can attribute encode cost to actual payload
+    # size. tool_meta_count: how many clients got a tool_meta block this
+    # tick (suspected reconnect-storm inflator).
+    "bytes_sum": 0, "bytes_max": 0, "tool_meta_count": 0,
 }
 
 # Serializes all CMD.* access. The LinuxCNC NML command channel is not
@@ -720,11 +725,25 @@ async def _status_poller():
     _last_pid_check = 0.0
     _cycle_start = time.monotonic()
     _was_active = True  # Experiment 4: track active/idle edge for instant wake-up
+    # === TEMP IDLE-GATEWAY PROBE === log when the gateway is up but no
+    # clients are connected. Helps tell "all tabs reconnected fast" from
+    # "tabs are stuck somewhere and never reaching us" in the log alone.
+    _idle_last_log = 0.0
     while True:
         try:
             _cycle_start = time.monotonic()
 
             if not _clients:
+                # Periodic idle marker (every ~5s) so the operator can see
+                # at a glance that the gateway is alive but unconnected.
+                if _cycle_start - _idle_last_log >= 5.0:
+                    _uptime_ms = (_cycle_start - _T0) * 1000
+                    print(
+                        f"[IDLE] +{_uptime_ms:.0f}ms gateway up, "
+                        f"0 clients connected (waiting)",
+                        flush=True,
+                    )
+                    _idle_last_log = _cycle_start
                 await asyncio.sleep(0.5)
                 continue
 
@@ -953,12 +972,24 @@ async def _status_poller():
                     or _s["send_max"] > 20
                     or _wall_ms > 400
                 ):
+                    # Include this tick's poller-side breakdown so outliers
+                    # show *where* the time went (poll vs encode vs send vs
+                    # untracked overhead). Without these, a 510 ms wall_ms
+                    # with 66 ms of encode+send leaves ~444 ms unexplained.
                     print(
                         f"[STATUS] tick gen={_s['gen']} "
                         f"clients={_s['done']}/{_s['expected']} "
+                        f"poll_ms={poll_ms:.0f} "
+                        f"errors_ms={errors_ms:.0f} "
+                        f"parse_ms={parse_ms:.0f} "
+                        f"overhead_ms={overhead_ms:.0f} "
+                        f"shared_encode_ms={shared_encode_ms:.0f} "
                         f"encode_sum_ms={_s['encode_sum']:.0f} "
                         f"send_sum_ms={_s['send_sum']:.0f} "
                         f"send_max_ms={_s['send_max']:.0f} "
+                        f"bytes_sum={_s['bytes_sum']} "
+                        f"bytes_max={_s['bytes_max']} "
+                        f"tool_meta_n={_s['tool_meta_count']} "
                         f"wall_ms={_wall_ms:.0f}",
                         flush=True,
                     )
@@ -975,6 +1006,7 @@ async def _status_poller():
                 "tick_start": time.monotonic(),
                 "expected": len(_clients),
                 "done": 0, "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
+                "bytes_sum": 0, "bytes_max": 0, "tool_meta_count": 0,
             })
             if old_evt is not None:
                 old_evt.set()
@@ -3356,6 +3388,11 @@ def register_bg_task(t: asyncio.Task) -> asyncio.Task:
 @asynccontextmanager
 async def lifespan(app: "FastAPI"):
     _dbg("BOOT", "lifespan startup yield (app ready)")
+    # === TEMP IDLE-GATEWAY PROBE === start the status poller from lifespan
+    # rather than waiting for the first WS connect, so the [IDLE] log fires
+    # during the pre-first-client window. The poller's `if not _clients`
+    # branch sleeps cheaply, so running from boot is harmless.
+    _start_status_poller()
     yield
     # ---- Shutdown ----
     # Order matters. Each step is bounded so a stuck client/socket can't block
@@ -4512,7 +4549,7 @@ async def ws_endpoint(ws: WebSocket):
                         _clients[client_id]["hb_mono"] = 0.0
 
                 pre_send = time.monotonic()
-                _prev_encode_ms, _ = await ws_send_measured(ws, status_msg)
+                _prev_encode_ms, _bytes_sent = await ws_send_measured(ws, status_msg)
                 _prev_send_ms = round((time.monotonic() - pre_send) * 1000, 2)
 
                 # Contribute to per-tick aggregate stats (logged by poller on
@@ -4524,6 +4561,12 @@ async def ws_endpoint(ws: WebSocket):
                     _status_tick_stats["send_sum"] += _prev_send_ms
                     if _prev_send_ms > _status_tick_stats["send_max"]:
                         _status_tick_stats["send_max"] = _prev_send_ms
+                    # === TEMP STATUS-PAYLOAD PROBE === wire-size accounting.
+                    _status_tick_stats["bytes_sum"] += _bytes_sent
+                    if _bytes_sent > _status_tick_stats["bytes_max"]:
+                        _status_tick_stats["bytes_max"] = _bytes_sent
+                    if "tool_meta" in status_msg:
+                        _status_tick_stats["tool_meta_count"] += 1
 
                 # Log timing to file if enabled
                 if _timing_log_enabled and "timing" in status_msg:
@@ -4682,6 +4725,39 @@ async def ws_endpoint(ws: WebSocket):
                     _clients[client_id]["last_hb"] = time.time()
                     _clients[client_id]["hb_mono"] = time.monotonic()
                 await ws_send_json(ws, {"type": "pong"})
+                continue
+
+            if msg.get("cmd") == "ws_probe_events":
+                # === TEMP RECONNECT-TIMING PROBE === (matches client-side
+                # _wsProbe). Buffered events from a tab that just reconnected.
+                # Each event has dt (ms before *now* on the client clock,
+                # always ≤ 0) and msg. Translate dt to a gateway-relative
+                # +Nms by adding it to the current gateway offset from _T0.
+                # The result is a single timeline with [BOOT]/[CONN] from
+                # the gateway and [WS-PROBE] from each tab — read the log
+                # in order to see the reconnect window.
+                tab = msg.get("tab", "?????")
+                events = msg.get("events", [])
+                if not isinstance(events, list):
+                    continue
+                now_offset_ms = (time.monotonic() - _T0) * 1000
+                print(
+                    f"[WS-PROBE] +{now_offset_ms:.0f}ms tab={tab} client#{client_id} "
+                    f"flushed {len(events)} events",
+                    flush=True,
+                )
+                for ev in events:
+                    try:
+                        dt = int(ev.get("dt", 0))
+                        ev_msg = str(ev.get("msg", ""))
+                        ev_offset_ms = now_offset_ms + dt
+                        sign = "+" if ev_offset_ms >= 0 else ""
+                        print(
+                            f"[WS-PROBE]   {sign}{ev_offset_ms:.0f}ms tab={tab}  {ev_msg}",
+                            flush=True,
+                        )
+                    except Exception:
+                        pass
                 continue
 
             if msg.get("cmd") == "arm":

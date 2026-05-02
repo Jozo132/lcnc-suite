@@ -3,6 +3,7 @@ import { ref as _ref } from "vue";
 import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { buildToolProfile, splitProfileAt, buildToolGeometry, buildHolderGeometry, type ToolMeta } from "./toolGeometry";
+import { loadGeometryFromIDB, storeGeometryInIDB, pruneStaleVersions } from "./geometryCache";
 
 
 // ---- Central caches (shared across ALL ThreeViewer instances) ----
@@ -47,21 +48,36 @@ export function loadMachineAssets(init: any, onProgress?: (msg: string) => void)
     const timer = setTimeout(() => abort.abort(new DOMException("STL fetch timed out after 120s", "TimeoutError")), 120_000);
     try {
       const base = init.stl_base_url;
-      const toFetch = (init.parts ?? []).filter((p: any) => !_geometryCache.has(p.id));
+      const parts = init.parts ?? [];
+      const urlFor = (file: string) => base.endsWith("/") ? `${base}${file}` : `${base}/${file}`;
+      const toFetch = parts.filter((p: any) => !_geometryCache.has(p.id));
+
+      // Drop IndexedDB entries whose ?v= no longer matches the active set.
+      // Bounds the cache as users update STLs (?v=mtime changes → new key).
+      pruneStaleVersions(new Set(parts.map((p: any) => urlFor(p.file)))).catch(() => {});
 
       if (toFetch.length === 0) {
         onProgress?.("All STLs already cached");
       }
 
       const results = await Promise.allSettled(toFetch.map(async (p: any) => {
-        const url = base.endsWith("/") ? `${base}${p.file}` : `${base}/${p.file}`;
+        const url = urlFor(p.file);
         const t0 = performance.now();
-        onProgress?.(`Fetching ${p.id}…`);
-        const geom = await fetchAndParseStl(url, abort.signal);
-        geom.computeVertexNormals();
+        // L2: parsed geometry from IndexedDB. Same-version key (?v=mtime)
+        // means no re-fetch + no re-parse on reconnect / reload.
+        let geom = await loadGeometryFromIDB(url);
+        if (geom) {
+          onProgress?.(`✓ ${p.id} (cache, ${((performance.now() - t0) / 1000).toFixed(2)}s)`);
+        } else {
+          onProgress?.(`Fetching ${p.id}…`);
+          geom = await fetchAndParseStl(url, abort.signal);
+          geom.computeVertexNormals();
+          // Fire-and-forget: don't block first paint on the IDB write.
+          storeGeometryInIDB(url, geom).catch(e => console.warn("[idb] store", e));
+          onProgress?.(`✓ ${p.id} (${((performance.now() - t0) / 1000).toFixed(1)}s)`);
+        }
         geom.userData._shared = true;
         _geometryCache.set(p.id, geom);
-        onProgress?.(`✓ ${p.id} (${((performance.now() - t0) / 1000).toFixed(1)}s)`);
       }));
 
       const failed: string[] = [];

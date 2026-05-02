@@ -273,7 +273,20 @@ if [[ "$BROWSER" == "1" ]]; then
   ( sleep 1.5 && xdg-open "http://localhost:$PORT" 2>/dev/null ) &
 fi
 
-echo "lcnc-suite: serving on http://$HOST:$PORT"
+# Print Vite-style banner so the operator sees the LAN URL too. When
+# HOST=0.0.0.0 (default), enumerate both loopback and the first non-
+# loopback IPv4 so a remote browser knows what to connect to. When HOST
+# is an explicit IP, print just that.
+echo "lcnc-suite: PROD mode — gateway on :$PORT"
+if [[ "$HOST" == "0.0.0.0" ]]; then
+  echo "  ➜  Local:   http://localhost:$PORT/"
+  _LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -n "$_LAN_IP" ]]; then
+    echo "  ➜  Network: http://$_LAN_IP:$PORT/"
+  fi
+else
+  echo "  ➜  http://$HOST:$PORT/"
+fi
 
 # Single signal authority: terminal signals reach the launcher only;
 # the trap is the only path that signals the gateway. Trap forwards
