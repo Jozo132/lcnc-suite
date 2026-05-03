@@ -1193,6 +1193,31 @@ def _poll_and_serialize():
     return st, out
 
 
+# Probe result widget names from DEBUG EVAL messages → friendly keys.
+# Used by _status_poller below; declared here so the reference at use site
+# isn't a forward-reference into the file.
+_PROBE_WIDGET_MAP = {
+    "x_probed_width":          "x_width",
+    "x_center_probed":         "x_center",
+    "y_probed_width":          "y_width",
+    "y_center_probed":         "y_center",
+    "x_minus_probed_position": "x_minus",
+    "x_plus_probed_position":  "x_plus",
+    "y_minus_probed_position": "y_minus",
+    "y_plus_probed_position":  "y_plus",
+    "z_minus_probed_position": "z_minus",
+    "averaged_diam":           "diameter",
+    "edge_delta":              "edge_delta",
+    "edge_angle":              "edge_angle",
+    "calibration_offset_3032": "cal_offset",
+}
+
+_PROBE_EVAL_RE = re.compile(
+    r'EVAL\[vcp\.getWidget\{"(\w+)"\}\.setValue\{([^}]+)\}\]',
+    re.IGNORECASE,
+)
+
+
 async def _status_poller():
     """Single global poller — polls LinuxCNC once per cycle for all clients.
 
@@ -3786,28 +3811,6 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
 
 
-# Probe result widget names from DEBUG EVAL messages → friendly keys
-_PROBE_WIDGET_MAP = {
-    "x_probed_width":          "x_width",
-    "x_center_probed":         "x_center",
-    "y_probed_width":          "y_width",
-    "y_center_probed":         "y_center",
-    "x_minus_probed_position": "x_minus",
-    "x_plus_probed_position":  "x_plus",
-    "y_minus_probed_position": "y_minus",
-    "y_plus_probed_position":  "y_plus",
-    "z_minus_probed_position": "z_minus",
-    "averaged_diam":           "diameter",
-    "edge_delta":              "edge_delta",
-    "edge_angle":              "edge_angle",
-    "calibration_offset_3032": "cal_offset",
-}
-
-_PROBE_EVAL_RE = re.compile(
-    r'EVAL\[vcp\.getWidget\{"(\w+)"\}\.setValue\{([^}]+)\}\]',
-    re.IGNORECASE,
-)
-
 # -----------------------------
 # Viewer support (Web 3D)
 # -----------------------------
@@ -5645,39 +5648,6 @@ async def ws_endpoint(ws: WebSocket):
                     _clients[client_id].last_hb = time.time()
                     _clients[client_id].hb_mono = time.monotonic()
                 await ws_send_json(ws, {"type": "pong"})
-                continue
-
-            if msg.get("cmd") == "ws_probe_events":
-                # === TEMP RECONNECT-TIMING PROBE === (matches client-side
-                # _wsProbe). Buffered events from a tab that just reconnected.
-                # Each event has dt (ms before *now* on the client clock,
-                # always ≤ 0) and msg. Translate dt to a gateway-relative
-                # +Nms by adding it to the current gateway offset from _T0.
-                # The result is a single timeline with [BOOT]/[CONN] from
-                # the gateway and [WS-PROBE] from each tab — read the log
-                # in order to see the reconnect window.
-                tab = msg.get("tab", "?????")
-                events = msg.get("events", [])
-                if not isinstance(events, list):
-                    continue
-                now_offset_ms = (time.monotonic() - _T0) * 1000
-                print(
-                    f"[WS-PROBE] +{now_offset_ms:.0f}ms tab={tab} client#{client_id} "
-                    f"flushed {len(events)} events",
-                    flush=True,
-                )
-                for ev in events:
-                    try:
-                        dt = int(ev.get("dt", 0))
-                        ev_msg = str(ev.get("msg", ""))
-                        ev_offset_ms = now_offset_ms + dt
-                        sign = "+" if ev_offset_ms >= 0 else ""
-                        print(
-                            f"[WS-PROBE]   {sign}{ev_offset_ms:.0f}ms tab={tab}  {ev_msg}",
-                            flush=True,
-                        )
-                    except Exception:
-                        pass
                 continue
 
             if msg.get("cmd") == "arm":

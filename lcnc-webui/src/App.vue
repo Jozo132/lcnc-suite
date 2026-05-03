@@ -854,9 +854,9 @@ const machineParts = computed<Array<{ id: string; group: string | null; directio
   } else if (kin && typeof kin === "object") {
     for (const key of Object.keys(kin)) groupDir[key] = key;
   }
-  return (vi.parts as any[]).map((p: any) => {
-    const grp = (p.group ?? p.parent ?? null) as string | null;
-    return { id: p.id as string, group: grp, direction: grp ? (groupDir[grp] ?? null) : null };
+  return vi.parts.map(p => {
+    const grp = p.group ?? p.parent ?? null;
+    return { id: p.id, group: grp, direction: grp ? (groupDir[grp] ?? null) : null };
   });
 });
 

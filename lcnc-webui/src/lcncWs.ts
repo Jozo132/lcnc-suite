@@ -1,7 +1,7 @@
 import { ref, shallowRef } from "vue";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { type WsCommand, OPERATOR_ERROR } from "./lcnc";
-import { updateServerCache } from "./defaults";
+import { updateServerCache, type Vec3 } from "./defaults";
 
 export interface LcncMessage {
   id: number;
@@ -325,8 +325,55 @@ export function getTimingCsv(): string {
   return lines.join("\n");
 }
 
-export const viewerInit = ref<any>(null);
-export const viewerGcode = ref<any>(null);
+// Viewer payloads. Static `viewer_init` (machine description, INI config,
+// kinematics, parts list) is delivered once per WS connection; dynamic
+// `viewer_gcode` is delivered on every program load and carries the parsed
+// preview polylines. Types live here so consumers (App.vue, ThreeViewer.vue)
+// share one shape — no per-callsite `as any` / `as ViewerInit | null`.
+export interface ViewerPart {
+  id: string;
+  file: string;
+  group?: string | null;
+  translate?: Vec3;
+  rotate?: Vec3;
+  // Legacy field names kept for backward compatibility with older payloads.
+  parent?: string | null;
+  t?: Vec3;
+  r?: Vec3;
+}
+export type KinematicsList =
+  | Array<{
+      group: string;
+      joint: number;
+      type?: "translate" | "rotate";
+      direction?: "x" | "y" | "z";
+      axis?: [number, number, number];
+      sign: number;
+    }>
+  | Record<string, { axis: number; sign: number }>;
+export interface ViewerInit {
+  units?: "mm" | "inch" | string;
+  stl_base_url: string;
+  groups?: Array<{ id: string; parent: string; translate?: Vec3 }>;
+  parts: ViewerPart[];
+  kinematics: KinematicsList;
+  workGroup?: string;
+  toolGroup?: string;
+  machine_bounds?: { origin: Vec3; size: Vec3 };
+  axes?: string[];
+  ini_config?: Record<string, any>;
+  [key: string]: any;  // gateway adds occasional extras (e.g. timestamp, git_sha)
+}
+export interface ViewerGcode {
+  file?: string | null;
+  feed?: number[][];
+  feed_lines?: number[];
+  rapid?: number[][];
+  [key: string]: any;  // stats fields are folded in by GcodePanel watcher
+}
+
+export const viewerInit = ref<ViewerInit | null>(null);
+export const viewerGcode = ref<ViewerGcode | null>(null);
 // Tool-table version pinged by gateway after every save/add/delete/import.
 // Components watch this ref and re-fetch via the existing get_tool_table RPC,
 // so a remote edit propagates without manual refresh.
@@ -419,7 +466,9 @@ function _fetchPreview(version: number) {
     .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
     .then(buf => {
       if (_previewLastVersion !== version) return;
-      viewerGcode.value = msgpackDecode(new Uint8Array(buf)) as any;
+      // msgpack decode returns `unknown`; we trust the gateway-side encoder
+      // to produce a ViewerGcode-shaped payload.
+      viewerGcode.value = msgpackDecode(new Uint8Array(buf)) as ViewerGcode;
       previewLoadError.value = null;
     })
     .catch(err => {
@@ -451,45 +500,6 @@ function _stopHeartbeatWorker() {
   }
 }
 
-// === TEMP RECONNECT-TIMING PROBE === (matches gateway-side LIFECYCLE PROBE).
-// In-memory event buffer of reconnect milestones. Each event records what
-// the browser saw locally — `ws.onclose` fired, reconnect attempt N
-// starting, etc. On the next successful WS open the buffer is flushed to
-// the gateway as a single `{cmd:"ws_probe_events"}` message; the gateway
-// prints them into /tmp/lcnc-gateway.log so we can read one log to see
-// the full client+server timeline. Remove with the rest of the probe
-// block once root cause is identified. Search `_wsProbe` to find call
-// sites.
-interface _WsProbeEvent { t: number; msg: string; }
-const _wsProbeBuf: _WsProbeEvent[] = [];
-const _WS_PROBE_TAB_ID: string = (() => {
-  try {
-    let id = sessionStorage.getItem("ws-probe-tab");
-    if (!id) {
-      id = Math.random().toString(36).slice(2, 8);
-      sessionStorage.setItem("ws-probe-tab", id);
-    }
-    return id;
-  } catch { return "?????"; }
-})();
-function _wsProbe(msg: string) {
-  _wsProbeBuf.push({ t: performance.now(), msg });
-  // Cap to last 200 events so a stuck tab doesn't grow this unboundedly.
-  if (_wsProbeBuf.length > 200) _wsProbeBuf.splice(0, _wsProbeBuf.length - 200);
-}
-function _wsProbeFlush() {
-  if (_wsProbeBuf.length === 0) return;
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  const events = _wsProbeBuf.splice(0, _wsProbeBuf.length);
-  const nowPerf = performance.now();
-  // Translate to relative offsets (ms before now). Gateway emits these
-  // with its own +Nms anchor by adding the offset to its current ts.
-  const rel = events.map(e => ({ dt: Math.round(e.t - nowPerf), msg: e.msg }));
-  try {
-    ws.send(JSON.stringify({ cmd: "ws_probe_events", tab: _WS_PROBE_TAB_ID, events: rel }));
-  } catch {}
-}
-
 let _wsLastConnectAttemptAt = 0;
 let _wsAttemptCount = 0;
 let _wsLastCloseAt = 0;
@@ -508,7 +518,6 @@ export function connectWs() {
   const wsUrl = `${wsProto}//${location.host}/ws`;
   _wsAttemptCount++;
   _wsLastConnectAttemptAt = performance.now();
-  _wsProbe(`connect attempt #${_wsAttemptCount} → ${wsUrl}`);
   emitTelemetry("ws.connect.attempt", {
     attempt: _wsAttemptCount,
     last_close_code: _wsLastCloseCode,
@@ -525,11 +534,10 @@ export function connectWs() {
   // single attempt sitting in CONNECTING for 272 s. We force-close after
   // 3 s so onclose fires and the normal 2 s setTimeout reconnect cadence
   // takes over — worst-case 5 s/cycle instead of "however long Vite
-  // waits." Inside the TEMP RECONNECT-TIMING PROBE block so removal is
-  // localised.
+  // waits." This is the load-bearing mitigation; the surrounding _wsProbe
+  // diagnostic that originally lived alongside it has been removed.
   const _connectTimer = setTimeout(() => {
     if (ws && ws.readyState === WebSocket.CONNECTING) {
-      _wsProbe(`forcing close on stuck CONNECTING (3000 ms)`);
       try { ws.close(); } catch {}
     }
   }, 3000);
@@ -537,7 +545,6 @@ export function connectWs() {
   ws.onopen = () => {
     clearTimeout(_connectTimer);
     const dt = Math.round(performance.now() - _wsLastConnectAttemptAt);
-    _wsProbe(`open after ${dt}ms (attempt #${_wsAttemptCount})`);
     emitTelemetry("ws.open", { dt_ms: dt, attempt: _wsAttemptCount });
     _wsAttemptCount = 0;
     connected.value = true;
@@ -572,23 +579,16 @@ export function connectWs() {
       }
     };
     _hbWorker.postMessage({ cmd: "start" });
-    // Flush probe buffer to the gateway log so the disconnect window
-    // becomes visible alongside [BOOT]/[CONN] markers.
-    _wsProbeFlush();
   };
 
   ws.onerror = (e) => {
     const dtAttempt = Math.round(performance.now() - _wsLastConnectAttemptAt);
-    _wsProbe(`error event after ${dtAttempt}ms type=${(e as Event).type ?? "?"}`);
     emitTelemetry("ws.error", { dt_ms: dtAttempt, type: (e as Event).type ?? "?" });
   };
 
   ws.onclose = (ev) => {
     clearTimeout(_connectTimer);
     const dtAttempt = Math.round(performance.now() - _wsLastConnectAttemptAt);
-    _wsProbe(
-      `close code=${ev.code} reason=${JSON.stringify(ev.reason ?? "")} clean=${ev.wasClean} sinceAttempt=${dtAttempt}ms`
-    );
     _wsLastCloseAt = performance.now();
     _wsLastCloseCode = ev.code;
     emitTelemetry("ws.close", {
@@ -615,7 +615,6 @@ export function connectWs() {
     halSignals.value = [];
     halParams.value = [];
     halInitialized.value = false;
-    _wsProbe(`scheduling reconnect in 2000ms`);
     setTimeout(() => connectWs(), 2000);
   };
 

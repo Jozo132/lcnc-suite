@@ -113,7 +113,7 @@ import { computed, inject, onMounted, onUnmounted, reactive, ref, watch, type Re
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { Text } from "troika-three-text";
 
-import { viewerInit, viewerGcode, gcodeContent, status } from "./lcncWs";
+import { viewerInit, viewerGcode, gcodeContent, status, type ViewerInit, type ViewerGcode } from "./lcncWs";
 import { loadViewerDefaults, loadCameraDefaults, saveCameraDefaults, ALL_LAYERS, settingsVersion, type Vec3, type Layer } from "./defaults";
 import { fmtCoord } from "./format";
 import ViewCube from "./ViewCube.vue";
@@ -145,33 +145,8 @@ function closePip() {
   saveCameraDefaults({ ...cur, pipVisible: false });
 }
 
-type ViewerInit = {
-  units?: "mm" | "inch" | string;
-  stl_base_url: string;
-  groups?: Array<{ id: string; parent: string; translate?: Vec3 }>;
-  parts: Array<{
-    id: string;
-    file: string;
-    group?: string | null;
-    translate?: Vec3;
-    rotate?: Vec3;
-    // Legacy field names (backward compat)
-    parent?: string | null;
-    t?: Vec3;
-    r?: Vec3;
-  }>;
-  kinematics: Array<{
-    group: string;
-    joint: number;
-    type?: "translate" | "rotate";     // default: "translate"
-    direction?: "x" | "y" | "z";      // standard axis (required unless axis[] provided)
-    axis?: [number, number, number];   // arbitrary rotation axis vector (Phase 2)
-    sign: number;
-  }> | Record<string, { axis: number; sign: number }>;  // accept legacy object form
-  workGroup?: string;
-  toolGroup?: string;
-  machine_bounds?: { origin: Vec3; size: Vec3 };
-};
+// ViewerInit and ViewerGcode imported from lcncWs.ts — shared with App.vue
+// so the ref types and consumer types are in lockstep.
 
 type ViewPreset = "top" | "bottom" | "left" | "right" | "front" | "back" | "iso" | "dimetric" | "reset";
 
@@ -205,13 +180,6 @@ type ViewerState = {
 };
 
 
-
-type ViewerGcode = {
-  file?: string;
-  feed?: number[][];
-  feed_lines?: number[];     // parallel: g-code line number per feed point
-  rapid?: number[][];
-};
 
 const props = defineProps<{
   g5xLabel?: string;
@@ -1355,7 +1323,7 @@ function applyState(init: ViewerInit, st: ViewerState) {
 function updateOverflowCheck() {
   toolpathOverflow.value = false;
   if (!toolpathBBox || !workOrigin) return;
-  const mb = (viewerInit.value as ViewerInit | null)?.machine_bounds;
+  const mb = viewerInit.value?.machine_bounds;
   if (!mb) return;
   const wo = workOrigin.position;
   // Machine bounds converted to work coordinates
@@ -1441,8 +1409,8 @@ function rebuildToolpathBounds() {
 
   toolpathBoundsLabels = new THREE.Group();
   const fs = Math.max(sx, sy, sz) * 0.05;
-  const unit = (viewerInit.value as ViewerInit | null)?.units === "in" ||
-               (viewerInit.value as ViewerInit | null)?.units === "inch" ? "in" : "mm";
+  const unit = viewerInit.value?.units === "in" ||
+               viewerInit.value?.units === "inch" ? "in" : "mm";
   const ox = toolpathBBox.min[0], oy = toolpathBBox.min[1], oz = toolpathBBox.min[2];
   const axes: [string, number, THREE.Vector3, string][] = [
     ["X", sx, new THREE.Vector3(ox + sx / 2, oy, oz), "#ff4444"],
@@ -1573,7 +1541,7 @@ function animate() {
   // Apply pending state before render (natural frame dropping —
   // if multiple status updates arrive between frames, only the latest is used)
   if (pendingState && viewerInit.value) {
-    applyState(viewerInit.value as ViewerInit, pendingState as ViewerState);
+    applyState(viewerInit.value, pendingState as ViewerState);
     pendingState = null;
 
     // Re-frame after first status update so camera accounts for actual axis positions
@@ -1705,8 +1673,8 @@ onMounted(() => {
   // (e.g. dynamically-added panels after WebSocket connected).
   // The immediate watcher fires during setup (before scene exists) and bails,
   // so we must call buildFromInit here now that scene is ready.
-  if (viewerInit.value) buildFromInit(viewerInit.value as ViewerInit);
-  if (viewerGcode.value) applyGcode(viewerGcode.value as ViewerGcode);
+  if (viewerInit.value) buildFromInit(viewerInit.value);
+  if (viewerGcode.value) applyGcode(viewerGcode.value);
 
   // Apply saved defaults (self-contained — no external wiring needed)
   applyViewerDefaults({ initialMount: true });
@@ -1782,7 +1750,7 @@ onUnmounted(() => {
 // Rebuild when init arrives — dedup by content to prevent unnecessary scene rebuilds
 let _lastInitJson = "";
 watch(
-  () => viewerInit.value as ViewerInit | null,
+  () => viewerInit.value,
   (init) => {
     if (!init) return;
     const json = JSON.stringify(init);
@@ -1834,7 +1802,7 @@ watch(
 
 // Apply gcode preview when it arrives
 watch(
-  () => viewerGcode.value as ViewerGcode | null,
+  () => viewerGcode.value,
   (g) => {
     if (g) applyGcode(g);
   },
