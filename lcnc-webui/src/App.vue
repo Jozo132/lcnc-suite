@@ -29,6 +29,7 @@ import { loadViewerDefaults, saveViewerDefaults, loadMachineDefaults, loadDispla
 import { buildToolsetterVarMap } from "./toolsetterVars";
 import { useGamepad } from "./useGamepad";
 import { useMediaMql } from "./useMediaMql";
+import { useDialogState } from "./useDialogState";
 import { forceStopAllJogs, initJogPointerSafety, destroyJogPointerSafety } from "./useJogPointers";
 import {
   INTERP_IDLE, INTERP_READING, INTERP_PAUSED, INTERP_WAITING,
@@ -320,7 +321,6 @@ const viewerProjection = ref<Projection>(_vd.projection);
 
 // G-code viewer — gcodeContent is fetched via HTTP by lcncWs on viewer_gcode
 const gcodeStats = ref<GcodeStats | null>(null);
-const statsDialogOpen = ref(false);
 
 // SVG donut chart segments (distance breakdown: rapid / linear / arc)
 const DONUT_R = 40;
@@ -560,17 +560,6 @@ const toolChangeRequested = computed(() => !!st.value.tool_change_requested);
 const toolChangeTool = computed(() => st.value.tool_change_tool ?? null);
 function confirmToolChange() { send({ cmd: "confirm_tool_change" }); }
 
-// Compensation confirmation dialog
-const compConfirmPending = ref<boolean | null>(null);
-function requestCompToggle(enable: boolean) { compConfirmPending.value = enable; }
-function confirmCompToggle() {
-  if (compConfirmPending.value !== null) {
-    send({ cmd: 'set_compensation', enable: compConfirmPending.value });
-    compConfirmPending.value = null;
-  }
-}
-function cancelCompToggle() { compConfirmPending.value = null; }
-
 const feedSlider = ref(100);
 const spindleSlider = ref(100);
 const rapidSlider = ref(100);
@@ -691,45 +680,24 @@ function toggleBlockDelete() {
   send({ cmd: "set_block_delete", value: !blockDeleteOn.value });
 }
 
-// Dialog state
-const settingsDialogOpen = ref(false);
-const settingsInitialTab = ref<string | null>(null);
-const gcodeRefOpen = ref(false);
-const gcodeRefInitialSearch = ref("");
-const messagesDialogOpen = ref(false);
-
-function closeAllDialogs() {
-  settingsDialogOpen.value = false;
-  gcodeRefOpen.value = false;
-  messagesDialogOpen.value = false;
-}
-
-function openDialog(name: "settings" | "gcodeRef" | "messages") {
-  const isOpen = (name === "settings" && settingsDialogOpen.value)
-    || (name === "gcodeRef" && gcodeRefOpen.value)
-    || (name === "messages" && messagesDialogOpen.value);
-  closeAllDialogs();
-  if (!isOpen) {
-    if (name === "settings") settingsDialogOpen.value = true;
-    else if (name === "gcodeRef") gcodeRefOpen.value = true;
-    else if (name === "messages") { messagesDialogOpen.value = true; markMessagesRead(); }
-  }
-}
-
-function openSettingsTab(tab: string) {
-  settingsInitialTab.value = tab;
-  settingsDialogOpen.value = true;
-}
-
-watch(settingsDialogOpen, (open) => {
-  if (!open) settingsInitialTab.value = null;
-});
-
-function openGcodeRef(code?: string) {
-  gcodeRefInitialSearch.value = code ?? "";
-  openDialog("gcodeRef");
-}
-const showShutdownConfirm = ref(false);
+// Dialog state — see useDialogState.ts. Holds settings, gcode-reference,
+// messages, shutdown-confirm, stats, and compensation-toggle dialogs.
+const {
+  settingsDialogOpen,
+  settingsInitialTab,
+  gcodeRefOpen,
+  gcodeRefInitialSearch,
+  messagesDialogOpen,
+  openDialog,
+  openSettingsTab,
+  openGcodeRef,
+  showShutdownConfirm,
+  statsDialogOpen,
+  compConfirmPending,
+  requestCompToggle,
+  confirmCompToggle,
+  cancelCompToggle,
+} = useDialogState({ markMessagesRead, send });
 
 // Macro state
 const userMacros = ref<MacroDef[]>(loadMacrosDefaults().macros);
