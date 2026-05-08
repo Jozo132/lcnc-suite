@@ -6,7 +6,6 @@ import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import MachineToggle from "./MachineToggle.vue";
 import MachineSlider from "./MachineSlider.vue";
-import MachineSelect from "./MachineSelect.vue";
 import MachineRadio from "./MachineRadio.vue";
 import MachineColor from "./MachineColor.vue";
 import {
@@ -18,15 +17,15 @@ import {
   type Layer, type ColorDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir, type SpindleFeedbackUnit,
   type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
-  type GamepadMapping, GAMEPAD_ACTIONS, DEFAULT_MAPPING, GAMEPAD_FALLBACK,
+  GAMEPAD_FALLBACK,
   STEP_RPM,
   loadKeyboardDefaults, type KeyboardDefaults, DEFAULT_KB_MAPPING,
 } from "./defaults";
 import { ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-vue-next";
-import GamepadLiveInput from "./GamepadLiveInput.vue";
 import DebugTab from "./DebugTab.vue";
 import HalshowTab from "./HalshowTab.vue";
 import KeyboardTab from "./KeyboardTab.vue";
+import GamepadTab from "./GamepadTab.vue";
 
 
 const themeMode = inject<Ref<ThemeMode>>("themeMode", ref("auto") as Ref<ThemeMode>);
@@ -174,11 +173,9 @@ function resetDisplay() {
 }
 
 function resetGamepad() {
-  const fb = { ...GAMEPAD_FALLBACK, mapping: { ...GAMEPAD_FALLBACK.mapping } };
-  for (const k of Object.keys(gpMapping) as (keyof GamepadMapping)[]) {
-    gpMapping[k] = fb.mapping[k];
-  }
-  emit("setGamepadConfig", fb);
+  // Server-synced reset: emit the fallback config; the parent updates the
+  // gamepadConfig prop, which GamepadTab mirrors via its own watch.
+  emit("setGamepadConfig", { ...GAMEPAD_FALLBACK, mapping: { ...GAMEPAD_FALLBACK.mapping } });
 }
 
 const resetActions: Record<string, () => void> = {
@@ -403,34 +400,6 @@ function resetMachineColor(id: string) {
   delete machineColors[id];
   save();
   setMachinePartColor(id, null);
-}
-
-// ─── Gamepad button mapping ─────────────────
-const GP_BTN_LABELS: Record<keyof GamepadMapping, string> = {
-  btn_a: "A", btn_b: "B", btn_x: "X", btn_y: "Y",
-  btn_lb: "LB", btn_rb: "RB", btn_lt: "LT", btn_rt: "RT",
-  btn_back: "Back", btn_start: "Start", btn_ls: "LS", btn_rs: "RS",
-};
-
-const gpMapping = reactive<GamepadMapping>({ ...(props.gamepadConfig?.mapping ?? DEFAULT_MAPPING) });
-
-watch(() => props.gamepadConfig?.mapping, (m) => {
-  if (!m) return;
-  for (const k of Object.keys(gpMapping) as (keyof GamepadMapping)[]) {
-    if (gpMapping[k] !== m[k]) gpMapping[k] = m[k];
-  }
-});
-
-// ─── Gamepad boolean wrappers (emit-based) ───
-const gpJogEnabled = computed({ get: () => props.gamepadConfig?.jogEnabled ?? false, set: (v: boolean) => { emit('setGamepadConfig', { ...props.gamepadConfig!, jogEnabled: v }); } });
-const gpButtonsEnabled = computed({ get: () => props.gamepadConfig?.buttonsEnabled ?? false, set: (v: boolean) => { emit('setGamepadConfig', { ...props.gamepadConfig!, buttonsEnabled: v }); } });
-const gpInvertX = computed({ get: () => props.gamepadConfig?.invertX ?? false, set: (v: boolean) => { emit('setGamepadConfig', { ...props.gamepadConfig!, invertX: v }); } });
-const gpInvertY = computed({ get: () => props.gamepadConfig?.invertY ?? false, set: (v: boolean) => { emit('setGamepadConfig', { ...props.gamepadConfig!, invertY: v }); } });
-const gpInvertZ = computed({ get: () => props.gamepadConfig?.invertZ ?? false, set: (v: boolean) => { emit('setGamepadConfig', { ...props.gamepadConfig!, invertZ: v }); } });
-
-function onGpMappingChanged() {
-  if (!props.gamepadConfig) return;
-  emit("setGamepadConfig", { ...props.gamepadConfig, mapping: { ...gpMapping } });
 }
 
 </script>
@@ -714,78 +683,12 @@ function onGpMappingChanged() {
       <template #gamepad>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-          <div class="stack-controls">
-            <div class="sub">Gamepad</div>
-            <div class="settingDesc">Use an Xbox, PlayStation, or standard gamepad to control the machine.</div>
-            <MachineToggle gate="inputConfig" v-model="gpJogEnabled" label="Enable gamepad jogging" />
-            <MachineToggle gate="inputConfig" v-model="gpButtonsEnabled" label="Enable gamepad buttons" />
-          </div>
-
-          <div class="sep"></div>
-
-          <div class="stack-controls">
-            <div class="sub">Connection</div>
-            <div class="settingDesc" :class="{ okText: props.gamepadConnected }">
-              {{ props.gamepadConnected ? props.gamepadName : 'No gamepad detected — connect one and press a button' }}
-            </div>
-          </div>
-
-          <div class="sep" v-if="props.gamepadConfig?.jogEnabled"></div>
-
-          <div v-if="props.gamepadConfig?.jogEnabled" class="stack-controls">
-            <div class="sub">Axis Inversion</div>
-            <div class="settingDesc">Flip axis direction if your gamepad moves the wrong way.</div>
-            <MachineToggle gate="inputConfig" v-model="gpInvertX" label="Invert X" />
-            <MachineToggle gate="inputConfig" v-model="gpInvertY" label="Invert Y" />
-            <MachineToggle gate="inputConfig" v-model="gpInvertZ" label="Invert Z" />
-          </div>
-
-          <div class="sep" v-if="props.gamepadConfig?.jogEnabled"></div>
-
-          <div v-if="props.gamepadConfig?.jogEnabled" class="stack-controls">
-            <div class="sub">Dead Zone & Live Input</div>
-            <div class="settingDesc">Ignore stick deflection below this threshold to prevent drift.</div>
-            <div class="sliderRow">
-              <MachineSlider
-                gate="inputConfig"
-                :min="0.05" :max="0.50" :step="0.01"
-                :modelValue="props.gamepadConfig?.deadZone ?? 0.15"
-                @update:modelValue="(v: number | undefined) => emit('setGamepadConfig', { ...props.gamepadConfig!, deadZone: v ?? 0.15 })"
-              />
-              <span class="sliderVal">{{ Math.round((props.gamepadConfig?.deadZone ?? 0.15) * 100) }}%</span>
-            </div>
-            <div v-if="props.gamepadConnected">
-              <div class="settingDesc">Move sticks and press buttons to verify mapping.</div>
-              <GamepadLiveInput :deadZone="props.gamepadConfig?.deadZone ?? 0.15" />
-            </div>
-          </div>
-
-          <div class="sep" v-if="props.gamepadConfig?.buttonsEnabled"></div>
-
-          <div v-if="props.gamepadConfig?.buttonsEnabled" class="stack-controls">
-            <div class="sub">Button Mapping</div>
-            <table class="gpMapTable">
-              <tbody>
-                <tr><td class="gpMapKey">Left Stick</td><td>XY continuous jog (proportional)</td></tr>
-                <tr><td class="gpMapKey">Right Stick Y</td><td>Z continuous jog (proportional)</td></tr>
-                <tr><td class="gpMapKey">D-pad</td><td>XY discrete jog (full speed)</td></tr>
-                <tr v-for="(label, key) in GP_BTN_LABELS" :key="key">
-                  <td class="gpMapKey">{{ label }}</td>
-                  <td>
-                    <MachineSelect
-                      gate="inputConfig"
-                      class="gpActionSelect"
-                      v-model="gpMapping[key]"
-                      @update:modelValue="onGpMappingChanged"
-                    >
-                      <option v-for="a in GAMEPAD_ACTIONS" :key="a.value" :value="a.value">{{ a.label }}</option>
-                    </MachineSelect>
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
+          <GamepadTab
+            :gamepad-config="props.gamepadConfig"
+            :gamepad-connected="props.gamepadConnected"
+            :gamepad-name="props.gamepadName"
+            @set-gamepad-config="emit('setGamepadConfig', $event)"
+          />
           <div class="resetRow">
             <MachineBtn type="reset" @click="resetTarget = 'gamepad'">Reset Gamepad</MachineBtn>
           </div>
@@ -1029,29 +932,6 @@ function onGpMappingChanged() {
   justify-content: flex-end;
   gap: var(--gap-controls);
   margin-top: var(--gap-section);
-}
-
-/* ── Gamepad settings ─────────────────────────────────────────── */
-
-.gpMapTable {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.gpMapTable td {
-  padding: 4px 8px;
-  font-size: var(--fs-sm);
-  border-bottom: 1px solid var(--border);
-}
-
-.gpMapKey {
-  font-weight: var(--fw-semibold);
-  white-space: nowrap;
-  width: 1%;
-}
-
-.gpActionSelect {
-  width: 100%;
 }
 
 </style>
