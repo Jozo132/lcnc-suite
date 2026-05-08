@@ -237,20 +237,23 @@ fieldset:disabled textarea {
   cursor: not-allowed;
 }
 /* Legend children are exempt from fieldset:disabled per HTML spec —
-   restore opacity so Arm/E-Stop are never visually dimmed.
-   Two anchor patterns:
-     1. Controls inside an enabled inner Gate (gate="always") — original
-        SafetyStrip layout pre-2026-05.
-     2. Controls inside a plain layout div (.btnGate) — current SafetyStrip
-        layout after the cosmetic-Gate cleanup.
-   Both produce the same operator semantics: Arm/E-Stop look fully
-   enabled while disarmed. Machine On (still inside <Gate gate="safety">,
-   which IS a fieldset that becomes :disabled when disarmed) correctly
-   stays dimmed. */
-fieldset:disabled > legend fieldset:not([disabled]) button,
-fieldset:disabled > legend fieldset:not([disabled]) input,
-fieldset:disabled > legend .btnGate > button,
-fieldset:disabled > legend .btnGate > input {
+   restore opacity so Arm and E-Stop look fully enabled while disarmed.
+   The intent is "always visible where you can act": Arm so you can arm,
+   E-Stop so you can stop. Buttons that are :disabled at the per-button
+   level (e.g. E-Stop "Reset" when canResetEstop=false because not armed)
+   intentionally stay dimmed via the standard `button:disabled` rule —
+   the operator should see that Reset isn't available until they arm.
+   Two anchor patterns share the same exemption:
+     1. fieldset:not([disabled]) — original <Gate gate="always"> wrappers.
+     2. div.btnGate — current SafetyStrip plain-div wrappers.
+   `div.btnGate` (not just `.btnGate`) excludes fieldset.btnGate —
+   Machine On/Off is inside <Gate gate="safety" class="btnGate"> which
+   produces a fieldset.btnGate; that one stays dimmed when disarmed via
+   the parent fieldset:disabled descendant rule. */
+fieldset:disabled > legend fieldset:not([disabled]) button:not(:disabled),
+fieldset:disabled > legend fieldset:not([disabled]) input:not(:disabled),
+fieldset:disabled > legend div.btnGate > button:not(:disabled),
+fieldset:disabled > legend div.btnGate > input:not(:disabled) {
   opacity: 1 !important;
   cursor: pointer;
 }
