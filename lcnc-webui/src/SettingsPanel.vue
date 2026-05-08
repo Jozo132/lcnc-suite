@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, reactive, computed, inject, onMounted, onUnmounted, watch, type Ref, type ComputedRef } from "vue";
+import { ref, reactive, computed, inject, watch, type Ref, type ComputedRef } from "vue";
 import TabPanel from "./TabPanel.vue";
 import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
@@ -20,13 +20,13 @@ import {
   type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
   type GamepadMapping, GAMEPAD_ACTIONS, DEFAULT_MAPPING, GAMEPAD_FALLBACK,
   STEP_RPM,
-  loadKeyboardDefaults, type KeyboardDefaults, type KeyboardAction, KEYBOARD_ACTION_LABELS, DEFAULT_KB_MAPPING, formatKeyName,
+  loadKeyboardDefaults, type KeyboardDefaults, DEFAULT_KB_MAPPING,
 } from "./defaults";
-import { viewerInit } from "./lcncWs";
 import { ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-vue-next";
 import GamepadLiveInput from "./GamepadLiveInput.vue";
 import DebugTab from "./DebugTab.vue";
 import HalshowTab from "./HalshowTab.vue";
+import KeyboardTab from "./KeyboardTab.vue";
 
 
 const themeMode = inject<Ref<ThemeMode>>("themeMode", ref("auto") as Ref<ThemeMode>);
@@ -332,113 +332,19 @@ watch(settingsVersion, () => {
 });
 
 // ── Keyboard tab state ──
-const kbConfig = ref<KeyboardDefaults>(props.keyboardConfig ?? loadKeyboardDefaults());
-const listeningAction = ref<KeyboardAction | null>(null);
-const captureError = ref("");
-let captureErrorTimer: ReturnType<typeof setTimeout> | null = null;
-
-// Sync from prop changes
-watch(() => props.keyboardConfig, (cfg) => {
-  if (cfg) kbConfig.value = cfg;
-});
-
-function saveKb() {
-  emit("setKeyboardConfig", { ...kbConfig.value, mapping: { ...kbConfig.value.mapping } });
-}
-
-// Actions to show in the key binding table
-const COMMAND_ACTIONS: KeyboardAction[] = ["estop", "cycle", "abort"];
-const LINEAR_JOG_ACTIONS: KeyboardAction[] = ["jog_x+", "jog_x-", "jog_y+", "jog_y-", "jog_z+", "jog_z-"];
-const ROTARY_JOG_ACTIONS: KeyboardAction[] = ["jog_a+", "jog_a-", "jog_b+", "jog_b-"];
-
-// Show rotary rows only if machine has axes beyond XYZ
-const hasRotaryAxes = computed(() => {
-  const axes = viewerInit.value?.axes;
-  return Array.isArray(axes) && axes.some((a: string) => !"XYZ".includes(a.toUpperCase()));
-});
-
-// Modifier keys to reject
-const MODIFIER_KEYS = new Set(["Shift", "Control", "Alt", "Meta"]);
-
-function startCapture(action: KeyboardAction) {
-  listeningAction.value = action;
-  captureError.value = "";
-  if (captureErrorTimer) clearTimeout(captureErrorTimer);
-}
-
-function handleCapture(e: KeyboardEvent) {
-  if (!listeningAction.value) return;
-  e.preventDefault();
-  e.stopPropagation();
-
-  // Reject modifier-only keys
-  if (MODIFIER_KEYS.has(e.key)) return;
-
-  // Reject Tab
-  if (e.key === "Tab") {
-    showCaptureError("Tab cannot be bound");
-    return;
-  }
-
-  // Duplicate check
-  const existing = Object.entries(kbConfig.value.mapping).find(
-    ([a, k]) => k === e.key && a !== listeningAction.value
-  );
-  if (existing) {
-    showCaptureError(`Already bound to ${KEYBOARD_ACTION_LABELS[existing[0] as KeyboardAction]}`);
-    return;
-  }
-
-  // Accept the key
-  kbConfig.value.mapping[listeningAction.value] = e.key;
-  listeningAction.value = null;
-  saveKb();
-}
-
-function showCaptureError(msg: string) {
-  captureError.value = msg;
-  if (captureErrorTimer) clearTimeout(captureErrorTimer);
-  captureErrorTimer = setTimeout(() => { captureError.value = ""; }, 2000);
-}
-
-function unbindKey(action: KeyboardAction) {
-  kbConfig.value.mapping[action] = "";
-  saveKb();
-}
-
-function cancelCapture() {
-  listeningAction.value = null;
-  captureError.value = "";
-}
+// Fallback when the parent hasn't yet supplied a keyboardConfig prop.
+// Read once at setup; the live config is owned by KeyboardTab + parent.
+const defaultKbConfig = loadKeyboardDefaults();
 
 function resetKeyboard() {
-  kbConfig.value = {
+  // Server-synced reset: emit the defaults; the parent updates the
+  // keyboardConfig prop, which KeyboardTab mirrors via its own watch.
+  emit("setKeyboardConfig", {
     jogEnabled: false,
     buttonsEnabled: true,
     mapping: { ...DEFAULT_KB_MAPPING },
-  };
-  saveKb();
+  });
 }
-
-function onCaptureKeydown(e: KeyboardEvent) {
-  if (listeningAction.value) handleCapture(e);
-}
-
-function onClickOutside(e: MouseEvent) {
-  if (!listeningAction.value) return;
-  const target = e.target as HTMLElement;
-  if (!target.closest(".kbKeyCell")) cancelCapture();
-}
-
-onMounted(() => {
-  window.addEventListener("keydown", onCaptureKeydown, true);
-  window.addEventListener("click", onClickOutside);
-});
-
-onUnmounted(() => {
-  window.removeEventListener("keydown", onCaptureKeydown, true);
-  window.removeEventListener("click", onClickOutside);
-});
 
 // ─── Sub-tabs ──────────────────────────────
 const subTabs = [
@@ -889,65 +795,13 @@ function onGpMappingChanged() {
       <template #keyboard>
         <div v-if="!serverSettingsReady" class="settingsLoading">Waiting for server settings…</div>
         <div v-else class="stack-panel scrollContent scroll-thin">
-            <div class="stack-controls">
-              <div class="sub">Keyboard</div>
-              <div class="settingDesc">Allow keyboard keys to control the machine. E-Stop is always active regardless of these settings.</div>
-              <MachineToggle gate="inputConfig" v-model="kbConfig.jogEnabled" @update:modelValue="saveKb()" label="Enable keyboard jogging" />
-              <MachineToggle gate="inputConfig" v-model="kbConfig.buttonsEnabled" @update:modelValue="saveKb()" label="Enable keyboard shortcuts" />
-            </div>
-
-            <template v-if="kbConfig.jogEnabled || kbConfig.buttonsEnabled">
-              <div class="sep"></div>
-
-              <div class="stack-controls">
-                <div class="sub">Key Bindings</div>
-                <table class="kbMapTable">
-                  <tbody>
-                    <tr v-for="action in LINEAR_JOG_ACTIONS" :key="action" :class="{ inactive: !kbConfig.jogEnabled }">
-                      <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>
-                      <td class="kbKeyCell"
-                          :class="{ listening: listeningAction === action }"
-                          @click="startCapture(action)">
-                        {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
-                      </td>
-                      <td class="kbUnbind">
-                        <MachineBtn type="close" v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</MachineBtn>
-                      </td>
-                    </tr>
-                    <template v-if="hasRotaryAxes">
-                    <tr v-for="action in ROTARY_JOG_ACTIONS" :key="action" :class="{ inactive: !kbConfig.jogEnabled }">
-                      <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>
-                      <td class="kbKeyCell"
-                          :class="{ listening: listeningAction === action }"
-                          @click="startCapture(action)">
-                        {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
-                      </td>
-                      <td class="kbUnbind">
-                        <MachineBtn type="close" v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</MachineBtn>
-                      </td>
-                    </tr>
-                    </template>
-                    <tr class="kbSep"><td colspan="3"></td></tr>
-                    <tr v-for="action in COMMAND_ACTIONS" :key="action" :class="{ inactive: !kbConfig.buttonsEnabled }">
-                      <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>
-                      <td class="kbKeyCell"
-                          :class="{ listening: listeningAction === action }"
-                          @click="startCapture(action)">
-                        {{ listeningAction === action ? 'Press a key...' : formatKeyName(kbConfig.mapping[action]) }}
-                      </td>
-                      <td class="kbUnbind">
-                        <MachineBtn type="close" v-if="kbConfig.mapping[action]" @click.stop="unbindKey(action)" title="Unbind">&times;</MachineBtn>
-                      </td>
-                    </tr>
-                  </tbody>
-                </table>
-                <div v-if="captureError" class="kbCaptureError">{{ captureError }}</div>
-              </div>
-            </template>
-
-            <div class="resetRow">
-              <MachineBtn type="reset" @click="resetTarget = 'keyboard'">Reset Keyboard</MachineBtn>
-            </div>
+          <KeyboardTab
+            :kb-config="props.keyboardConfig ?? defaultKbConfig"
+            @set-keyboard-config="emit('setKeyboardConfig', $event)"
+          />
+          <div class="resetRow">
+            <MachineBtn type="reset" @click="resetTarget = 'keyboard'">Reset Keyboard</MachineBtn>
+          </div>
         </div>
       </template>
 
@@ -1200,53 +1054,4 @@ function onGpMappingChanged() {
   width: 100%;
 }
 
-/* ── Keyboard settings ───────────────────────────────────────── */
-.kbMapTable {
-  width: 100%;
-  border-collapse: collapse;
-}
-
-.kbMapTable td {
-  padding: 4px 8px;
-  font-size: var(--fs-sm);
-  border-bottom: 1px solid var(--border);
-}
-
-.kbMapAction {
-  font-weight: var(--fw-semibold);
-  white-space: nowrap;
-  width: 1%;
-}
-
-.kbKeyCell {
-  cursor: pointer;
-  font-family: var(--font-mono);
-  border-radius: var(--radius-sm);
-  transition: background 0.15s;
-}
-
-.kbKeyCell:hover {
-  background: color-mix(in oklab, var(--fg) var(--hl-hover), var(--bg));
-}
-
-.kbKeyCell.listening {
-  background: color-mix(in oklab, var(--info) var(--hl-selected), var(--bg));
-  outline: 1px solid var(--info);
-}
-
-.kbUnbind {
-  width: 1%;
-}
-
-.kbSep td {
-  padding: 0;
-  height: var(--gap-section);
-  border-bottom: none;
-}
-
-.kbCaptureError {
-  font-size: var(--fs-sm);
-  color: var(--danger);
-  margin-top: var(--gap-controls);
-}
 </style>
