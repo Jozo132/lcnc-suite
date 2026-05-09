@@ -273,6 +273,12 @@ let rapidLine: THREE.Line | null = null;
 let feedOverflow: THREE.Line | null = null;
 let rapidOverflow: THREE.Line | null = null;
 let highlightLine: THREE.Line | null = null;
+// Shared BufferGeometries — one per channel — so feed/overflow/highlight don't
+// each carry their own copy of the position buffer. Disposed explicitly in
+// applyGcode (disposeObject skips _shared geometries).
+let feedSharedGeom: THREE.BufferGeometry | null = null;
+let rapidSharedGeom: THREE.BufferGeometry | null = null;
+let highlightGeom: THREE.BufferGeometry | null = null;
 let workAxes: THREE.Group | null = null;
 let surfaceGroup: THREE.Group | null = null;
 
@@ -829,6 +835,9 @@ function rebuildOverflowEdges(size: Vec3, offset: Vec3): THREE.LineSegments | nu
 
 function makeLine(points: number[][], colorHex: number | string, dashed = false, opacity = 1.0) {
   const geom = new THREE.BufferGeometry();
+  // Shared with overflow (and position-attr shared with highlight).
+  // Disposal is owned by applyGcode; disposeObject() skips _shared geometries.
+  geom.userData._shared = true;
   const flat = new Float32Array(points.flat());
   geom.setAttribute("position", new THREE.BufferAttribute(flat, 3));
 
@@ -863,10 +872,9 @@ function makeLine(points: number[][], colorHex: number | string, dashed = false,
   return line;
 }
 
-/** Yellow dashed duplicate of a toolpath line, clipped to show only outside machine bounds. */
-function makeOverflowLine(srcLine: THREE.Line): THREE.Line | null {
+/** Yellow dashed overlay sharing geometry with a toolpath line, clipped to show only outside machine bounds. */
+function makeOverflowLine(geom: THREE.BufferGeometry): THREE.Line | null {
   if (boundsClipPlanes.length === 0) return null;
-  const geom = srcLine.geometry.clone();
   const mat = new THREE.LineDashedMaterial({
     color: 0xffcc00,
     dashSize: 3,
@@ -881,7 +889,8 @@ function makeOverflowLine(srcLine: THREE.Line): THREE.Line | null {
   const line = new THREE.Line(geom, mat);
   line.renderOrder = 10;
   line.frustumCulled = false;
-  line.computeLineDistances();
+  // Idempotent: rapid channel already has lineDistance from rapidLine; feed channel doesn't.
+  if (!geom.attributes.lineDistance) line.computeLineDistances();
   return line;
 }
 
@@ -1430,11 +1439,16 @@ function rebuildToolpathBounds() {
 function applyGcode(g: ViewerGcode) {
   if (!scene || !workOrigin) return;
 
-  // Remove old lines
+  // Remove old lines from scene graph
   for (const old of [feedLine, rapidLine, feedOverflow, rapidOverflow, highlightLine]) {
-    if (old) { workRotGroup?.remove(old); disposeObject(old); }
+    if (old) workRotGroup?.remove(old);
   }
+  // Dispose shared geometries explicitly (disposeObject skips _shared)
+  if (feedSharedGeom) feedSharedGeom.dispose();
+  if (rapidSharedGeom) rapidSharedGeom.dispose();
+  if (highlightGeom) highlightGeom.dispose();
   feedLine = rapidLine = feedOverflow = rapidOverflow = highlightLine = null;
+  feedSharedGeom = rapidSharedGeom = highlightGeom = null;
   feedLineMap = new Map();
 
   const feedPts = g.feed ?? [];
@@ -1452,36 +1466,37 @@ function applyGcode(g: ViewerGcode) {
     }
   }
 
-  // Feed + Rapid toolpath lines
+  // Feed + Rapid toolpath lines — geometry is shared with the overflow overlay.
   const feedColor = viewerDefaults.colors.feed ?? "#22b8cf";
   const rapidColor = viewerDefaults.colors.rapid ?? "#f5a623";
   if (feedPts.length >= 2) {
     feedLine = makeLine(feedPts, feedColor, false);
+    feedSharedGeom = feedLine.geometry as THREE.BufferGeometry;
     workRotGroup!.add(feedLine);
-    feedOverflow = makeOverflowLine(feedLine);
+    feedOverflow = makeOverflowLine(feedSharedGeom);
     if (feedOverflow) workRotGroup!.add(feedOverflow);
   }
   if (rapidPts.length >= 2) {
     rapidLine = makeLine(rapidPts, rapidColor, true);
+    rapidSharedGeom = rapidLine.geometry as THREE.BufferGeometry;
     workRotGroup!.add(rapidLine);
-    rapidOverflow = makeOverflowLine(rapidLine);
+    rapidOverflow = makeOverflowLine(rapidSharedGeom);
     if (rapidOverflow) workRotGroup!.add(rapidOverflow);
   }
 
-  // Prepare highlight line (reuses feed geometry, drawn on top with bright color)
-  if (feedPts.length >= 2) {
-    const hlGeom = new THREE.BufferGeometry();
-    const flat = new Float32Array(feedPts.flat());
-    hlGeom.setAttribute("position", new THREE.BufferAttribute(flat, 3));
-    hlGeom.setDrawRange(0, 0); // hidden until motion_line updates
+  // Highlight line — shares feed's position attribute; independent drawRange.
+  if (feedSharedGeom) {
+    highlightGeom = new THREE.BufferGeometry();
+    highlightGeom.userData._shared = true;
+    highlightGeom.setAttribute("position", feedSharedGeom.attributes.position!);
+    highlightGeom.setDrawRange(0, 0); // hidden until motion_line updates
     const hlMat = new THREE.LineBasicMaterial({ color: 0xff3333 });
     hlMat.depthTest = !pathAlwaysOnTop;
     hlMat.depthWrite = false;
-    highlightLine = new THREE.Line(hlGeom, hlMat);
+    highlightLine = new THREE.Line(highlightGeom, hlMat);
     highlightLine.renderOrder = 12;
     highlightLine.frustumCulled = false;
     workRotGroup!.add(highlightLine);
-
   }
 
   // Compute toolpath bounding box (work coordinates) for overflow detection
