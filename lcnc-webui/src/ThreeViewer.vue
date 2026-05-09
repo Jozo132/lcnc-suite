@@ -1204,6 +1204,13 @@ async function buildFromInit(init: ViewerInit) {
     // where surface_points arrived before scene/workOrigin existed.
     if (props.surfacePoints?.length) buildSurfaceLayer(props.surfacePoints);
 
+    // Pre-compile every material's shader now that all geometry is in the
+    // scene. Without this, the FIRST interactive frame does the compilation
+    // for each material lazily — visible as a hitch right when the user
+    // starts dragging the camera. Sync, runs inside the existing buildFromInit
+    // loading window so users don't notice it.
+    if (renderer && camera) renderer.compile(scene, camera);
+
   } catch (err) {
     console.error("buildFromInit failed:", err);
     window.__viewerDiag = { ready: false, error: (err as Error).message };
