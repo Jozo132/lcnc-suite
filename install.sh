@@ -87,12 +87,22 @@ else
 fi
 
 # --- python3-venv ---
-if python3 -m venv --help >/dev/null 2>&1; then
+# `python3 -m venv --help` succeeds on Debian even when ensurepip is missing,
+# so actually try creating a throwaway venv — that's the authoritative check.
+_venv_probe="$(mktemp -d)"
+if python3 -m venv "$_venv_probe/v" >/dev/null 2>&1; then
   ok "python3-venv"
 else
-  APT_PACKAGES+=(python3-venv)
-  fail "python3-venv — will install"
+  # Debian/Ubuntu ship venv as a versioned package (python3.13-venv, etc.).
+  if [[ -n "${PY_MINOR:-}" ]]; then
+    APT_PACKAGES+=("python3.${PY_MINOR}-venv")
+    fail "python3-venv — will install python3.${PY_MINOR}-venv"
+  else
+    APT_PACKAGES+=(python3-venv)
+    fail "python3-venv — will install"
+  fi
 fi
+rm -rf "$_venv_probe"
 
 # --- curl (needed for nodesource setup) ---
 if ! command -v curl >/dev/null 2>&1; then
