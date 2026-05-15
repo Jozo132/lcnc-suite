@@ -1950,23 +1950,23 @@ _TOOL_FIELD_RE = re.compile(r"([XYZD])([+-]?[\d.]+)")
 
 
 def get_tool_tbl_path() -> Optional[str]:
-    """Resolve the tool table file path from the LinuxCNC INI."""
+    """Resolve the tool table file path from the LinuxCNC INI.
+
+    Uses LCNC_INI_FILE (exported by the launcher) as the single source of
+    truth — independent of the gateway↔LinuxCNC status connection, so this
+    works during the boot window before `try_connect_lcnc` succeeds.
+    """
     global _tool_tbl_path, _tool_tbl_ini
-    # Invalidate cache if INI changed (user switched config)
+    ini_path = os.environ.get("LCNC_INI_FILE")
+    if not ini_path:
+        return None
     if _tool_tbl_path is not None:
-        current_ini = getattr(STAT, "ini_filename", None) if STAT else None
-        if current_ini != _tool_tbl_ini:
+        if ini_path != _tool_tbl_ini:
             _tool_tbl_path = None
             _tool_tbl_ini = None
         else:
             return _tool_tbl_path
-    if STAT is None:
-        return None
     try:
-        STAT.poll()
-        ini_path = getattr(STAT, "ini_filename", None)
-        if not ini_path:
-            return None
         ini = linuxcnc.ini(ini_path)
         tbl = ini.find("EMCIO", "TOOL_TABLE")
         if not tbl:
@@ -3172,7 +3172,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
         if cmd == "get_tool_table":
             tbl_path = get_tool_tbl_path()
             if not tbl_path:
-                return {"ok": False, "error": "Tool table path not available (LinuxCNC not connected yet?)"}
+                return {"ok": False, "error": "Tool table path not available"}
             tbl_tools = parse_tool_table(tbl_path)
             library = load_tool_library()
             merged = _merge_tool_data(tbl_tools, library)
