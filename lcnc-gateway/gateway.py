@@ -282,10 +282,60 @@ class ClientState:
     hb_mono: float = 0.0       # monotonic ts of last hb (0 = never seen)
     send_pending: bool = False # status fan-out is in-flight to this client
     hidden: bool = False       # client tab is backgrounded (visibilityState)
+    session_id: Optional[str] = None  # tab-scoped UUID; basis for armed-resume across brief reconnects
 
 
 _clients: Dict[int, ClientState] = {}
 _next_client_id = 0
+
+# ---- Armed-resume holds (Layer D, session-id resume) ----
+# When an armed client's WebSocket closes, we register a short-lived hold
+# keyed by session_id. If the same session reconnects within the window via
+# `cmd:"hello"`, the new connection silently inherits armed=true. This makes
+# Ctrl-R, Wi-Fi blips, and brief screen-lock-induced WS closes invisible.
+#
+# tab close → new sessionId on next open → no resume (intentional)
+# Ctrl-R    → same sessionId → resume granted
+_ARMED_RESUME_GRACE_SEC = 10.0
+_armed_resume_holds: Dict[str, float] = {}  # session_id → expiry monotonic ts
+
+
+def _register_armed_resume_hold(session_id: Optional[str], client_id: int) -> None:
+    """Register an armed-resume hold for a session_id. No-op if no session_id."""
+    if not session_id:
+        return
+    _prune_armed_resume_holds()
+    expiry = time.monotonic() + _ARMED_RESUME_GRACE_SEC
+    _armed_resume_holds[session_id] = expiry
+    _trace.emit(
+        "session.resume_hold_registered",
+        client_id=client_id, session_id=session_id,
+        grace_sec=_ARMED_RESUME_GRACE_SEC,
+    )
+
+
+def _consume_armed_resume_hold(session_id: Optional[str]) -> bool:
+    """Return True if a valid armed-resume hold exists for this session_id.
+    Consumes the hold on success (single-use). Returns False on no-match or
+    expired. Caller emits the appropriate trace event with context."""
+    if not session_id:
+        return False
+    _prune_armed_resume_holds()
+    expiry = _armed_resume_holds.pop(session_id, None)
+    if expiry is None:
+        return False
+    if time.monotonic() > expiry:
+        return False
+    return True
+
+
+def _prune_armed_resume_holds() -> None:
+    """Drop expired holds. Bounded size in practice (one entry per recently-
+    disconnected armed client) but cheap to keep tidy."""
+    now = time.monotonic()
+    expired = [sid for sid, exp in _armed_resume_holds.items() if now > exp]
+    for sid in expired:
+        del _armed_resume_holds[sid]
 
 # ---- HAL watchdog socket client ----
 # The watchdog is loaded by LinuxCNC HAL config (loadusr -W hal_watchdog.py).
@@ -3159,32 +3209,46 @@ def _jog_joint_flag() -> int:
     return 1
 
 
-async def _disarm_safety_sequence() -> None:
-    """Stop motion + abort interpreter as part of a disarm. Caller must hold _cmd_lock.
+async def _jog_stop_for_client() -> None:
+    """Jog-stop every joint as part of a client disarm. Caller must hold _cmd_lock.
 
-    Used by both the heartbeat-timeout path in status_loop and the ws-close
-    path in ws_endpoint's finally block — they were two near-identical copies.
-    Behaviour:
-      - if AUTO + interpreter not idle: abort (program-running case)
-      - else if homed: switch to MANUAL, jog_stop every joint, then abort
-    All CMD.* calls offload via _cmd_blocking so a slow GIL section can't
-    starve the heartbeat task.
+    Called when a client transitions to disarmed via heartbeat stall or WS
+    close. The point is to stop any in-flight jog this client may have
+    started — without a follow-up jog_stop the machine continues moving
+    until it hits a limit.
+
+    This function does NOT abort the program. A running G-code program is
+    owned by LinuxCNC's interpreter, not by any single client. Motion abort
+    from a client-liveness failure is the HAL chain's job (oneshot timeout
+    on all-clients-out, or gateway hang). Per the architecture review in
+    docs/plans, keep the "armed = authorization" and "HAL = safety" layers
+    separate — this function only handles the in-flight-jog case.
+
+    Mode safety: if the machine is in MODE_AUTO with the interpreter
+    running, a jog cannot be in flight (jogging requires MANUAL/TELEOP).
+    Forcing a mode switch to MANUAL here would interrupt the program —
+    exactly what this cleanup is trying to avoid. So skip in that case.
+
+    Multi-armed-client note: today we stop every joint, which can interfere
+    with a parallel jog from another armed client. Per-client active-jog
+    tracking is a documented follow-up; for now, the bluntness is acceptable
+    because simultaneous multi-client jogging is rare and stopping is the
+    safe default.
     """
     if not bool(safe_get("enabled", False)):
         return
     mode = safe_get("task_mode", None)
     interp = safe_get("interp_state", None)
     if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-        await _cmd_blocking(CMD.abort, wait=None)
-        return
+        return  # program running — no jog to stop, must not switch mode
     homed = normalize_homed(safe_get("homed", None))
-    if homed:
-        await set_mode(linuxcnc.MODE_MANUAL)
-        jf = _jog_joint_flag()
-        _nj = getattr(STAT, "joints", 3) if STAT else 3
-        for ax in range(_nj):
-            await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, ax, wait=None)
-    await _cmd_blocking(CMD.abort, wait=None)
+    if not homed:
+        return  # nothing to jog-stop if not homed
+    await set_mode(linuxcnc.MODE_MANUAL)
+    jf = _jog_joint_flag()
+    _nj = getattr(STAT, "joints", 3) if STAT else 3
+    for ax in range(_nj):
+        await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, ax, wait=None)
 
 
 def require_armed(armed: bool):
@@ -5722,39 +5786,33 @@ async def ws_endpoint(ws: WebSocket):
                         except RuntimeError:
                             pass
 
-                    # Heartbeat timeout
+                    # Heartbeat timeout — per-client liveness signal.
+                    #
+                    # Per the architecture cleanup: a client-side heartbeat
+                    # stall is NOT a safety event. It is a UI event. The HAL
+                    # chain (oneshot.0 + trip-latch) is the real safety, and
+                    # it independently trips on gateway hang or all-clients-out.
+                    # Stalling on one armed client while others (or even just
+                    # viewers) keep the HAL chain alive must NOT abort a
+                    # running program. So: disarm the client + jog-stop any
+                    # in-flight jog from this client. No program abort.
                     if client_id in _clients:
                         if time.time() - _clients[client_id].last_hb > 3.0:
                             if armed:
-                                # Armed client stalled — disarm this client
-                                # first so the "any other armed" predicate
-                                # below cleanly excludes self.
                                 armed = False
                                 _clients[client_id].armed = False
-                                # Only abort motion if no other armed client
-                                # is still in control. Mirrors the disconnect
-                                # path's last-armed-out semantics — see comment
-                                # there for full rationale.
-                                _any_other_armed = any(c.armed for c in _clients.values())
-                                _other_armed_ids = [cid for cid, c in _clients.items() if c.armed]
-                                if not _any_other_armed:
-                                    try:
-                                        async with _get_cmd_lock():
-                                            await _disarm_safety_sequence()
-                                    except Exception as _e:
-                                        _trace.emit(
-                                            "safety.hb_stall_abort_failed", level="error",
-                                            client_id=client_id, exc=type(_e).__name__, err=str(_e),
-                                        )
-                                else:
-                                    # Heartbeat stalled but another armed client
-                                    # is in control — motion continues. Logged
-                                    # so the gated decision isn't silent.
+                                try:
+                                    async with _get_cmd_lock():
+                                        await _jog_stop_for_client()
+                                except Exception as _e:
                                     _trace.emit(
-                                        "safety.hb_stall_abort_skipped",
-                                        client_id=client_id,
-                                        remaining_armed=_other_armed_ids,
+                                        "safety.hb_stall_jog_stop_failed", level="error",
+                                        client_id=client_id, exc=type(_e).__name__, err=str(_e),
                                     )
+                                _trace.emit(
+                                    "safety.hb_stall_disarmed",
+                                    client_id=client_id,
+                                )
                                 try:
                                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
                                 except Exception as _e:
@@ -5808,6 +5866,11 @@ async def ws_endpoint(ws: WebSocket):
         status_task = register_bg_task(asyncio.create_task(status_loop()))
 
     _disc_reason = "unknown"
+    # Captured on `cmd:"hello"`; the finally block uses this to register
+    # the armed-resume hold so the next reconnect of the same tab can
+    # silently inherit armed. Stays None for old clients that don't send
+    # hello (they lose armed on reconnect, same as today).
+    _disc_session_id: Optional[str] = None
     try:
         while True:
             _set_phase(f"ws.receive_text client#{client_id}")
@@ -5824,6 +5887,46 @@ async def ws_endpoint(ws: WebSocket):
                     _clients[client_id].last_hb = time.time()
                     _clients[client_id].hb_mono = time.monotonic()
                 await ws_send_json(ws, {"type": "pong"})
+                continue
+
+            if msg.get("cmd") == "hello":
+                # Tab handshake: captures session_id for armed-resume across
+                # brief reconnects (Ctrl-R, Wi-Fi blip, screen-lock close).
+                # Decision tree, each branch traced — no silent fallbacks.
+                _sid = msg.get("session")
+                if isinstance(_sid, str) and _sid:
+                    _disc_session_id = _sid
+                    if client_id in _clients:
+                        _clients[client_id].session_id = _sid
+                want_resume = bool(msg.get("resume_armed", False))
+                if want_resume:
+                    if _unacked_trip is not None:
+                        _trace.emit(
+                            "session.resume_denied_unacked_trip",
+                            client_id=client_id, session_id=_sid,
+                        )
+                    elif _consume_armed_resume_hold(_sid):
+                        armed = True
+                        if client_id in _clients:
+                            _clients[client_id].armed = True
+                            _clients[client_id].last_hb = time.time()
+                        _trace.emit(
+                            "session.resume_granted",
+                            client_id=client_id, session_id=_sid,
+                        )
+                    elif _sid:
+                        # Either no hold registered (no match) or hold expired
+                        # (pruned/missed). _consume returned False either way.
+                        _trace.emit(
+                            "session.resume_denied_no_match",
+                            client_id=client_id, session_id=_sid,
+                        )
+                    else:
+                        _trace.emit(
+                            "session.hello_missing",
+                            client_id=client_id, reason="resume_requested_without_session_id",
+                        )
+                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
                 continue
 
             if msg.get("cmd") == "arm":
@@ -6025,41 +6128,38 @@ async def ws_endpoint(ws: WebSocket):
         _set_phase(f"ws_endpoint.finally.entry client#{client_id}")
         _clients.pop(client_id, None)
         _halshow_topology_sent.pop(client_id, None)
-        # Safety: stop all motion if this armed client disconnects AND no
-        # other armed client remains in control. Multi-client topologies
-        # (local UI + remote laptop) must not abort a running program when
-        # one operator vanishes — the others still own the machine. Each
-        # remaining client has its own heartbeat watchdog, so "last armed
-        # operator out aborts" preserves the per-client safety guarantee
-        # without the surprising cross-client trip.
+        # Disconnect of an armed client: jog-stop any in-flight jog this
+        # client started, then register a 10s armed-resume hold keyed by
+        # session_id so a Ctrl-R / Wi-Fi blip can transparently re-arm.
         #
-        # During global lifespan shutdown we already broadcast server_shutdown
-        # and closed WS sockets — N clients each acquiring _cmd_lock to call
-        # CMD.abort() while LinuxCNC is itself tearing down would stall the
-        # shutdown path. Lifespan owns the global stop instead.
-        _any_other_armed = any(c.armed for c in _clients.values())
-        _other_armed_ids = [cid for cid, c in _clients.items() if c.armed]
-        if armed and not _any_other_armed and CMD is not None and not _shutting_down:
-            _set_phase(f"ws_endpoint.finally.armed_motion_abort client#{client_id}")
+        # We do NOT abort a running program here. Per the architecture
+        # cleanup: client liveness is not safety. The HAL chain (oneshot.0
+        # + trip-latch) is the real safety, and it independently trips on
+        # gateway hang or all-clients-out (via _start_disconnect_grace).
+        # A single armed client dropping while viewers (or even nothing)
+        # remain must not abort the program — if everyone is gone, HAL
+        # grace expires and the trip-latch handles it for real.
+        #
+        # During global lifespan shutdown the gateway has already broadcast
+        # server_shutdown and closed sockets; skip the jog-stop in that
+        # window so N clients don't all serialize on _cmd_lock during a
+        # LinuxCNC teardown.
+        if armed and CMD is not None and not _shutting_down:
+            _set_phase(f"ws_endpoint.finally.armed_jog_stop client#{client_id}")
             try:
                 async with _get_cmd_lock():
-                    _set_phase(f"ws_endpoint.finally.armed_abort.cmd_lock_held client#{client_id}")
+                    _set_phase(f"ws_endpoint.finally.armed_jog_stop.cmd_lock_held client#{client_id}")
                     STAT.poll()
-                    await _disarm_safety_sequence()
+                    await _jog_stop_for_client()
             except Exception as _e:
                 _trace.emit(
-                    "safety.disconnect_abort_failed", level="error",
+                    "safety.disconnect_jog_stop_failed", level="error",
                     client_id=client_id, exc=type(_e).__name__, err=str(_e),
                 )
-        elif armed and _any_other_armed:
-            # Safety decision recorded: this client disconnected while armed,
-            # but motion continues because another armed operator is still in
-            # control. Surfacing this in the trace bus avoids a silent skip —
-            # operators can audit the decision after the fact.
+            _register_armed_resume_hold(_disc_session_id, client_id)
             _trace.emit(
-                "safety.disconnect_abort_skipped",
+                "safety.disconnect_disarmed",
                 client_id=client_id,
-                remaining_armed=_other_armed_ids,
             )
         _set_phase(f"ws_endpoint.finally.cancel_status_task client#{client_id}")
         status_task.cancel()

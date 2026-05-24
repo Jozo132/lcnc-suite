@@ -296,9 +296,10 @@ const VALID_THEMES = new Set<string>(["auto", "light", "dark", "hc-light", "hc-d
 export interface DisplayDefaults {
   theme: ThemeMode;
   startFullscreen: boolean;
+  keepAwake: boolean;
 }
 
-const DISPLAY_FALLBACK: DisplayDefaults = { theme: "auto", startFullscreen: false };
+const DISPLAY_FALLBACK: DisplayDefaults = { theme: "auto", startFullscreen: false, keepAwake: true };
 
 registerSection<DisplayDefaults>("display", DISPLAY_FALLBACK, (saved, fb) => {
   if (!saved) return { ...fb };
@@ -307,6 +308,7 @@ registerSection<DisplayDefaults>("display", DISPLAY_FALLBACK, (saved, fb) => {
     ...fb,
     ...saved,
     theme: (VALID_THEMES.has(t) ? t : fb.theme) as ThemeMode,
+    keepAwake: typeof saved.keepAwake === "boolean" ? saved.keepAwake : fb.keepAwake,
   };
 });
 

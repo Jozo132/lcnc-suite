@@ -21,6 +21,7 @@ import {
   STEP_RPM,
   loadKeyboardDefaults, type KeyboardDefaults, DEFAULT_KB_MAPPING,
 } from "./defaults";
+import { enableWakeLock, disableWakeLock } from "./wakeLock";
 import { ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-vue-next";
 import DebugTab from "./DebugTab.vue";
 import HalshowTab from "./HalshowTab.vue";
@@ -31,6 +32,7 @@ import GamepadTab from "./GamepadTab.vue";
 const themeMode = inject<Ref<ThemeMode>>("themeMode", ref("auto") as Ref<ThemeMode>);
 const setTheme = inject<(mode: ThemeMode) => void>("setTheme", () => {});
 const startFullscreen = ref(loadDisplayDefaults().startFullscreen);
+const keepAwake = ref(loadDisplayDefaults().keepAwake);
 const machineParts = inject<ComputedRef<Array<{ id: string; group: string | null; direction: string | null }>>>("machineParts", computed(() => []));
 const setMachinePartColor = inject<(id: string, color: string | null) => void>("setMachinePartColor", () => {});
 const setMachineEdges = inject<(on: boolean) => void>("setMachineEdges", () => {});
@@ -166,10 +168,20 @@ function saveStartFullscreen() {
   saveDisplayDefaults({ ...loadDisplayDefaults(), startFullscreen: startFullscreen.value });
 }
 
+function saveKeepAwake() {
+  saveDisplayDefaults({ ...loadDisplayDefaults(), keepAwake: keepAwake.value });
+  // Apply immediately — the WS open path also reads this on next reconnect,
+  // but toggling at runtime should acquire/release without waiting.
+  if (keepAwake.value) void enableWakeLock();
+  else disableWakeLock();
+}
+
 function resetDisplay() {
   setTheme("auto");
   startFullscreen.value = false;
-  saveDisplayDefaults({ theme: "auto", startFullscreen: false });
+  keepAwake.value = true;
+  saveDisplayDefaults({ theme: "auto", startFullscreen: false, keepAwake: true });
+  void enableWakeLock();
 }
 
 function resetGamepad() {
@@ -315,6 +327,7 @@ watch(settingsVersion, () => {
   projection.value = vd.projection;
   const dd = loadDisplayDefaults();
   startFullscreen.value = dd.startFullscreen;
+  keepAwake.value = dd.keepAwake;
   if (_camSkipNext > 0) { _camSkipNext--; }
   else {
     const cd = loadCameraDefaults();
@@ -612,6 +625,11 @@ function resetMachineColor(id: string) {
           <div class="stack-controls">
             <div class="sub">Fullscreen</div>
             <MachineToggle gate="displaySetting" v-model="startFullscreen" @update:modelValue="saveStartFullscreen" label="Start in fullscreen mode" />
+          </div>
+          <div class="sep"></div>
+          <div class="stack-controls">
+            <div class="sub">Keep Screen Awake</div>
+            <MachineToggle gate="displaySetting" v-model="keepAwake" @update:modelValue="saveKeepAwake" label="Prevent screen lock while connected" />
           </div>
           <div class="resetRow">
             <MachineBtn type="reset" @click="resetTarget = 'display'">Reset Display</MachineBtn>

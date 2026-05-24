@@ -1,7 +1,37 @@
 import { ref, shallowRef } from "vue";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { type WsCommand, OPERATOR_ERROR } from "./lcnc";
-import { updateServerCache, type Vec3 } from "./defaults";
+import { updateServerCache, loadDisplayDefaults, type Vec3 } from "./defaults";
+import { enableWakeLock, disableWakeLock } from "./wakeLock";
+
+// ---- Session id (per-tab, for armed-resume across brief reconnects) ----
+// Persisted in sessionStorage so Ctrl-R keeps the same id; tab close clears
+// it (intentional: a new tab means a fresh arming session). The gateway
+// matches this id against an armed-resume hold registered on disconnect;
+// if it matches within ~10 s, the new connection silently inherits
+// armed=true. See gateway.py _armed_resume_holds.
+const SESSION_STORAGE_KEY = "lcnc-session-id";
+function _initSessionId(): string {
+  try {
+    const existing = sessionStorage.getItem(SESSION_STORAGE_KEY);
+    if (existing) return existing;
+    const fresh = (typeof crypto !== "undefined" && "randomUUID" in crypto)
+      ? crypto.randomUUID()
+      : `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    sessionStorage.setItem(SESSION_STORAGE_KEY, fresh);
+    return fresh;
+  } catch {
+    // sessionStorage unavailable (Safari private mode etc.) — generate a
+    // per-page-load id; resume won't survive a reconnect but everything
+    // else still works.
+    return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  }
+}
+const _sessionId = _initSessionId();
+// Tracks whether this tab was armed at the time its WS last closed. On the
+// next WS open, we send {resume_armed: _prevArmed} so the gateway can decide
+// whether to inherit armed state from the prior connection. Reset after use.
+let _prevArmed = false;
 
 export interface LcncMessage {
   id: number;
@@ -549,6 +579,31 @@ export function connectWs() {
     _wsAttemptCount = 0;
     connected.value = true;
     serverShuttingDown.value = false;
+    // Tab handshake — must precede other commands so the gateway can
+    // associate this connection with the prior tab's armed state (if any)
+    // before the first heartbeat / fan-out arrives. `_prevArmed` captures
+    // whether this tab was armed when its previous WS closed; on a brief
+    // disconnect (Ctrl-R, Wi-Fi blip) the gateway may have a matching
+    // armed-resume hold and will silently re-arm us. Reset after use so a
+    // *future* close→open cycle starts from a fresh observation.
+    if (ws) {
+      try {
+        ws.send(JSON.stringify({
+          cmd: "hello",
+          session: _sessionId,
+          resume_armed: _prevArmed,
+        }));
+      } catch { /* ignored */ }
+      _prevArmed = false;
+    }
+    // Acquire screen wake-lock if the user has it enabled. Releases on
+    // ws.onclose. Per the architecture cleanup: kept here (not gated on
+    // `armed`) so passive viewer tabs also stay awake while connected.
+    try {
+      if (loadDisplayDefaults().keepAwake) {
+        void enableWakeLock();
+      }
+    } catch { /* defaults may be unavailable pre-init; fine */ }
     // Send initial tab visibility state to the gateway. Without this, a
     // tab that connected while already hidden would receive full fan-out
     // until the next visibilitychange event — which may never fire if the
@@ -602,7 +657,14 @@ export function connectWs() {
       _wsBufferPressureTimer = null;
     }
     connected.value = false;
+    // Capture armed state for the next reconnect's hello, then reset.
+    // Lets the gateway match a still-valid armed-resume hold and silently
+    // restore armed=true on a brief blip (Ctrl-R, Wi-Fi handoff).
+    _prevArmed = armed.value;
     armed.value = false;     // new connection starts disarmed
+    // Release the screen wake-lock when the WS drops. Re-acquired on the
+    // next ws.onopen if the user setting is still on.
+    try { disableWakeLock(); } catch { /* ignored */ }
     latency.value = null;
     networkLatency.value = null;
     _heartbeatSentAt = _rtSentAt = 0;
