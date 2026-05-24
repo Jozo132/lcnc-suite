@@ -666,19 +666,24 @@ async def _heartbeat_loop():
     global _hal_last_hb
     _hb_expected = 1.0 / POLL_HZ
     _hb_last = time.monotonic()
-    # === TEMP HB-TRACE PROBE === counts heartbeat iterations so we can see
-    # gaps that [HB-STALL]'s post-sleep drift detector misses. The drift
-    # detector only fires when the task wakes up and notices the elapsed
-    # time was longer than expected — but if monotonic *itself* froze
-    # (VM pause / cgroup throttle / OS scheduler lockout where the whole
-    # process timer subsystem stops), the post-sleep drift looks normal.
-    # Logging the iteration count + monotonic + walltime every ~1s makes
-    # any frozen-window visible: a [HB] line that should appear ~1 s after
-    # the prior one but appears ~3 s later, with iteration count having
-    # advanced by only ~30 instead of ~30 × elapsed_seconds, exposes the
-    # gap. Walltime is included so a pause invisible to monotonic but
-    # visible to clock_gettime(CLOCK_REALTIME) (rare) shows up too.
+    # === TEMP HB-TRACE PROBE === fires only when a 30-iteration window (~1 s
+    # at POLL_HZ=30) shows an anomaly that [HB-STALL]'s per-tick drift detector
+    # misses. Two cases:
+    #   1. Monotonic clock froze (VM pause / cgroup throttle / scheduler
+    #      lockout): wall delta ≫ monotonic delta between consecutive samples.
+    #      [HB-STALL] stays silent because post-sleep drift in monotonic terms
+    #      looks normal — the clock itself stopped.
+    #   2. Many sub-200ms stalls accumulating: each one is below [HB-STALL]'s
+    #      threshold but together push the 30-iter window well past 1 s.
+    # Healthy operation = silent. Anomaly = one log line with full context.
     _hb_iter = 0
+    _hb_sample_mono = time.monotonic()
+    _hb_sample_wall = time.time()
+    # Thresholds: skew >100ms means wall and monotonic disagree by enough to
+    # rule out routine scheduling jitter; mono_dt >1.5s (50% over expected 1s)
+    # means accumulated stall worth surfacing.
+    _HB_SKEW_THRESH = 0.1
+    _HB_MONO_THRESH = 1.5
     # === TEMP HB-WAKE PROBE === pre-send anchor to catch a hidden gap that
     # [HB-STALL] cannot see: scheduling delay between asyncio.sleep returning
     # and the heartbeat task actually being selected to run its body. If a
@@ -712,15 +717,24 @@ async def _heartbeat_loop():
             print(f"[HB-STALL] heartbeat gap {_hb_drift*1000:.0f}ms (expected {_hb_expected*1000:.0f}ms)", flush=True)
         _hb_last = _hb_now
         _hb_iter += 1
-        # Log every 30 iterations (~1 s at POLL_HZ=30). The space between
-        # consecutive [HB] lines should always be ≈1 s in monotonic terms;
-        # any larger jump means the loop was paused.
+        # Sample wall/mono every 30 iterations (~1 s at POLL_HZ=30). Log only
+        # when the window shows clock skew or accumulated stall — see TEMP
+        # HB-TRACE PROBE comment above the loop for the two failure modes.
         if _hb_iter % 30 == 0:
-            print(
-                f"[HB] +{(_hb_now - _T0) * 1000:.0f}ms iter={_hb_iter} "
-                f"wall={time.time():.3f} clients={len(_clients)}",
-                flush=True,
-            )
+            _hb_now_wall = time.time()
+            _hb_mono_dt = _hb_now - _hb_sample_mono
+            _hb_wall_dt = _hb_now_wall - _hb_sample_wall
+            _hb_skew = abs(_hb_wall_dt - _hb_mono_dt)
+            if _hb_skew > _HB_SKEW_THRESH or _hb_mono_dt > _HB_MONO_THRESH:
+                print(
+                    f"[HB] +{(_hb_now - _T0) * 1000:.0f}ms iter={_hb_iter} "
+                    f"mono_dt={_hb_mono_dt*1000:.0f}ms "
+                    f"wall_dt={_hb_wall_dt*1000:.0f}ms "
+                    f"skew={_hb_skew*1000:.0f}ms clients={len(_clients)}",
+                    flush=True,
+                )
+            _hb_sample_mono = _hb_now
+            _hb_sample_wall = _hb_now_wall
 
 
 # Phase ring buffer — replaces last-writer-wins single global. Each
@@ -5798,6 +5812,17 @@ async def ws_endpoint(ws: WebSocket):
                 _loop = asyncio.get_event_loop()
                 await _loop.run_in_executor(None, save_settings_section, section, msg.get("data"))
                 await ws_send_json(ws, {"type": "reply", "ok": True})
+                continue
+
+            if msg.get("cmd") == "client_diag":
+                # Periodic browser-side diagnostics (heap, Three.js counters,
+                # connection state). Forwarded straight to the trace bus so a
+                # renderer crash ("Aw Snap") still leaves a usable timeline in
+                # /tmp/lcnc-trace.log — the gateway file outlives the browser.
+                data = msg.get("data")
+                if isinstance(data, dict):
+                    _trace.emit("client.diag", client_id=client_id, **data)
+                # Fire-and-forget — no reply, no ack, to keep this off the hot path.
                 continue
 
             if msg.get("cmd") == "timing_log":

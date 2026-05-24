@@ -6,6 +6,7 @@ import { initServerDefaults } from './defaults'
 import { VALID_GATES } from './permissions'
 import { initDragScroll } from './dragScroll'
 import { initTouchDetect } from './touchDetect'
+import { startClientDiag } from './clientDiag'
 
 const SERVER_SECTIONS = ["macros", "machine", "camera", "mdi", "gamepad", "keyboard", "probe", "toolsetter", "display", "viewer", "panels"];
 
@@ -84,6 +85,7 @@ async function bootstrap() {
   initServerDefaults(serverSettings, fetchOk);
   createApp(App).mount('#app');
   initDragScroll();
+  startClientDiag();
 
   if (import.meta.env.DEV) {
     function auditElement(el: HTMLElement) {

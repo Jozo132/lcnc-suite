@@ -1181,6 +1181,18 @@ async function buildFromInit(init: ViewerInit) {
         meshCount: machineMeshes.length,
         boundsValid: !autoBox.isEmpty(),
         timestamp: Date.now(),
+        getRenderInfo: () => {
+          if (!renderer) return null;
+          const m = renderer.info.memory;
+          const r = renderer.info.render;
+          return {
+            geometries: m.geometries,
+            textures: m.textures,
+            programs: renderer.info.programs?.length ?? 0,
+            calls: r.calls,
+            triangles: r.triangles,
+          };
+        },
       };
     }
 
@@ -1484,9 +1496,16 @@ function rebuildToolpathBounds() {
 function applyGcode(g: ViewerGcode) {
   if (!scene || !workOrigin) return;
 
-  // Remove old lines from scene graph
+  // Remove old lines from scene graph and dispose their per-line materials.
+  // disposeObject() intentionally skips materials (to protect shared MAT.*),
+  // so ad-hoc materials created in makeLine/makeOverflowLine + the highlight
+  // material below must be released here or they accumulate in GPU memory.
   for (const old of [feedLine, rapidLine, feedOverflow, rapidOverflow, highlightLine]) {
-    if (old) workRotGroup?.remove(old);
+    if (!old) continue;
+    workRotGroup?.remove(old);
+    const m = old.material as THREE.Material | THREE.Material[] | undefined;
+    if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+    else m?.dispose();
   }
   // Dispose shared geometries explicitly (disposeObject skips _shared)
   if (feedSharedGeom) feedSharedGeom.dispose();

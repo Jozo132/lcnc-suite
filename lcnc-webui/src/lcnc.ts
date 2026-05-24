@@ -106,6 +106,10 @@ export type WsCommand =
   | { cmd: "save_settings"; section: string; data: any }
   // Timing
   | { cmd: "timing_log"; enable: boolean }
+  // Client-side diagnostics (heap, Three.js renderer info, etc.) — logged
+  // server-side to /tmp/lcnc-trace.log so a renderer crash ("Aw Snap") still
+  // leaves a usable timeline.
+  | { cmd: "client_diag"; data: Record<string, any> }
   // Halshow (Settings → Halshow tab) live updates
   | { cmd: "halshow_live"; on: boolean }
   // Tab visibility — gateway pauses status fan-out to hidden tabs to keep
