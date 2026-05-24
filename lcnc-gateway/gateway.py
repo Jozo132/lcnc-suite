@@ -5702,14 +5702,35 @@ async def ws_endpoint(ws: WebSocket):
                     if client_id in _clients:
                         if time.time() - _clients[client_id].last_hb > 3.0:
                             if armed:
-                                # Armed client stalled — disarm and stop motion
+                                # Armed client stalled — disarm this client
+                                # first so the "any other armed" predicate
+                                # below cleanly excludes self.
                                 armed = False
                                 _clients[client_id].armed = False
-                                try:
-                                    async with _get_cmd_lock():
-                                        await _disarm_safety_sequence()
-                                except Exception:
-                                    pass
+                                # Only abort motion if no other armed client
+                                # is still in control. Mirrors the disconnect
+                                # path's last-armed-out semantics — see comment
+                                # there for full rationale.
+                                _any_other_armed = any(c.armed for c in _clients.values())
+                                _other_armed_ids = [cid for cid, c in _clients.items() if c.armed]
+                                if not _any_other_armed:
+                                    try:
+                                        async with _get_cmd_lock():
+                                            await _disarm_safety_sequence()
+                                    except Exception as _e:
+                                        _trace.emit(
+                                            "safety.hb_stall_abort_failed", level="error",
+                                            client_id=client_id, exc=type(_e).__name__, err=str(_e),
+                                        )
+                                else:
+                                    # Heartbeat stalled but another armed client
+                                    # is in control — motion continues. Logged
+                                    # so the gated decision isn't silent.
+                                    _trace.emit(
+                                        "safety.hb_stall_abort_skipped",
+                                        client_id=client_id,
+                                        remaining_armed=_other_armed_ids,
+                                    )
                                 try:
                                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
                                 except Exception:
@@ -5963,20 +5984,42 @@ async def ws_endpoint(ws: WebSocket):
         _set_phase(f"ws_endpoint.finally.entry client#{client_id}")
         _clients.pop(client_id, None)
         _halshow_topology_sent.pop(client_id, None)
-        # Safety: stop all motion if this armed client disconnects.
+        # Safety: stop all motion if this armed client disconnects AND no
+        # other armed client remains in control. Multi-client topologies
+        # (local UI + remote laptop) must not abort a running program when
+        # one operator vanishes — the others still own the machine. Each
+        # remaining client has its own heartbeat watchdog, so "last armed
+        # operator out aborts" preserves the per-client safety guarantee
+        # without the surprising cross-client trip.
+        #
         # During global lifespan shutdown we already broadcast server_shutdown
         # and closed WS sockets — N clients each acquiring _cmd_lock to call
         # CMD.abort() while LinuxCNC is itself tearing down would stall the
         # shutdown path. Lifespan owns the global stop instead.
-        if armed and CMD is not None and not _shutting_down:
+        _any_other_armed = any(c.armed for c in _clients.values())
+        _other_armed_ids = [cid for cid, c in _clients.items() if c.armed]
+        if armed and not _any_other_armed and CMD is not None and not _shutting_down:
             _set_phase(f"ws_endpoint.finally.armed_motion_abort client#{client_id}")
             try:
                 async with _get_cmd_lock():
                     _set_phase(f"ws_endpoint.finally.armed_abort.cmd_lock_held client#{client_id}")
                     STAT.poll()
                     await _disarm_safety_sequence()
-            except Exception:
-                pass
+            except Exception as _e:
+                _trace.emit(
+                    "safety.disconnect_abort_failed", level="error",
+                    client_id=client_id, exc=type(_e).__name__, err=str(_e),
+                )
+        elif armed and _any_other_armed:
+            # Safety decision recorded: this client disconnected while armed,
+            # but motion continues because another armed operator is still in
+            # control. Surfacing this in the trace bus avoids a silent skip —
+            # operators can audit the decision after the fact.
+            _trace.emit(
+                "safety.disconnect_abort_skipped",
+                client_id=client_id,
+                remaining_armed=_other_armed_ids,
+            )
         _set_phase(f"ws_endpoint.finally.cancel_status_task client#{client_id}")
         status_task.cancel()
         # Clear estop hold if no clients remain
