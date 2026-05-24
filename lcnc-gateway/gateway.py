@@ -139,6 +139,25 @@ logging.getLogger("uvicorn").addFilter(_UvicornUrlColorFilter())
 logging.getLogger("uvicorn.error").addFilter(_UvicornUrlColorFilter())
 
 
+class _UvicornAccessTelemetryFilter(logging.Filter):
+    """Drop /telemetry access-log lines — the browser POSTs these on a
+    steady cadence (tab visibility, send-buffer pressure, JS errors) and
+    each one would otherwise print an INFO line, drowning real requests.
+    The event payload still flows through the trace bus as browser.* —
+    only the duplicated access-log noise is suppressed."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            path = args[2]
+            if isinstance(path, str) and path.startswith("/telemetry"):
+                return False
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_UvicornAccessTelemetryFilter())
+
+
 # ---- Config ----
 POLL_HZ = 30  # status update rate
 BASE_DIR = Path(__file__).resolve().parent
@@ -1572,10 +1591,15 @@ async def _status_poller():
             _status_gen += 1
             old_evt = _status_event
             _status_event = asyncio.Event()
+            # Exclude hidden tabs from expected — they intentionally skip the
+            # send loop, so counting them as "expected to finish" would flag
+            # every tick as an outlier and spam the log. send_pending peers
+            # stay in the count: if a send actually wedges across ticks, the
+            # outlier log should still fire.
             _status_tick_stats.update({
                 "gen": _status_gen,
                 "tick_start": time.monotonic(),
-                "expected": len(_clients),
+                "expected": sum(1 for c in _clients.values() if not c.hidden),
                 "done": 0, "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
                 "bytes_sum": 0, "bytes_max": 0, "tool_meta_count": 0,
             })
