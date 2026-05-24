@@ -709,15 +709,49 @@ function msgFormatTime(ts: number): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString();
 }
 
+// navigator.clipboard is only exposed in secure contexts (HTTPS or
+// localhost). The gateway binds 0.0.0.0 by design so the UI is reached
+// over LAN HTTP from another machine — a non-secure context. The
+// execCommand path is the LAN-HTTP fallback, not legacy cruft. Do NOT
+// strip without an HTTPS plan; the failure mode is a runtime TypeError
+// on every copy click. See commits e4fdd63 (removal) and the follow-up.
+function copyToClipboard(text: string): void {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(err => {
+      if (!fallbackCopy(text)) console.error("clipboard copy failed:", err);
+    });
+    return;
+  }
+  if (!fallbackCopy(text)) {
+    console.error("clipboard copy failed: no API available");
+  }
+}
+
+function fallbackCopy(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } finally {
+    document.body.removeChild(ta);
+  }
+  return ok;
+}
+
 function copyMessage(msg: LcncMessage) {
-  navigator.clipboard.writeText(`[${msgKindLabel(msg.kind)}] ${msgFormatTime(msg.ts)} — ${msg.text}`);
+  copyToClipboard(`[${msgKindLabel(msg.kind)}] ${msgFormatTime(msg.ts)} — ${msg.text}`);
 }
 
 function copyAllMessages() {
   const text = [...messages.value].reverse().map(m =>
     `[${msgKindLabel(m.kind)}] ${msgFormatTime(m.ts)} — ${m.text}`
   ).join("\n");
-  navigator.clipboard.writeText(text);
+  copyToClipboard(text);
 }
 
 /** ---------- actions ---------- */

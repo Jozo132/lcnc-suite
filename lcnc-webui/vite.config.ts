@@ -24,6 +24,7 @@ export default defineConfig({
       '/g30': 'http://127.0.0.1:8000',
       '/assets': 'http://127.0.0.1:8000',
       '/import-tool-library': 'http://127.0.0.1:8000',
+      '/telemetry': 'http://127.0.0.1:8000',
     },
   },
 })
