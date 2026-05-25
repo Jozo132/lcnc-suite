@@ -394,49 +394,12 @@ const isPaused = computed(() => st.value.paused ?? interpState.value === INTERP_
 const isRunning = computed(() => !isPaused.value && (interpState.value === INTERP_READING || interpState.value === INTERP_WAITING));
 const isIdle = computed(() => interpState.value === INTERP_IDLE);
 
-/** ---------- program elapsed timer ---------- */
-let _timerStartMs: number | null = null;
-let _timerAccMs = 0;
-let _timerHandle: ReturnType<typeof setInterval> | null = null;
-const programElapsed = ref(0); // seconds
-
-function _startTimer() {
-  _timerStartMs = Date.now();
-  if (_timerHandle) clearInterval(_timerHandle);
-  _timerHandle = setInterval(() => {
-    programElapsed.value = Math.floor((_timerAccMs + Date.now() - (_timerStartMs ?? Date.now())) / 1000);
-  }, 1000);
-}
-function _stopTimer() {
-  if (_timerHandle) { clearInterval(_timerHandle); _timerHandle = null; }
-}
-
-watch([isRunning, isPaused], ([running, paused], [wasRunning, wasPaused]) => {
-  if (running && !wasRunning && !wasPaused) {
-    // IDLE → RUNNING: reset and start
-    _timerAccMs = 0;
-    programElapsed.value = 0;
-    _startTimer();
-  } else if (running && !wasRunning && wasPaused) {
-    // PAUSED → RUNNING: resume
-    _startTimer();
-  } else if (paused && wasRunning) {
-    // RUNNING → PAUSED: accumulate and stop
-    _timerAccMs += Date.now() - (_timerStartMs ?? Date.now());
-    programElapsed.value = Math.floor(_timerAccMs / 1000);
-    _stopTimer();
-  } else if (!running && !paused) {
-    // → IDLE: stop, keep final value
-    if (wasRunning && _timerStartMs) {
-      _timerAccMs += Date.now() - _timerStartMs;
-      programElapsed.value = Math.floor(_timerAccMs / 1000);
-    }
-    _stopTimer();
-  }
-});
-
-onUnmounted(() => _stopTimer());
-
+/** ---------- program elapsed timer ----------
+ * Server-authoritative: gateway tracks the anchor across pause/resume and
+ * broadcasts the accumulated elapsed time each status tick. Mid-program
+ * reconnects see the true value because the first status snapshot already
+ * carries it. */
+const programElapsed = computed(() => Math.floor((st.value.program_elapsed_ms ?? 0) / 1000));
 const elapsedDisplay = computed(() => fmtElapsed(programElapsed.value));
 
 /** ---------- system clock ---------- */

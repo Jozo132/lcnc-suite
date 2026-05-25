@@ -1092,6 +1092,16 @@ def _start_heartbeat():
 
 _shared_status: Optional["StatusPayload"] = None
 _shared_status_dict: Optional[dict] = None  # cached asdict(_shared_status)
+
+# ---- Program-elapsed timer (server-authoritative) ----
+# Tracked across status polls so every connected client (including ones that
+# joined mid-program) sees the same elapsed time. Anchored to time.monotonic()
+# so wall-clock NTP corrections don't jump the counter.
+_program_start_mono: Optional[float] = None       # monotonic seconds when current run began
+_program_paused_accum_ms: int = 0                  # accumulated paused ms in current run
+_program_pause_start_mono: Optional[float] = None  # monotonic seconds of current freeze (pause or end)
+_program_active_last: bool = False                 # interp != IDLE last tick
+_program_paused_last: bool = False                 # paused last tick
 # Pre-encoded msgpack bytes of _shared_status_dict. When the wire format is
 # msgpack and no per-client mutation applies (tool_meta injection, delta), each
 # client's envelope encode splices these bytes verbatim via msgspec.Raw — one
@@ -2424,6 +2434,9 @@ class StatusPayload:
     active_file: Optional[str]
     motion_line: Optional[int]
 
+    # program elapsed (server-authoritative, mid-program reconnects see true value)
+    program_elapsed_ms: Optional[int]
+
     # active modal codes
     gcodes: Optional[List[int]]
     mcodes: Optional[List[int]]
@@ -2707,6 +2720,54 @@ def _stat_poll_timed(caller: str = "?") -> None:
                     duration_ms=round(dt_ms, 1), caller=caller)
 
 
+def _update_program_timer(interp_state: Optional[int], paused: bool) -> Optional[int]:
+    """Advance the server-authoritative program-elapsed accumulator and
+    return the current elapsed time in milliseconds (or None if no program
+    has ever run since startup). Called once per status poll.
+
+    Transitions handled:
+      idle    → active   start new run (reset accumulator + start anchor)
+      running → paused   open a pause segment
+      paused  → running  commit pause segment into accumulator
+      active  → idle     freeze the elapsed clock at "now"
+    """
+    global _program_start_mono, _program_paused_accum_ms, _program_pause_start_mono
+    global _program_active_last, _program_paused_last
+
+    active = interp_state is not None and interp_state != linuxcnc.INTERP_IDLE
+    is_paused = active and (paused or interp_state == linuxcnc.INTERP_PAUSED)
+    now_mono = time.monotonic()
+
+    # idle → active: new run
+    if active and not _program_active_last:
+        _program_start_mono = now_mono
+        _program_paused_accum_ms = 0
+        _program_pause_start_mono = None
+
+    # running → paused: start pause segment
+    elif active and is_paused and not _program_paused_last:
+        _program_pause_start_mono = now_mono
+
+    # paused → running: commit pause segment
+    elif active and not is_paused and _program_paused_last and _program_pause_start_mono is not None:
+        _program_paused_accum_ms += int((now_mono - _program_pause_start_mono) * 1000)
+        _program_pause_start_mono = None
+
+    # active → idle while running: freeze the clock at "now" so the final
+    # elapsed value stays put after the program ends. If we went idle from
+    # PAUSED, _program_pause_start_mono is already set — leave it alone.
+    elif not active and _program_active_last and _program_pause_start_mono is None and _program_start_mono is not None:
+        _program_pause_start_mono = now_mono
+
+    _program_active_last = active
+    _program_paused_last = is_paused
+
+    if _program_start_mono is None:
+        return None
+    anchor = _program_pause_start_mono if _program_pause_start_mono is not None else now_mono
+    return max(0, int((anchor - _program_start_mono) * 1000) - _program_paused_accum_ms)
+
+
 def poll_status() -> StatusPayload:
     if STAT is None:
         raise RuntimeError("LinuxCNC not connected")
@@ -2896,6 +2957,11 @@ def poll_status() -> StatusPayload:
     _sp_in = _reader_get("spindle_speed_in")
     spindle_speed_actual = _sp_in * _fb_scale if _sp_in is not None else None
 
+    program_elapsed_ms = _update_program_timer(
+        safe_get("interp_state", None),
+        bool(safe_get("paused", False)),
+    )
+
     return StatusPayload(
         ts=time.time(),
         estop=estop,
@@ -2939,6 +3005,7 @@ def poll_status() -> StatusPayload:
         spindle_direction=spindle_direction,
         active_file=safe_get("file", None),
         motion_line=safe_get("motion_line", None),
+        program_elapsed_ms=program_elapsed_ms,
         gcodes=to_float_list(safe_get("gcodes", None)),
         mcodes=to_float_list(safe_get("mcodes", None)),
         tool_number=tool_number,
