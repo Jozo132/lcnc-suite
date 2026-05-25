@@ -63,7 +63,7 @@ export const armed = ref(false);        // server-authoritative — driven by ga
 // field in a status message, cleared when the operator acknowledges. Survives
 // reload + multi-tab because the gateway re-broadcasts it on every status
 // until acknowledged. While non-null, the server rejects {cmd:"arm",armed:true}.
-export const safetyTrip = ref<{ ts: number; reason: string } | null>(null);
+export const safetyTrip = ref<{ reason: string } | null>(null);
 // HAL reader staleness: gateway sets `reader_stale: true` on status messages
 // when no snapshot has arrived from hal_reader.py within ~2 s. Auto-clears
 // when snapshots resume — distinct from safety_trip which requires operator
@@ -791,7 +791,7 @@ export function connectWs() {
       // Update synchronously (not via the rAF buffer) so the dialog opens
       // on the first status after a trip without a frame of delay.
       if (msg.safety_trip) {
-        safetyTrip.value = { ts: msg.safety_trip.ts, reason: msg.safety_trip.reason };
+        safetyTrip.value = { reason: msg.safety_trip.reason };
       } else if (safetyTrip.value !== null) {
         safetyTrip.value = null;
       }

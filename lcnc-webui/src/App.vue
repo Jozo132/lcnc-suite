@@ -19,7 +19,7 @@ import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import { highlightGcode } from "./gcodeHighlight";
-import { fmtElapsed, fmtDuration, fmtDist, fmtSize, fmtTimestamp } from "./format";
+import { fmtElapsed, fmtDuration, fmtDist, fmtSize } from "./format";
 import type { GcodeStats } from "./GcodePanel.vue";
 import { Settings, MessageSquare, PowerOff, Gamepad2, Keyboard, BookOpen, ClipboardCopy, Expand, Shrink } from "lucide-vue-next";
 import GcodeReferenceDialog from "./GcodeReferenceDialog.vue";
@@ -1125,8 +1125,7 @@ watch(viewerGcode, (newGcode) => {
       <div class="bannerContent" @click="messagesDialogOpen = true; markMessagesRead()">
         <Transition name="banner-fade" mode="out-in">
           <span v-if="safetyTrip" :key="'safety'" class="bannerError">
-            SAFETY TRIPPED at <span class="mono">{{ fmtTimestamp(safetyTrip.ts) }}</span>
-            — press Acknowledge to recover
+            SAFETY TRIPPED — press Acknowledge to recover
           </span>
           <span v-else-if="serverShuttingDown" :key="'shutdown'" class="bannerError">
             Server shutting down…

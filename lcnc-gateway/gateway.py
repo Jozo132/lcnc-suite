@@ -1564,14 +1564,16 @@ async def _status_poller():
                 _last_trip_count = trip_count  # sync on first reader snapshot
             elif trip_count > _last_trip_count:
                 if _unacked_trip is None:
-                    _unacked_trip = {
-                        "ts": int(time.time() * 1000),
-                        "reason": "hal_heartbeat_timeout",
-                    }
+                    # No timestamp: trip-count is only read inside the
+                    # status loop, which doesn't run when no clients are
+                    # connected. The ts we could record here is "when the
+                    # gateway noticed" — not "when the trip happened" —
+                    # so it would mislead operators (see audit Phase 3).
+                    # Drop it. The trace event below has its own log ts.
+                    _unacked_trip = {"reason": "hal_heartbeat_timeout"}
                     _trace.emit(
                         "safety.tripped", level="error",
                         trip_count=trip_count,
-                        ts_ms=_unacked_trip["ts"],
                     )
                     # Auto-snapshot the trace bus into a forensic bundle so
                     # the trip is reconstructable end-to-end without operator
