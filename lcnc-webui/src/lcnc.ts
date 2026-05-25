@@ -107,7 +107,7 @@ export type WsCommand =
   // Timing
   | { cmd: "timing_log"; enable: boolean }
   // Client-side diagnostics (heap, Three.js renderer info, etc.) — logged
-  // server-side to /tmp/lcnc-trace.log so a renderer crash ("Aw Snap") still
+  // server-side to trace.ndjson so a renderer crash ("Aw Snap") still
   // leaves a usable timeline.
   | { cmd: "client_diag"; data: Record<string, any> }
   // Halshow (Settings → Halshow tab) live updates

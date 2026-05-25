@@ -35,6 +35,7 @@ import hal
 
 import lcnc_trace as _trace
 _trace.init("hal_reader")
+_trace.install_crash_hooks("hal_reader")
 
 COMP_NAME = "webui-reader"
 SOCK_PATH = "/tmp/webui-reader.sock"

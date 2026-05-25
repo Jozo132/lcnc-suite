@@ -2,7 +2,8 @@
 
 Every component (gateway, hal_reader, hal_watchdog) imports this module and
 calls `init(<proc_name>)` once at startup, then `emit(tag, **fields)` for
-each event. All events land in /tmp/lcnc-trace.log as one NDJSON line each.
+each event. All events land in trace.ndjson under the resolved log dir
+(see lcnc_paths.resolve(); default ~/linuxcnc/lcnc-suite/logs/).
 
 Why one shared file across processes: Linux guarantees atomic O_APPEND writes
 up to PIPE_BUF (4096 B), so concurrent appends from multiple processes are
@@ -58,13 +59,28 @@ import json
 import logging
 import logging.handlers
 import os
+import signal
 import sys
+import threading
 import time
+import traceback
 from typing import Any, Optional
 
-TRACE_PATH = "/tmp/lcnc-trace.log"
-_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
-_BACKUPS = 5
+import lcnc_paths
+
+# Filename constants. These live under the resolved log_dir from
+# lcnc_paths.resolve(); the launcher uses the same names via shell.
+_TRACE_FILENAME = "trace.ndjson"
+_CRASH_FILENAME = "crash.log"
+
+# Legacy module-level path kept only as a fallback for callers that
+# import this module but never call init() (no known sites today).
+TRACE_PATH = "/tmp/lcnc-suite/" + _TRACE_FILENAME
+
+_TRACE_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
+_TRACE_BACKUPS = 5
+_CRASH_MAX_BYTES = 5 * 1024 * 1024   # 5 MB
+_CRASH_BACKUPS = 5
 _LOGGER_NAME = "lcnc.trace"
 
 _proc_name: str = "?"
@@ -73,33 +89,76 @@ _t0_mono: float = 0.0
 _t0_wall_ns: int = 0
 _logger: Optional[logging.Logger] = None
 _initialized: bool = False
+_log_dir: str = ""
+_logger_failed: bool = False  # one-shot guard for self-swallow at write time
 
 
-def init(proc_name: str) -> None:
+class _CrashFilter(logging.Filter):
+    """Admit only `crash.*` and `browser.error.*` events.
+
+    Parses the already-encoded NDJSON line (the record `msg` is the
+    JSON string we built in emit()) so we don't pay a second encode.
+    Worst case ~5 us per emit on the reject path."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            tag = json.loads(record.msg).get("tag", "")
+        except Exception:
+            return False
+        return tag.startswith("crash.") or tag.startswith("browser.error.")
+
+
+def init(proc_name: str, log_dir: Optional[str] = None) -> None:
     """Call once at process start. Records the boot time anchor and opens
-    the trace file with rotation."""
-    global _proc_name, _pid, _t0_mono, _t0_wall_ns, _logger, _initialized
+    the trace file with rotation.
+
+    `log_dir` overrides the resolver — useful for tests. Production
+    callers pass nothing and let lcnc_paths.resolve() pick the path.
+    """
+    global _proc_name, _pid, _t0_mono, _t0_wall_ns, _logger, _initialized, _log_dir
     if _initialized:
         return
     _proc_name = proc_name
     _pid = os.getpid()
     _t0_mono = time.monotonic()
     _t0_wall_ns = time.time_ns()
+
+    fallback_reason: Optional[str] = None
+    if log_dir is None:
+        _log_dir, fallback_reason = lcnc_paths.resolve()
+    else:
+        _log_dir = log_dir
+    trace_path = os.path.join(_log_dir, _TRACE_FILENAME)
+    crash_path = os.path.join(_log_dir, _CRASH_FILENAME)
+
     try:
         logger = logging.getLogger(_LOGGER_NAME)
         # Keep our handler isolated from the root logger.
         logger.propagate = False
         logger.setLevel(logging.DEBUG)
         # Don't double-attach if a previous init partially ran.
-        if not any(isinstance(h, logging.handlers.RotatingFileHandler)
-                   for h in logger.handlers):
-            handler = logging.handlers.RotatingFileHandler(
-                TRACE_PATH, maxBytes=_MAX_BYTES, backupCount=_BACKUPS
+        has_trace = any(
+            isinstance(h, logging.handlers.RotatingFileHandler)
+            and getattr(h, "_lcnc_role", "") == "trace"
+            for h in logger.handlers
+        )
+        if not has_trace:
+            trace_h = logging.handlers.RotatingFileHandler(
+                trace_path, maxBytes=_TRACE_MAX_BYTES, backupCount=_TRACE_BACKUPS
             )
             # We pre-encode NDJSON in the message; the formatter just emits
             # the message verbatim with a trailing newline (logging adds one).
-            handler.setFormatter(logging.Formatter("%(message)s"))
-            logger.addHandler(handler)
+            trace_h.setFormatter(logging.Formatter("%(message)s"))
+            trace_h._lcnc_role = "trace"  # type: ignore[attr-defined]
+            logger.addHandler(trace_h)
+
+            crash_h = logging.handlers.RotatingFileHandler(
+                crash_path, maxBytes=_CRASH_MAX_BYTES, backupCount=_CRASH_BACKUPS
+            )
+            crash_h.setFormatter(logging.Formatter("%(message)s"))
+            crash_h.addFilter(_CrashFilter())
+            crash_h._lcnc_role = "crash"  # type: ignore[attr-defined]
+            logger.addHandler(crash_h)
         _logger = logger
     except Exception as e:
         print(f"[TRACE] init failed: {e}", file=sys.stderr, flush=True)
@@ -110,8 +169,24 @@ def init(proc_name: str) -> None:
         t0_wall_ns=_t0_wall_ns,
         t0_mono=_t0_mono,
         argv=sys.argv,
+        log_dir=_log_dir,
         msg=f"{proc_name} trace started",
     )
+    # Deferred warn — must come AFTER the logger is open so the event
+    # actually lands somewhere.
+    if fallback_reason is not None:
+        emit(
+            "trace.log_dir_fallback",
+            level="warn",
+            requested=lcnc_paths._requested(),
+            chosen=_log_dir,
+            reason=fallback_reason,
+        )
+
+
+def log_dir() -> str:
+    """Return the resolved log directory. Empty string before init()."""
+    return _log_dir
 
 
 def emit(tag: str, level: str = "info", msg: str = "", **fields: Any) -> None:
@@ -148,8 +223,205 @@ def emit(tag: str, level: str = "info", msg: str = "", **fields: Any) -> None:
             return
     try:
         _logger.info(line)
+    except Exception as e:
+        # One-shot self-report. We cannot recursively call emit() to log
+        # the logger failure (would infinite-loop), so the only honest
+        # signal is a single stderr print the first time it happens.
+        # Silent fallback here was the highest-priority trace gap.
+        global _logger_failed
+        if not _logger_failed:
+            _logger_failed = True
+            print(
+                f"[TRACE] logger write failed (further failures silenced): {e}",
+                file=sys.stderr, flush=True,
+            )
+
+
+def emit_exc(tag: str, exc: BaseException, level: str = "warn",
+             **fields: Any) -> None:
+    """Convenience for `except Exception as e: emit_exc(tag, e)` patterns.
+
+    Captures exc_type and a truncated exc_msg. Use this instead of
+    `except Exception: pass` everywhere that drop hides a real failure
+    mode. For parsing failures wanting line context, use emit_exc_tb."""
+    emit(
+        tag, level=level,
+        exc_type=type(exc).__name__,
+        exc_msg=str(exc)[:500],
+        **fields,
+    )
+
+
+def emit_exc_tb(tag: str, exc: BaseException, level: str = "warn",
+                tb_limit: int = 8, **fields: Any) -> None:
+    """Like emit_exc but includes a short traceback tail. Use for
+    parsing failures where the line context matters."""
+    try:
+        tb_tail = "".join(traceback.format_exception(
+            type(exc), exc, exc.__traceback__, limit=tb_limit
+        ))[-2000:]
     except Exception:
-        pass
+        tb_tail = ""
+    emit(
+        tag, level=level,
+        exc_type=type(exc).__name__,
+        exc_msg=str(exc)[:500],
+        tb_tail=tb_tail,
+        **fields,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# Crash hooks
+#
+# Three things land in the trace bus that previously only hit stderr:
+#   1. sys-level unhandled exceptions  → crash.sys_excepthook
+#   2. thread unhandled exceptions     → crash.thread
+#   3. asyncio unhandled task errors   → crash.asyncio_unhandled
+# Plus SIGTERM/SIGINT as crash.signal at level=info (these are normal
+# but the timing is useful for postmortem correlation).
+#
+# Not catchable in pure Python: SIGSEGV / SIGABRT. The libc abort
+# message lands in gateway.log via the launcher tee — document there.
+# ──────────────────────────────────────────────────────────────────
+
+_crash_hooks_installed = False
+
+
+def install_crash_hooks(proc_name: str) -> None:
+    """Wire sys.excepthook, threading.excepthook, and SIGTERM/SIGINT
+    handlers so unhandled errors land in the trace bus.
+
+    The asyncio handler is NOT installed here because the event loop
+    doesn't exist at import time. Gateway calls `install_asyncio_handler()`
+    inside its FastAPI lifespan startup.
+
+    Safe to call multiple times — only the first call wires the hooks."""
+    global _crash_hooks_installed
+    if _crash_hooks_installed:
+        return
+    _crash_hooks_installed = True
+
+    prev_excepthook = sys.excepthook
+
+    def _sys_hook(exc_type, exc_value, exc_tb):
+        try:
+            tb_tail = "".join(traceback.format_exception(
+                exc_type, exc_value, exc_tb, limit=12
+            ))[-2000:]
+            emit(
+                "crash.sys_excepthook", level="error",
+                proc=proc_name,
+                exc_type=getattr(exc_type, "__name__", str(exc_type)),
+                exc_msg=str(exc_value)[:500],
+                tb_tail=tb_tail,
+            )
+        finally:
+            # Chain to the previous hook (typically sys.__excepthook__)
+            # so the traceback still hits stderr and lands in gateway.log
+            # via the launcher tee.
+            try:
+                prev_excepthook(exc_type, exc_value, exc_tb)
+            except Exception:
+                # safe-silent: hook chain is best-effort, Python is already
+                # unwinding the interpreter.
+                pass
+
+    sys.excepthook = _sys_hook
+
+    def _thread_hook(args):
+        try:
+            tb_tail = "".join(traceback.format_exception(
+                args.exc_type, args.exc_value, args.exc_traceback, limit=12
+            ))[-2000:]
+            emit(
+                "crash.thread", level="error",
+                proc=proc_name,
+                thread_name=getattr(args.thread, "name", "?"),
+                exc_type=getattr(args.exc_type, "__name__", str(args.exc_type)),
+                exc_msg=str(args.exc_value)[:500],
+                tb_tail=tb_tail,
+            )
+        except Exception:
+            # safe-silent: same reasoning as _sys_hook chain.
+            pass
+
+    threading.excepthook = _thread_hook
+
+    # SIGTERM/SIGINT: log timing, then re-raise default disposition so the
+    # process's existing graceful shutdown runs. Don't swallow the signal.
+    def _signal_hook(signo, frame):
+        try:
+            emit(
+                "crash.signal", level="info",
+                proc=proc_name,
+                signo=signo,
+                signame=signal.Signals(signo).name,
+            )
+        except Exception:
+            # safe-silent: signal handlers must return quickly.
+            pass
+        # Restore default and re-raise so the kernel's default disposition
+        # (terminate) runs, but only after the existing handler chain
+        # in each process has finished its asyncio teardown.
+        signal.signal(signo, signal.SIG_DFL)
+        os.kill(os.getpid(), signo)
+
+    # Only install if no handler is already wired by the host process.
+    # gateway.py / hal_watchdog.py both install their own SIGTERM handlers
+    # for cooperative shutdown — don't clobber them. We log via the asyncio
+    # loop signal handler instead (see install_asyncio_handler).
+    for signo in (signal.SIGTERM, signal.SIGINT):
+        try:
+            current = signal.getsignal(signo)
+            if current in (signal.SIG_DFL, signal.SIG_IGN, None):
+                signal.signal(signo, _signal_hook)
+        except (ValueError, OSError):
+            # safe-silent: signal.signal raises ValueError off the main
+            # thread; we may be imported into a worker. Not fatal.
+            pass
+
+
+def install_asyncio_handler(proc_name: str) -> None:
+    """Install an asyncio exception handler that mirrors unhandled task
+    errors to the trace bus. Must be called from inside a running event
+    loop (e.g. FastAPI lifespan startup)."""
+    import asyncio
+    loop = asyncio.get_event_loop()
+    prev = loop.get_exception_handler()
+
+    def _handler(loop_, context):
+        try:
+            exc = context.get("exception")
+            tb_tail = ""
+            if exc is not None:
+                try:
+                    tb_tail = "".join(traceback.format_exception(
+                        type(exc), exc, exc.__traceback__, limit=12
+                    ))[-2000:]
+                except Exception:
+                    tb_tail = ""
+            emit(
+                "crash.asyncio_unhandled", level="error",
+                proc=proc_name,
+                message=str(context.get("message", ""))[:300],
+                exc_type=type(exc).__name__ if exc is not None else None,
+                exc_msg=str(exc)[:500] if exc is not None else None,
+                tb_tail=tb_tail,
+            )
+        finally:
+            # Preserve existing handling (uvicorn installs its own) so
+            # nothing observable changes besides the new trace entry.
+            if prev is not None:
+                try:
+                    prev(loop_, context)
+                except Exception:
+                    # safe-silent: previous handler is third-party.
+                    pass
+            else:
+                loop_.default_exception_handler(context)
+
+    loop.set_exception_handler(_handler)
 
 
 def _json_default(o: Any) -> Any:

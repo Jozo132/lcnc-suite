@@ -2,7 +2,7 @@
 //
 // Every CLIENT_DIAG_INTERVAL ms we send a snapshot of {JS heap, Three.js
 // renderer counters, connection state} to the gateway, which forwards it to
-// /tmp/lcnc-trace.log via _trace.emit("client.diag", ...). Survives the
+// trace.ndjson via _trace.emit("client.diag", ...). Survives the
 // renderer dying ("Aw Snap"): the file is owned by the gateway process.
 //
 // Chromium-only `performance.memory` is reported when available; other

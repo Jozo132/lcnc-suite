@@ -26,6 +26,7 @@ from contextlib import asynccontextmanager
 
 import lcnc_trace as _trace
 _trace.init("gateway")
+_trace.install_crash_hooks("gateway")
 
 
 # === TEMP LIFECYCLE PROBE (remove after debugging) ===
@@ -478,7 +479,7 @@ def _snapshot_trip(trip_ts_ns: int) -> None:
     """Write a forensic bundle when a HAL safety trip fires. Runs in a
     worker thread (asyncio.to_thread) so it can't block the loop. Best
     effort: any failure is logged but doesn't propagate."""
-    out_dir = f"/tmp/lcnc-trip-{trip_ts_ns}/"
+    out_dir = os.path.join(_trace.log_dir() or "/tmp", f"trips/{trip_ts_ns}/")
     try:
         os.makedirs(out_dir, exist_ok=True)
     except Exception as e:
@@ -4346,6 +4347,9 @@ def register_bg_task(t: asyncio.Task) -> asyncio.Task:
 @asynccontextmanager
 async def lifespan(app: "FastAPI"):
     _trace.emit("boot.lifespan_ready")
+    # Asyncio loop exists only after lifespan startup — wire the
+    # unhandled-task hook here so uvicorn's own handler is preserved.
+    _trace.install_asyncio_handler("gateway")
     # === TEMP IDLE-GATEWAY PROBE === start the status poller from lifespan
     # rather than waiting for the first WS connect, so the [IDLE] log fires
     # during the pre-first-client window. The poller's `if not _clients`
@@ -6051,7 +6055,7 @@ async def ws_endpoint(ws: WebSocket):
                 # Periodic browser-side diagnostics (heap, Three.js counters,
                 # connection state). Forwarded straight to the trace bus so a
                 # renderer crash ("Aw Snap") still leaves a usable timeline in
-                # /tmp/lcnc-trace.log — the gateway file outlives the browser.
+                # trace.ndjson — the gateway file outlives the browser.
                 data = msg.get("data")
                 if isinstance(data, dict):
                     _trace.emit("client.diag", client_id=client_id, **data)
@@ -6064,7 +6068,9 @@ async def ws_endpoint(ws: WebSocket):
                 if _timing_log_enabled:
                     from datetime import datetime
                     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                    _timing_log_path = f"/tmp/lcnc-timing-{stamp}.jsonl"
+                    timing_dir = os.path.join(_trace.log_dir() or "/tmp", "timing")
+                    os.makedirs(timing_dir, exist_ok=True)
+                    _timing_log_path = os.path.join(timing_dir, f"timing-{stamp}.jsonl")
                     _trace.emit("timing.log_started", path=_timing_log_path)
                 else:
                     if _timing_log_path:

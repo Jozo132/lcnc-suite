@@ -102,6 +102,25 @@ The gateway never imports `hal`. All HAL access goes through three independent u
 
 Why this split: the previous in-process approach had `webui-monitor` mirror-pin shadowing for sub-µs reads, but a SIGKILL orphan left stale shadow values readable by `hal.get_value` while the real pin was disconnected — silent-fallback failure mode that masked a safety-trip read. See GitHub issue #9 for full history. Driving rule: [feedback_no_silent_fallbacks.md](.claude/projects/-home-cnc-lcnc-suite/memory/feedback_no_silent_fallbacks.md).
 
+### Log Locations
+
+All four processes (launcher, gateway, hal_reader, hal_watchdog) write to a shared directory resolved by `lcnc_paths.resolve()`. Precedence: `LCNC_WEBUI_LOG_DIR` env > INI `[DISPLAY] WEBUI_LOG_DIR` > `~/linuxcnc/lcnc-suite/logs/` default > `/tmp/lcnc-suite/` fallback (when the requested dir is missing/unwritable or free disk < 500 MB).
+
+| File | Source | Contents |
+|---|---|---|
+| `trace.ndjson` | gateway, hal_reader, hal_watchdog, launcher proc.status loop, browser telemetry | Structured event bus. Multi-writer safe (atomic O_APPEND ≤ PIPE_BUF). RotatingFileHandler 50 MB × 5. |
+| `crash.log` | Same logger, filtered | `crash.*` and `browser.error.*` events only. RotatingFileHandler 5 MB × 5. Operator triage entry point. |
+| `gateway.log` | Launcher tee of uvicorn stdout/stderr | Color startup banner, pre-Python failures, libc abort messages (SIGSEGV/SIGABRT are uncatchable in Python — look here). |
+| `launcher.log` | bash `_log` helper | Launcher diagnostic (process starts, FIFO setup, sampler/proc.status loop). |
+| `hal_watchdog.log` | Watchdog `_HB_RECV_LOG_PATH` (TEMP) | Heartbeat-arrival probe. |
+| `hal_sample.csv` | Optional `halsampler -t` | HAL servo-cycle pin sampling. |
+| `trips/<trip_ts_ns>/` | `_snapshot_trip()` | Forensic bundle dumped on each safety trip via `scripts/trace-bundle.py`. |
+| `timing/timing-<ts>.jsonl` | On-demand via `timing_log` WS cmd | Per-session timing histogram. |
+
+Override examples: `LCNC_WEBUI_LOG_DIR=/tmp/altlogs lcnc-suite -ini foo.ini`, or `WEBUI_LOG_DIR = /var/log/lcnc-suite` in `[DISPLAY]`. The launcher exports `LCNC_RESOLVED_LOG_DIR` for any subshell that needs the chosen path. The FIFO at `/tmp/lcnc-fifo.*` stays on tmpfs (`mkfifo` on NFS or odd filesystems is unreliable); only the tee output target moves to the resolved dir.
+
+**Crash hooks** in `lcnc_trace.install_crash_hooks(proc)` wire `sys.excepthook`, `threading.excepthook`, and SIGTERM/SIGINT in all three processes; `install_asyncio_handler(proc)` runs from FastAPI lifespan startup. Tags: `crash.sys_excepthook`, `crash.thread`, `crash.asyncio_unhandled`, `crash.signal`. SIGSEGV/SIGABRT cannot be caught in Python — that's why `gateway.log` exists as the launcher-tee backstop.
+
 ## Permission System & Machine Controls Catalog
 
 ### Permissions (`permissions.ts`)

@@ -17,6 +17,7 @@ import hal
 
 import lcnc_trace as _trace
 _trace.init("hal_watchdog")
+_trace.install_crash_hooks("hal_watchdog")
 
 try:
     import fcntl as _fcntl
@@ -99,7 +100,7 @@ _T0 = time.monotonic()
 _last_hb_recv = None  # monotonic time of last heartbeat msg received
 _last_hb_recv_true = None  # monotonic time of last heartbeat msg with value=True
 _RECV_GAP_THRESHOLD_S = 0.10
-_HB_RECV_LOG_PATH = "/tmp/lcnc-hal-watchdog.log"
+_HB_RECV_LOG_PATH = os.path.join(_trace.log_dir() or "/tmp", "hal_watchdog.log")
 try:
     _hb_recv_log = open(_HB_RECV_LOG_PATH, "w", buffering=1)  # line-buffered
 except OSError as _e:
