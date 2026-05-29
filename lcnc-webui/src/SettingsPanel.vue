@@ -775,13 +775,6 @@ function resetMachineColor(id: string) {
   justify-content: flex-end;
 }
 
-.scrollContent {
-  overflow-y: auto;
-  height: 100%;
-  position: relative;
-}
-
-
 /* .section — replaced by stack-controls utility (same shape) */
 
 .wpColumns {
