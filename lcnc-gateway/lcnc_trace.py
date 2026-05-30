@@ -7,7 +7,11 @@ each event. All events land in trace.ndjson under the resolved log dir
 
 Why one shared file across processes: Linux guarantees atomic O_APPEND writes
 up to PIPE_BUF (4096 B), so concurrent appends from multiple processes are
-line-atomic. Each line carries `proc` + `pid` so the bundler can demux later.
+line-atomic (emit() caps each line below that). Rotation at 50 MB is the one
+multi-writer hazard plain RotatingFileHandler can't handle — each process would
+race doRollover() — so we use ConcurrentRotatingFileHandler, which coordinates
+the rollover with a portalocker file lock. Each line carries `proc` + `pid` so
+the bundler can demux later.
 
 Why direct file write (not queue + thread): NDJSON encoding is < 50 us per
 event; line-buffered O_APPEND write is 1-10 us uncached. At our event rate
@@ -65,6 +69,8 @@ import threading
 import time
 import traceback
 from typing import Any, Optional
+
+from concurrent_log_handler import ConcurrentRotatingFileHandler
 
 import lcnc_paths
 
@@ -138,12 +144,17 @@ def init(proc_name: str, log_dir: Optional[str] = None) -> None:
         logger.setLevel(logging.DEBUG)
         # Don't double-attach if a previous init partially ran.
         has_trace = any(
-            isinstance(h, logging.handlers.RotatingFileHandler)
-            and getattr(h, "_lcnc_role", "") == "trace"
+            getattr(h, "_lcnc_role", "") == "trace"
             for h in logger.handlers
         )
         if not has_trace:
-            trace_h = logging.handlers.RotatingFileHandler(
+            # ConcurrentRotatingFileHandler (portalocker-based) coordinates the
+            # 50 MB rollover across all four processes — plain RotatingFileHandler
+            # has each process race doRollover() independently, which can lose
+            # lines and corrupt the backup chain. Line-atomic appends (< PIPE_BUF,
+            # enforced in emit()) plus lock-coordinated rotation give a safe
+            # single shared bus.
+            trace_h = ConcurrentRotatingFileHandler(
                 trace_path, maxBytes=_TRACE_MAX_BYTES, backupCount=_TRACE_BACKUPS
             )
             # We pre-encode NDJSON in the message; the formatter just emits
@@ -152,7 +163,7 @@ def init(proc_name: str, log_dir: Optional[str] = None) -> None:
             trace_h._lcnc_role = "trace"  # type: ignore[attr-defined]
             logger.addHandler(trace_h)
 
-            crash_h = logging.handlers.RotatingFileHandler(
+            crash_h = ConcurrentRotatingFileHandler(
                 crash_path, maxBytes=_CRASH_MAX_BYTES, backupCount=_CRASH_BACKUPS
             )
             crash_h.setFormatter(logging.Formatter("%(message)s"))

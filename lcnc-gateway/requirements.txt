@@ -18,6 +18,11 @@ python-multipart>=0.0.9       # FastAPI file uploads (STL upload)
 # Serialization
 msgspec>=0.18
 
+# Structured trace bus: lock-coordinated log rotation across the four suite
+# processes (gateway, hal_reader, hal_watchdog, launcher) sharing one
+# trace.ndjson. Plain RotatingFileHandler races doRollover() multi-writer.
+concurrent-log-handler>=0.9.25   # pulls in portalocker
+
 # CLI
 click>=8.1
 
