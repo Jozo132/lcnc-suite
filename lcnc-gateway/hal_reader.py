@@ -83,6 +83,7 @@ if os.path.exists(SOCK_PATH):
 
 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(SOCK_PATH)
+os.chmod(SOCK_PATH, 0o600)  # owner-only: no other local user may connect
 server.listen(1)
 server.setblocking(False)
 
@@ -213,7 +214,12 @@ try:
             elif sock is client:
                 try:
                     data = client.recv(65536)
-                except Exception:
+                except Exception as _re:
+                    # Surface the error rather than masking it as a clean
+                    # disconnect — a transient recv failure is diagnostically
+                    # different from the gateway closing the socket.
+                    print(f"[READER] recv error, dropping client: {_re}", flush=True)
+                    _trace.emit("reader.recv_error", level="warn", err=str(_re))
                     data = b""
                 if not data:
                     _drop_client(client)

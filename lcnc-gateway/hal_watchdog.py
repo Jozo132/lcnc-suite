@@ -77,6 +77,9 @@ if os.path.exists(SOCK_PATH):
 
 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(SOCK_PATH)
+# Owner-only perms: this socket releases the safety trip-latch (trip_reset).
+# Without this, any local user/process could connect and clear a latched trip.
+os.chmod(SOCK_PATH, 0o600)
 server.listen(1)
 server.setblocking(False)
 
@@ -227,7 +230,16 @@ try:
                         line = line.strip()
                         if not line:
                             continue
-                        msg = json.loads(line)
+                        try:
+                            msg = json.loads(line)
+                        except Exception as _je:
+                            # A single malformed line must NOT fall into the
+                            # broad except below (which forces all pins LOW and
+                            # trips safety). Skip it like hal_reader does — a
+                            # bad byte is not a reason to ESTOP the machine.
+                            print(f"[WD] bad json from gateway: {_je}", flush=True)
+                            _trace.emit("wd.bad_msg", level="warn", err=str(_je))
+                            continue
                         if "heartbeat" in msg:
                             # === TEMP HB-RECV PROBE === log inter-arrival gap
                             # for heartbeat messages. Gateway sends at ~33 ms

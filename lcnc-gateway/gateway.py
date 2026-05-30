@@ -1611,6 +1611,20 @@ async def _status_poller():
                         asyncio.to_thread(_snapshot_trip, _trip_ts_ns)
                     )
                 _last_trip_count = trip_count
+            elif trip_count < _last_trip_count:
+                # Watchdog restarted: its trip-count is in-process and resets
+                # to 0 on restart (SIGKILL / halrun reload). Without resyncing,
+                # _last_trip_count would stay at the stale pre-restart value and
+                # the next genuine trip (counting up from 0) would NOT register
+                # _unacked_trip until the count climbed back past the old
+                # high-water mark — silently skipping the operator banner/ack.
+                # The HAL trip-latch pin still gates motion regardless; this
+                # only restores the audit/ack path. Resync to the new baseline.
+                _trace.emit(
+                    "safety.watchdog_restart", level="warn",
+                    prev_count=_last_trip_count, new_count=trip_count,
+                )
+                _last_trip_count = trip_count
 
             # Cache results for per-client loops
             _shared_status = st
@@ -3444,6 +3458,11 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             return {"ok": True}
 
         if cmd == "estop_reset":
+            # require_armed is safe here despite a trip auto-clearing nothing:
+            # the frontend gates its Reset button on canResetEstop (armed &&
+            # isEstop), and arm is rejected while _unacked_trip is set, so the
+            # operator-reachable recovery order is Acknowledge -> Arm -> Reset.
+            # By the time this command can be sent the client is armed.
             require_armed(armed)
             # Do NOT pre-check emc_enable_in here. Standard LinuxCNC safety
             # chains feed iocontrol.0.user-enable-out back into the AND that
