@@ -102,11 +102,20 @@ source "$GATEWAY_DIR/.venv/bin/activate"
 
 # ── Resolve log directory once, share with Python via env so all four
 # processes (launcher, gateway, hal_reader, hal_watchdog) agree.
-# Precedence: $LCNC_WEBUI_LOG_DIR → INI [DISPLAY] WEBUI_LOG_DIR →
-# ~/linuxcnc/lcnc-suite/logs/ → /tmp/lcnc-suite/ fallback.
+# Precedence: $LCNC_LOG_DIR → INI [DISPLAY] LOG_DIR → <install-dir>/runlogs.
 LCNC_RESOLVED_LOG_DIR="$(python3 -c "import sys; sys.path.insert(0, '$GATEWAY_DIR'); import lcnc_paths; print(lcnc_paths.resolve()[0])")"
-mkdir -p "$LCNC_RESOLVED_LOG_DIR"
 export LCNC_RESOLVED_LOG_DIR
+
+# ── Fail loudly if the resolved log dir can't be created/written. This is
+# the single loud boundary: the Python processes keep their never-raise
+# contract and trust the dir exists. There is no /tmp fallback — an
+# unwritable log dir is a broken install, caught here before any
+# gateway/HAL process starts (and before the machine is live).
+if ! mkdir -p "$LCNC_RESOLVED_LOG_DIR" 2>/dev/null || [[ ! -w "$LCNC_RESOLVED_LOG_DIR" ]]; then
+  echo "ERROR: log directory not writable: $LCNC_RESOLVED_LOG_DIR" >&2
+  echo "Fix permissions, or set LOG_DIR in the INI [DISPLAY] section / LCNC_LOG_DIR env." >&2
+  exit 1
+fi
 
 # ── Diagnostic launcher log — bypasses the tee pipe entirely so we
 # can see what the launcher is doing even if tee blocks. Append-per-

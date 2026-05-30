@@ -3,7 +3,7 @@
 Every component (gateway, hal_reader, hal_watchdog) imports this module and
 calls `init(<proc_name>)` once at startup, then `emit(tag, **fields)` for
 each event. All events land in trace.ndjson under the resolved log dir
-(see lcnc_paths.resolve(); default ~/linuxcnc/lcnc-suite/logs/).
+(see lcnc_paths.resolve(); default <install-dir>/runlogs).
 
 Why one shared file across processes: Linux guarantees atomic O_APPEND writes
 up to PIPE_BUF (4096 B), so concurrent appends from multiple processes are
@@ -73,10 +73,6 @@ import lcnc_paths
 _TRACE_FILENAME = "trace.ndjson"
 _CRASH_FILENAME = "crash.log"
 
-# Legacy module-level path kept only as a fallback for callers that
-# import this module but never call init() (no known sites today).
-TRACE_PATH = "/tmp/lcnc-suite/" + _TRACE_FILENAME
-
 _TRACE_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 _TRACE_BACKUPS = 5
 _CRASH_MAX_BYTES = 5 * 1024 * 1024   # 5 MB
@@ -123,9 +119,8 @@ def init(proc_name: str, log_dir: Optional[str] = None) -> None:
     _t0_mono = time.monotonic()
     _t0_wall_ns = time.time_ns()
 
-    fallback_reason: Optional[str] = None
     if log_dir is None:
-        _log_dir, fallback_reason = lcnc_paths.resolve()
+        _log_dir, _ = lcnc_paths.resolve()
     else:
         _log_dir = log_dir
     trace_path = os.path.join(_log_dir, _TRACE_FILENAME)
@@ -172,16 +167,6 @@ def init(proc_name: str, log_dir: Optional[str] = None) -> None:
         log_dir=_log_dir,
         msg=f"{proc_name} trace started",
     )
-    # Deferred warn — must come AFTER the logger is open so the event
-    # actually lands somewhere.
-    if fallback_reason is not None:
-        emit(
-            "trace.log_dir_fallback",
-            level="warn",
-            requested=lcnc_paths._requested(),
-            chosen=_log_dir,
-            reason=fallback_reason,
-        )
 
 
 def log_dir() -> str:

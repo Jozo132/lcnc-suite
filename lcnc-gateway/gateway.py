@@ -479,7 +479,14 @@ def _snapshot_trip(trip_ts_ns: int) -> None:
     """Write a forensic bundle when a HAL safety trip fires. Runs in a
     worker thread (asyncio.to_thread) so it can't block the loop. Best
     effort: any failure is logged but doesn't propagate."""
-    out_dir = os.path.join(_trace.log_dir() or "/tmp", f"trips/{trip_ts_ns}/")
+    base = _trace.log_dir()
+    if not base:
+        # No silent scatter: a trip bundle written to cwd/`/tmp` is a lost
+        # forensic record. Surface the bug instead.
+        _trace.emit("safety.snapshot_no_log_dir", level="error",
+                    trip_ts_ns=trip_ts_ns)
+        return
+    out_dir = os.path.join(base, f"trips/{trip_ts_ns}/")
     try:
         os.makedirs(out_dir, exist_ok=True)
     except Exception as e:
@@ -6180,7 +6187,13 @@ async def ws_endpoint(ws: WebSocket):
                 if _timing_log_enabled:
                     from datetime import datetime
                     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                    timing_dir = os.path.join(_trace.log_dir() or "/tmp", "timing")
+                    base = _trace.log_dir()
+                    if not base:
+                        _trace.emit("timing.log_no_log_dir", level="error")
+                        _timing_log_enabled = False
+                        await ws_send_json(ws, {"type": "reply", "ok": False, "enabled": False})
+                        continue
+                    timing_dir = os.path.join(base, "timing")
                     os.makedirs(timing_dir, exist_ok=True)
                     _timing_log_path = os.path.join(timing_dir, f"timing-{stamp}.jsonl")
                     _trace.emit("timing.log_started", path=_timing_log_path)

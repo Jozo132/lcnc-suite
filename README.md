@@ -409,6 +409,7 @@ WEBUI_WS_INIT_CONCURRENCY = 20
 | `WEBUI_PORT` | `8000` | HTTP and WebSocket port |
 | `WEBUI_BROWSER` | `1` | Auto-open browser on start (`0` to disable) |
 | `WEBUI_DEV` | `0` | `1` = Vite dev server on :5173 with hot-reload |
+| `LOG_DIR` | `<install-dir>/runlogs` | **Optional.** Where all four suite processes write logs. Unset = next to the launcher (recommended). Set only to relocate; unwritable = launcher aborts (no `/tmp` fallback) |
 | `DEBUG` | `0` | Subroutine debug logging — `0` = off, `1` = write `logfile.txt` to config folder (read by `tool_touch_off.ngc`) |
 | `CAMERA_SOURCE` | *(disabled)* | USB device index (`0`, `1`) or URL (`rtsp://host/live`, `http://host/mjpeg`) |
 | `CAMERA_RESOLUTION` | `1280x720` | Capture resolution `WxH` (USB cameras only) |
@@ -425,7 +426,7 @@ WEBUI_WS_INIT_CONCURRENCY = 20
 | `WEBUI_WIRE_FORMAT` | `msgpack` | WS encoding. `msgpack` (default) sends binary frames via `msgspec` — smaller payloads, C-accelerated encode, and when `WEBUI_STATUS_DELTA=0` unlocks a one-encode-per-tick fan-out path (each client splices the shared bytes via `msgspec.Raw`). `json` produces text frames readable directly in browser DevTools. | Set to `json` only when actively debugging status frames in DevTools. |
 | `WEBUI_WS_INIT_CONCURRENCY` | `20` | Caps the number of WebSocket clients allowed to run their initialization handshake (`ws.accept` + viewer_init send + settings load) in parallel. The lever for cold-start CPU smoothing in multi-tab setups: each handshake is ~30 ms of work, so without a cap N=12 simultaneous tabs can spike the asyncio loop into kernel-TCP saturation and starve the heartbeat task → HAL safety chain trips on a healthy gateway. | Lower (typical: `2`–`4`) when expecting 5+ tabs to cold-start in lockstep — multi-monitor deployments, shop-floor kiosks, automated test scenarios. Trade-off: ~30 ms per queued tab; at concurrency=2 the 12th tab is fully ready ~300 ms after the 1st. |
 
-Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. `WEBUI_*` flags can also be set as environment variables (same name) and take precedence over the INI. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
+Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. `WEBUI_*` flags can also be set as environment variables (same name) and take precedence over the INI. Log directory: `LCNC_LOG_DIR` (env) overrides `LOG_DIR` (INI), both default to `<install-dir>/runlogs`. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
 
 #### 2. HAL safety chain
 
@@ -919,6 +920,7 @@ All velocity values are in **machine units per second** (mm/s or in/s). The gate
 | `MAX_SPINDLE_OVERRIDE` | recommended | Spindle override upper limit (e.g. `2.0` = 200%) |
 | `PROGRAM_PREFIX` | recommended | Root directory for the G-code file browser |
 | `DEBUG` | required | Subroutine debug logging — must be present or `tool_touch_off.ngc` aborts with "not defined". Set `0` to disable, `1` to write `logfile.txt` |
+| `LOG_DIR` | optional | Suite log directory for all four processes. Default `<install-dir>/runlogs` (next to the launcher) — leave unset unless relocating. Unwritable dir → launcher aborts; no `/tmp` fallback. Env override: `LCNC_LOG_DIR` |
 | `CAMERA_SOURCE` | optional | USB device index (`0`, `1`) or URL (`rtsp://host/live`) — empty = disabled |
 | `CAMERA_RESOLUTION` | optional | Capture resolution `WxH` (default: `1280x720`, USB only) |
 | `CAMERA_FPS` | optional | MJPEG stream frame rate (default: `15`) |

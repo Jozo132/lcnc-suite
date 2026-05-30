@@ -104,7 +104,7 @@ Why this split: the previous in-process approach had `webui-monitor` mirror-pin 
 
 ### Log Locations
 
-All four processes (launcher, gateway, hal_reader, hal_watchdog) write to a shared directory resolved by `lcnc_paths.resolve()`. Precedence: `LCNC_WEBUI_LOG_DIR` env > INI `[DISPLAY] WEBUI_LOG_DIR` > `~/linuxcnc/lcnc-suite/logs/` default > `/tmp/lcnc-suite/` fallback (when the requested dir is missing/unwritable or free disk < 500 MB).
+All four processes (launcher, gateway, hal_reader, hal_watchdog) write to a single shared directory resolved by `lcnc_paths.resolve()`. Precedence: `LCNC_LOG_DIR` env > INI `[DISPLAY] LOG_DIR` > `<install-dir>/runlogs` default (derived from the module's own location, so it follows the install and matches `restart.sh`). There is no `/tmp` fallback: `resolve()` always returns the requested path and never raises (the safety supervisor must boot even with degraded logging), and the `lcnc-suite` launcher write-tests the resolved dir and aborts loudly before any process starts if it isn't writable.
 
 | File | Source | Contents |
 |---|---|---|
@@ -117,7 +117,7 @@ All four processes (launcher, gateway, hal_reader, hal_watchdog) write to a shar
 | `trips/<trip_ts_ns>/` | `_snapshot_trip()` | Forensic bundle dumped on each safety trip via `scripts/trace-bundle.py`. |
 | `timing/timing-<ts>.jsonl` | On-demand via `timing_log` WS cmd | Per-session timing histogram. |
 
-Override examples: `LCNC_WEBUI_LOG_DIR=/tmp/altlogs lcnc-suite -ini foo.ini`, or `WEBUI_LOG_DIR = /var/log/lcnc-suite` in `[DISPLAY]`. The launcher exports `LCNC_RESOLVED_LOG_DIR` for any subshell that needs the chosen path. The FIFO at `/tmp/lcnc-fifo.*` stays on tmpfs (`mkfifo` on NFS or odd filesystems is unreliable); only the tee output target moves to the resolved dir.
+Override examples: `LCNC_LOG_DIR=/tmp/altlogs lcnc-suite -ini foo.ini`, or `LOG_DIR = /var/log/lcnc-suite` in `[DISPLAY]`. The launcher exports `LCNC_RESOLVED_LOG_DIR` for any subshell that needs the chosen path. The FIFO at `/tmp/lcnc-fifo.*` and the IPC sockets (`/tmp/webui-safety.sock`, `/tmp/webui-reader.sock`) stay on tmpfs (runtime plumbing, not logs; `mkfifo` on NFS or odd filesystems is unreliable) — these are the only suite files outside the resolved log dir.
 
 **Crash hooks** in `lcnc_trace.install_crash_hooks(proc)` wire `sys.excepthook`, `threading.excepthook`, and SIGTERM/SIGINT in all three processes; `install_asyncio_handler(proc)` runs from FastAPI lifespan startup. Tags: `crash.sys_excepthook`, `crash.thread`, `crash.asyncio_unhandled`, `crash.signal`. SIGSEGV/SIGABRT cannot be caught in Python — that's why `gateway.log` exists as the launcher-tee backstop.
 
@@ -380,11 +380,12 @@ which lcnc-suite    # should print ~/.local/bin/lcnc-suite
 | `WEBUI_PORT` | `8000` | HTTP/WebSocket port |
 | `WEBUI_BROWSER` | `1` | Auto-open browser on start |
 | `WEBUI_DEV` | `0` | `1` = Vite dev server on :5173 (hot-reload) |
+| `LOG_DIR` | `<install-dir>/runlogs` | Optional suite log dir (all four processes). Unset = next to launcher; unwritable = loud launcher abort, no `/tmp` fallback |
 | `CAMERA_SOURCE` | *(disabled)* | USB device index (`0`, `1`) or URL (`rtsp://host/live`, `http://host/mjpeg`) |
 | `CAMERA_RESOLUTION` | `1280x720` | Capture resolution `WxH` (USB cameras only) |
 | `CAMERA_FPS` | `15` | MJPEG stream frame rate |
 
-Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
+Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. `LCNC_LOG_DIR` overrides `LOG_DIR`. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
 
 **Development mode:** Set `WEBUI_DEV = 1` — launcher starts Vite on :5173 (hot-reload) alongside the gateway on :8000. Browser opens to :5173 where Vite proxies API/WS to the gateway.
 

@@ -100,12 +100,21 @@ _T0 = time.monotonic()
 _last_hb_recv = None  # monotonic time of last heartbeat msg received
 _last_hb_recv_true = None  # monotonic time of last heartbeat msg with value=True
 _RECV_GAP_THRESHOLD_S = 0.10
-_HB_RECV_LOG_PATH = os.path.join(_trace.log_dir() or "/tmp", "hal_watchdog.log")
-try:
-    _hb_recv_log = open(_HB_RECV_LOG_PATH, "w", buffering=1)  # line-buffered
-except OSError as _e:
-    _hb_recv_log = None
-    print(f"[HB-RECV] failed to open {_HB_RECV_LOG_PATH}: {_e}", flush=True)
+# _trace.init() ran at import top (line ~19), so log_dir() is resolved here.
+# No silent /tmp fallback: if there's no log dir, disable the probe rather
+# than scatter the file into cwd.
+_HB_RECV_LOG_DIR = _trace.log_dir()
+_HB_RECV_LOG_PATH = (
+    os.path.join(_HB_RECV_LOG_DIR, "hal_watchdog.log") if _HB_RECV_LOG_DIR else None
+)
+_hb_recv_log = None
+if _HB_RECV_LOG_PATH:
+    try:
+        _hb_recv_log = open(_HB_RECV_LOG_PATH, "w", buffering=1)  # line-buffered
+    except OSError as _e:
+        print(f"[HB-RECV] failed to open {_HB_RECV_LOG_PATH}: {_e}", flush=True)
+else:
+    print("[HB-RECV] no log dir resolved; instrumentation disabled", flush=True)
 
 
 def _hb_recv_print(line: str) -> None:

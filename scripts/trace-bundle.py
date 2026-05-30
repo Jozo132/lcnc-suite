@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """LCNC suite trace bundler — merge structured + legacy logs by wall time.
 
-Reads (paths resolved via lcnc_paths.resolve(), default ~/linuxcnc/lcnc-suite/logs/):
+Reads (paths resolved via lcnc_paths.resolve(), default <install-dir>/runlogs):
   - trace.ndjson         (structured stream; gateway, hal_reader, hal_watchdog,
                           launcher proc.status, browser telemetry)
   - gateway.log          (uvicorn stdout/stderr; uses [+Nms] mono offsets)
@@ -41,7 +41,8 @@ try:
     import lcnc_paths
     _LOG_DIR = lcnc_paths.resolve()[0]
 except Exception:
-    _LOG_DIR = os.path.expanduser("~/linuxcnc/lcnc-suite/logs")
+    # Mirror the resolver's derived default: <install-dir>/runlogs.
+    _LOG_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "runlogs"))
 
 TRACE_PATH = os.path.join(_LOG_DIR, "trace.ndjson")
 GATEWAY_LOG = os.path.join(_LOG_DIR, "gateway.log")
