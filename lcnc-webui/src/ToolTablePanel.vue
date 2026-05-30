@@ -14,7 +14,6 @@ import ToolPreview from "./ToolPreview.vue";
 const FETCH_DELAY_MS = 500;
 const REFETCH_AFTER_SAVE_MS = 400;
 const REFETCH_AFTER_DELETE_MS = 300;
-const TOOL_RENUMBER_DELAY_MS = 200;
 
 const props = defineProps<{
   currentTool: number | null;
@@ -211,10 +210,13 @@ function saveEdit() {
   if (isNewTool.value) {
     send({ cmd: "add_tool", ...buildToolMsg(form) });
   } else if (form.T !== orig.T) {
+    // Renumber: ADD the new entry before DELETING the old one. The two commands
+    // are processed in order by the gateway, and each writes the table
+    // atomically. Add-first means a failed add / dropped WS leaves a
+    // recoverable duplicate rather than permanently destroying the tool (the
+    // old delete-then-add-on-a-200ms-timer could lose it with no rollback).
+    send({ cmd: "add_tool", ...buildToolMsg(form) });
     send({ cmd: "delete_tool", tool_number: orig.T });
-    setTimeout(() => {
-      send({ cmd: "add_tool", ...buildToolMsg(form) });
-    }, TOOL_RENUMBER_DELAY_MS);
   } else {
     send({ cmd: "save_tool", ...buildToolMsg(form) });
   }

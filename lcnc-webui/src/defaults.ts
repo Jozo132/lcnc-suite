@@ -80,7 +80,13 @@ export function initServerDefaults(data: Record<string, any>, fetchOk: boolean):
   if (fetchOk) serverSettingsReady.value = true;
 }
 
-/** Called from lcncWs.ts on settings_init (connect) or settings_changed (broadcast). */
+/**
+ * Called from lcncWs.ts on settings_init (connect) or settings_changed (broadcast).
+ * Full-replace is intentional and load-bearing: the gateway ALWAYS sends the
+ * complete per-INI settings blob on both messages (gateway.py status_loop
+ * "send full settings when version changes" + settings_init). Do NOT change
+ * this to a merge — a merge would resurrect a section the operator deleted.
+ */
 export function updateServerCache(data: Record<string, any>): void {
   _cache = { ...data };
   serverSettingsReady.value = true;

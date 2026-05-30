@@ -8,8 +8,17 @@ function getBaseUrl(): string {
 }
 
 async function throwHttpError(resp: Response): Promise<never> {
-  const body = await resp.json();
-  throw new Error(body.detail || `HTTP ${resp.status}`);
+  // A non-JSON error body (proxy 502 HTML page, empty body) would make
+  // resp.json() throw a SyntaxError that masks the real HTTP status. Fall
+  // back to the status line so the caller sees "HTTP 502", not a parse error.
+  let detail: string | undefined;
+  try {
+    const body = await resp.json();
+    detail = body?.detail;
+  } catch {
+    detail = undefined;
+  }
+  throw new Error(detail || `HTTP ${resp.status}`);
 }
 
 export interface FileEntry {

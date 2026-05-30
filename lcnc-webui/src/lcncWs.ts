@@ -1,4 +1,4 @@
-import { ref, shallowRef } from "vue";
+import { ref, shallowRef, computed } from "vue";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { type WsCommand, OPERATOR_ERROR } from "./lcnc";
 import { updateServerCache, loadDisplayDefaults, type Vec3 } from "./defaults";
@@ -83,7 +83,15 @@ export const serverShuttingDown = ref(false);
 // cleared on the next successful fetch. Surfaced in App.vue's status banner
 // so the operator sees "preview is stale" rather than viewing a possibly
 // outdated toolpath without warning.
-export const previewLoadError = ref<string | null>(null);
+// Per-channel load errors so a success on one fetch channel can't clear a real
+// error on another (the three channels are independent HTTP fetches). The
+// banner shows the union — first non-null wins.
+const _previewErr = ref<string | null>(null);
+const _surfaceErr = ref<string | null>(null);
+const _compGridErr = ref<string | null>(null);
+export const previewLoadError = computed<string | null>(
+  () => _previewErr.value ?? _surfaceErr.value ?? _compGridErr.value,
+);
 // ---------- Browser → server telemetry batcher ----------
 // Posts NDJSON batches to POST /telemetry where the gateway forwards each
 // event to the suite-wide trace bus tagged `browser.<kind>`. Catches the
@@ -437,6 +445,7 @@ function _fetchBulk(
   getAbort: () => AbortController | null,
   setAbort: (ac: AbortController | null) => void,
   apply: (data: any) => void,
+  setError: (e: string | null) => void,
 ) {
   if (version === getLast()) return;
   setLast(version);
@@ -450,12 +459,12 @@ function _fetchBulk(
       if (getLast() !== version) return;  // newer version already won
       const data = msgpackDecode(new Uint8Array(buf));
       apply(data);
-      previewLoadError.value = null;
+      setError(null);  // clear only THIS channel's error
     })
     .catch(err => {
       if (err?.name !== "AbortError") {
         console.error(`GET ${url} failed`, err);
-        previewLoadError.value = `${url} failed: ${err?.message ?? err}`;
+        setError(`${url} failed: ${err?.message ?? err}`);
         if (getLast() === version) setLast(-1);  // let next bump retry
       }
     });
@@ -499,12 +508,12 @@ function _fetchPreview(version: number) {
       // msgpack decode returns `unknown`; we trust the gateway-side encoder
       // to produce a ViewerGcode-shaped payload.
       viewerGcode.value = msgpackDecode(new Uint8Array(buf)) as ViewerGcode;
-      previewLoadError.value = null;
+      _previewErr.value = null;
     })
     .catch(err => {
       if (err?.name !== "AbortError") {
         console.error("GET /preview failed", err);
-        previewLoadError.value = `/preview failed: ${err?.message ?? err}`;
+        _previewErr.value = `/preview failed: ${err?.message ?? err}`;
         // Let next version_bump retry; clear sentinel so retry fires.
         if (_previewLastVersion === version) _previewLastVersion = -1;
       }
@@ -846,6 +855,7 @@ export function connectWs() {
         () => _surfaceLastVersion, v => { _surfaceLastVersion = v; },
         () => _surfaceFetchAbort, ac => { _surfaceFetchAbort = ac; },
         data => { status.value = { ...(status.value ?? {}), surface_points: data }; },
+        e => { _surfaceErr.value = e; },
       );
     } else if (msg.type === "comp_grid_ready") {
       _fetchBulk(
@@ -853,6 +863,7 @@ export function connectWs() {
         () => _compGridLastVersion, v => { _compGridLastVersion = v; },
         () => _compGridFetchAbort, ac => { _compGridFetchAbort = ac; },
         data => { status.value = { ...(status.value ?? {}), comp_grid: data }; },
+        e => { _compGridErr.value = e; },
       );
     } else if (msg.type === "tool_table_changed") {
       toolTableVersion.value = msg.version ?? 0;
