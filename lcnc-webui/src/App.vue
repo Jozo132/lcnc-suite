@@ -1463,7 +1463,7 @@ watch(viewerGcode, (newGcode) => {
           <div class="dialogTitle">{{ !toolChangeTool ? 'Remove Tool from Spindle' : 'Load Tool into Spindle' }}</div>
           <div class="dialogBody">
             <template v-if="toolChangeTool">
-              <strong>T{{ toolChangeTool }}</strong><template v-if="st.tool_change_info"> D{{ st.tool_change_info.D.toFixed(3) }} Z{{ st.tool_change_info.Z.toFixed(3) }}</template><br>
+              <strong>T{{ toolChangeTool }}</strong><template v-if="st.tool_change_info"> D{{ st.tool_change_info.D?.toFixed(3) ?? '—' }} Z{{ st.tool_change_info.Z?.toFixed(3) ?? '—' }}</template><br>
               <template v-if="st.tool_change_info?.description">{{ st.tool_change_info.description }}<br></template>
               Insert tool and press Confirm
             </template>
