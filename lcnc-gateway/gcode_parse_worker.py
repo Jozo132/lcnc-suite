@@ -48,7 +48,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gcode_canon import PreviewCanon, apply_var_patches
 
 
-_EMPTY = {"feed": [], "feed_lines": [], "rapid": [], "stats": None}
+_EMPTY = {"feed": [], "feed_lines": [], "rapid": [], "stats": None,
+          "parse_error": None, "error_line": None}
 
 # RDP decimation tolerance in machine units (mm or in — caller passes the
 # scaled epsilon). 0.005 mm is sub-pixel at typical viewport zoom (~0.2
@@ -138,6 +139,8 @@ def parse(ctx: dict) -> dict:
     canon = PreviewCanon(s, random_tc)
 
     parameter = ini.find("RS274NGC", "PARAMETER_FILE")
+    parse_error = None  # set if the interpreter errors partway through
+    error_line = None
     td = tempfile.mkdtemp()
     try:
         temp_param = os.path.join(td, os.path.basename(parameter or "linuxcnc.var"))
@@ -157,7 +160,13 @@ def parse(ctx: dict) -> dict:
         result, seq = gcode.parse(filename, canon, initcodes, "")
         t1 = time.monotonic()
         if result > gcode.MIN_ERROR:
-            print(f"parse error at line {seq}: {gcode.strerror(result)}", file=sys.stderr, flush=True)
+            # The interpreter hit an error partway through. We still return the
+            # polyline collected so far, but flag it so the gateway/UI can badge
+            # the preview as PARTIAL instead of presenting a truncated path as a
+            # complete one (silent partial-success was the bug).
+            parse_error = gcode.strerror(result)
+            error_line = seq
+            print(f"parse error at line {seq}: {parse_error}", file=sys.stderr, flush=True)
         print(f"gcode.parse feed={len(canon.feed)} rapid={len(canon.rapid)} parse_ms={(t1-t0)*1000:.0f}", file=sys.stderr, flush=True)
     finally:
         shutil.rmtree(td, ignore_errors=True)
@@ -307,7 +316,8 @@ def parse(ctx: dict) -> dict:
         "fileSize": file_size,
     }
 
-    return {"feed": feed, "feed_lines": feed_lines, "rapid": rapid, "stats": stats}
+    return {"feed": feed, "feed_lines": feed_lines, "rapid": rapid, "stats": stats,
+            "parse_error": parse_error, "error_line": error_line}
 
 
 def main() -> None:

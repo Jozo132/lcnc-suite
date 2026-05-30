@@ -2318,6 +2318,7 @@ _TOOL_META_FIELDS = (
 SETTINGS_PATH = BASE_DIR / "settings.json"
 _settings_version = 0
 _settings_cache: Optional[dict] = None
+_settings_load_failed = False  # True if the on-disk settings.json failed to parse
 _fb_scale = 60  # spindle feedback scale: 60 (RPS→RPM) or 1 (already RPM)
 _spindle_load_pin = ""  # HAL pin for spindle load %, empty = disabled
 _tc_info_cache: dict = {}  # {(tool_num, tbl_mtime): merged_list} — one entry max
@@ -2327,15 +2328,22 @@ _VALID_SETTINGS_SECTIONS = {"macros", "machine", "viewer", "camera", "mdi", "gam
 
 def _load_settings_all() -> dict:
     """Load the full settings.json (all configs)."""
-    global _settings_cache
+    global _settings_cache, _settings_load_failed
     if _settings_cache is not None:
         return _settings_cache
     if SETTINGS_PATH.exists():
         try:
             with open(SETTINGS_PATH, "r") as f:
                 _settings_cache = json.load(f)
+                _settings_load_failed = False
                 return _settings_cache
         except Exception as e:
+            # Parse failure: cache {} so reads degrade gracefully, but flag it
+            # so WRITES are blocked (see _save_settings_all). Overwriting a
+            # corrupt file with one section would wipe every other INI config's
+            # settings — and the file may be hand-recoverable. Mirrors the
+            # refuse-to-clobber guard in save_tool_library.
+            _settings_load_failed = True
             _trace.emit("settings.load_failed", level="warn",
                         path=str(SETTINGS_PATH), exc=type(e).__name__, msg=str(e))
     _settings_cache = {}
@@ -2345,6 +2353,13 @@ def _load_settings_all() -> dict:
 def _save_settings_all(all_data: dict):
     """Write settings.json atomically."""
     global _settings_cache
+    if _settings_load_failed and SETTINGS_PATH.exists():
+        # Don't clobber a settings.json we couldn't parse — surface to the
+        # client instead so the operator can recover or remove the file.
+        raise RuntimeError(
+            "settings.json failed to parse and was not overwritten; "
+            "fix or remove the file and restart the gateway"
+        )
     atomic_write_bytes(str(SETTINGS_PATH), json.dumps(all_data, indent=2).encode("utf-8"))
     _settings_cache = all_data
 
@@ -2982,7 +2997,9 @@ def poll_status() -> StatusPayload:
     tool_change_info = None
     if tool_change_requested is True:
         _tc_num = _reader_get("tool_prep_number")
-        tool_change_tool = int(_tc_num) if _tc_num else None
+        # T0 (spindle unload) is a valid tool number — don't treat 0 as "no
+        # tool". Only an absent reader snapshot (None) means "unknown".
+        tool_change_tool = int(_tc_num) if _tc_num is not None else None
         if tool_change_tool is not None:
             try:
                 tbl_path = get_tool_tbl_path()
@@ -4430,7 +4447,17 @@ async def _refresh_gcode_preview(filepath: str):
             "feed_lines": preview.get("feed_lines", []),
             "rapid": preview.get("rapid", []),
             "stats": preview.get("stats"),
+            # Partial-preview flag: the interpreter errored partway through, so
+            # the polyline stops short of the program. Carried in the preview
+            # payload so the UI can badge it instead of showing a truncated path
+            # as complete. None when the parse was clean.
+            "parse_error": preview.get("parse_error"),
+            "error_line": preview.get("error_line"),
         }
+        if pending["parse_error"]:
+            _trace.emit("gcode.parse_partial", level="warn",
+                        file=filepath, error=pending["parse_error"],
+                        error_line=pending["error_line"])
         # Encode once off-thread for the GET /preview endpoint. Clients fetch
         # this over HTTP (uvicorn's streamed-response path — independent of
         # the WS writer), so the event loop isn't stalled by N-way 2.7 MB
@@ -4999,6 +5026,8 @@ async def apply_tool_library_import(
 ):
     """Apply a Fusion 360 tool library import — replaces tool.tbl and tool_library.json."""
     raw = await file.read()
+    if len(raw) > MAX_UPLOAD_SIZE:
+        raise HTTPException(status_code=413, detail="File too large")
     try:
         data = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as e:
@@ -6185,7 +6214,11 @@ async def ws_endpoint(ws: WebSocket):
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": f"Unknown settings section: {section}"})
                     continue
                 _loop = asyncio.get_event_loop()
-                await _loop.run_in_executor(None, save_settings_section, section, msg.get("data"))
+                try:
+                    await _loop.run_in_executor(None, save_settings_section, section, msg.get("data"))
+                except Exception as _se:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": f"{type(_se).__name__}: {_se}"})
+                    continue
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 
@@ -6418,24 +6451,28 @@ def _camera_init() -> bool:
     global _camera
     if cv2 is None:
         return False
-    if _camera is not None:
-        return _camera.isOpened()
     source = os.environ.get("LCNC_CAMERA_SOURCE", "")
     if not source:
         return False
-    try:
-        src: Any = int(source)
-    except ValueError:
-        src = source
-    _camera = cv2.VideoCapture(src)
-    res = os.environ.get("LCNC_CAMERA_RESOLUTION", "1280x720")
-    try:
-        w, h = (int(x) for x in res.split("x"))
-        _camera.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-    except ValueError:
-        pass  # safe-silent: malformed resolution string, camera keeps default
-    return _camera.isOpened()
+    # Hold _camera_lock across the whole init: two concurrent /camera requests
+    # are each dispatched to the threadpool, so without the lock both could
+    # construct a VideoCapture and leak one device handle. Double-check inside.
+    with _camera_lock:
+        if _camera is not None:
+            return _camera.isOpened()
+        try:
+            src: Any = int(source)
+        except ValueError:
+            src = source
+        _camera = cv2.VideoCapture(src)
+        res = os.environ.get("LCNC_CAMERA_RESOLUTION", "1280x720")
+        try:
+            w, h = (int(x) for x in res.split("x"))
+            _camera.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        except ValueError:
+            pass  # safe-silent: malformed resolution string, camera keeps default
+        return _camera.isOpened()
 
 def _camera_grab_jpeg(quality: int = 80) -> Optional[bytes]:
     """Grab one frame, return JPEG bytes or None."""
@@ -6468,11 +6505,19 @@ async def get_settings():
 @app.post("/settings/{section}")  # POST used by sendBeacon on page exit
 async def put_settings_section(section: str, request: Request):
     if section not in _VALID_SETTINGS_SECTIONS:
-        return {"ok": False, "error": f"Unknown section: {section}"}
-    body = await request.json()
-    data = body.get("data")
+        return JSONResponse({"ok": False, "error": f"Unknown section: {section}"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict) or "data" not in body:
+        return JSONResponse({"ok": False, "error": "Missing 'data'"}, status_code=400)
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, save_settings_section, section, data)
+    try:
+        await loop.run_in_executor(None, save_settings_section, section, body["data"])
+    except Exception as e:
+        # e.g. refuse-to-clobber when settings.json is corrupt — surface it.
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=409)
     return {"ok": True}
 
 

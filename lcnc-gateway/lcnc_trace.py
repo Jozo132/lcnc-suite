@@ -75,6 +75,11 @@ _CRASH_FILENAME = "crash.log"
 
 _TRACE_MAX_BYTES = 50 * 1024 * 1024  # 50 MB
 _TRACE_BACKUPS = 5
+# Multi-writer atomic appends require each line < PIPE_BUF (4096 B on Linux).
+# Cap below that (leaving room for the trailing newline the handler adds) so an
+# oversize event can't interleave with another process's line and corrupt the
+# NDJSON stream. Oversize records are replaced with a bounded truncation marker.
+_MAX_LINE_BYTES = 4000
 _CRASH_MAX_BYTES = 5 * 1024 * 1024   # 5 MB
 _CRASH_BACKUPS = 5
 _LOGGER_NAME = "lcnc.trace"
@@ -202,6 +207,20 @@ def emit(tag: str, level: str = "info", msg: str = "", **fields: Any) -> None:
                 {"t_wall_ns": rec["t_wall_ns"], "t_mono_ms": rec["t_mono_ms"],
                  "proc": rec["proc"], "pid": rec["pid"], "tag": tag,
                  "level": "error", "msg": f"trace_encode_err: {e}"},
+                separators=(",", ":"),
+            )
+        except Exception:
+            return
+    if len(line.encode("utf-8", "replace")) > _MAX_LINE_BYTES:
+        # Too big to append atomically — replace with a valid, bounded record
+        # that preserves the core fields and flags the truncation, rather than
+        # risk a torn line interleaving with another process's write.
+        try:
+            line = json.dumps(
+                {"t_wall_ns": rec["t_wall_ns"], "t_mono_ms": rec["t_mono_ms"],
+                 "proc": rec["proc"], "pid": rec["pid"], "tag": tag,
+                 "level": rec["level"], "msg": (msg[:200] if msg else ""),
+                 "truncated": True},
                 separators=(",", ":"),
             )
         except Exception:
