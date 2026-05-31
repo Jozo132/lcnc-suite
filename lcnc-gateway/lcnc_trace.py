@@ -9,9 +9,11 @@ Why one shared file across processes: Linux guarantees atomic O_APPEND writes
 up to PIPE_BUF (4096 B), so concurrent appends from multiple processes are
 line-atomic (emit() caps each line below that). Rotation at 50 MB is the one
 multi-writer hazard plain RotatingFileHandler can't handle — each process would
-race doRollover() — so we use ConcurrentRotatingFileHandler, which coordinates
-the rollover with a portalocker file lock. Each line carries `proc` + `pid` so
-the bundler can demux later.
+race doRollover(). When concurrent-log-handler is importable we use its
+ConcurrentRotatingFileHandler (portalocker-coordinated rollover); the lock only
+helps if EVERY writer has it, and the HAL siblings run under the system python,
+so it's a best-effort import with a loud warning on fallback (see init()). Each
+line carries `proc` + `pid` so the bundler can demux later.
 
 Why direct file write (not queue + thread): NDJSON encoding is < 50 us per
 event; line-buffered O_APPEND write is 1-10 us uncached. At our event rate
@@ -70,7 +72,20 @@ import time
 import traceback
 from typing import Any, Optional
 
-from concurrent_log_handler import ConcurrentRotatingFileHandler
+# Coordinated multi-writer rollover requires concurrent_log_handler (portalocker
+# file lock). It must be importable by ALL four processes for the lock to mean
+# anything — and the HAL siblings (hal_reader/hal_watchdog) are launched by
+# LinuxCNC under the SYSTEM python, not the gateway venv. So the import is
+# best-effort: if it's missing we fall back to stdlib RotatingFileHandler and
+# warn loudly (the safety supervisor MUST boot even with degraded logging).
+# Line writes stay atomic regardless via the PIPE_BUF bound in emit(); only the
+# 50 MB rollover boundary is unsynchronised in the fallback.
+try:
+    from concurrent_log_handler import ConcurrentRotatingFileHandler as _RotatingHandler
+    _MP_ROTATION = True
+except ImportError:
+    from logging.handlers import RotatingFileHandler as _RotatingHandler
+    _MP_ROTATION = False
 
 import lcnc_paths
 
@@ -148,13 +163,22 @@ def init(proc_name: str, log_dir: Optional[str] = None) -> None:
             for h in logger.handlers
         )
         if not has_trace:
-            # ConcurrentRotatingFileHandler (portalocker-based) coordinates the
-            # 50 MB rollover across all four processes — plain RotatingFileHandler
-            # has each process race doRollover() independently, which can lose
-            # lines and corrupt the backup chain. Line-atomic appends (< PIPE_BUF,
-            # enforced in emit()) plus lock-coordinated rotation give a safe
-            # single shared bus.
-            trace_h = ConcurrentRotatingFileHandler(
+            if not _MP_ROTATION:
+                # Honest, one-line warning — not a silent fallback. Coordinated
+                # rollover is unavailable in this interpreter; install
+                # concurrent-log-handler for the python that launches THIS
+                # process (the HAL siblings run under system python).
+                print(
+                    f"[TRACE] concurrent-log-handler unavailable for "
+                    f"{proc_name} ({sys.executable}); 50 MB rollover is not "
+                    f"multi-writer-coordinated (line writes still atomic)",
+                    file=sys.stderr, flush=True,
+                )
+            # _RotatingHandler is ConcurrentRotatingFileHandler when available
+            # (portalocker-coordinated rollover across all four processes), else
+            # stdlib RotatingFileHandler. Line-atomic appends (< PIPE_BUF,
+            # enforced in emit()) hold either way.
+            trace_h = _RotatingHandler(
                 trace_path, maxBytes=_TRACE_MAX_BYTES, backupCount=_TRACE_BACKUPS
             )
             # We pre-encode NDJSON in the message; the formatter just emits
@@ -163,7 +187,7 @@ def init(proc_name: str, log_dir: Optional[str] = None) -> None:
             trace_h._lcnc_role = "trace"  # type: ignore[attr-defined]
             logger.addHandler(trace_h)
 
-            crash_h = ConcurrentRotatingFileHandler(
+            crash_h = _RotatingHandler(
                 crash_path, maxBytes=_CRASH_MAX_BYTES, backupCount=_CRASH_BACKUPS
             )
             crash_h.setFormatter(logging.Formatter("%(message)s"))
