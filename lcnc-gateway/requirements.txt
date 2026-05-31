@@ -18,15 +18,6 @@ python-multipart>=0.0.9       # FastAPI file uploads (STL upload)
 # Serialization
 msgspec>=0.18
 
-# Structured trace bus: lock-coordinated log rotation for the suite processes
-# sharing one trace.ndjson (plain RotatingFileHandler races doRollover()).
-# OPTIONAL / best-effort: lcnc_trace falls back to stdlib rotation with a loud
-# warning if absent. The lock only coordinates if EVERY writer has it, and the
-# HAL siblings (hal_reader/hal_watchdog) are launched by LinuxCNC under the
-# SYSTEM python — so for full coordination install it there too, e.g.
-#   /usr/bin/python3 -m pip install --user concurrent-log-handler
-concurrent-log-handler>=0.9.25   # pulls in portalocker
-
 # CLI
 click>=8.1
 
