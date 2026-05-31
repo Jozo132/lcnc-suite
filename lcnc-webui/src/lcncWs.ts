@@ -190,10 +190,12 @@ if (typeof window !== "undefined") {
       visibilityState: document.visibilityState,
       hidden,
     });
-    if (ws?.readyState === WebSocket.OPEN) {
+    // Relay to the worker, which owns the socket. When becoming visible, also
+    // request an immediate heartbeat so the gateway's last_hb is fresh at once.
+    if (wsWorker) {
       try {
-        ws.send(JSON.stringify({ cmd: "tab_visibility", hidden }));
-      } catch { /* WS may have closed mid-send; ignored */ }
+        wsWorker.postMessage({ type: "updateConfig", hidden, fireHeartbeat: !hidden });
+      } catch { /* ignored */ }
     }
   });
   // Global error reporters → trace bus.
@@ -422,6 +424,11 @@ export const toolTableVersion = ref(0);
 // broadcasts. Null when no program is loaded or the fetch failed.
 export const gcodeContent = ref<string | null>(null);
 let _gcodeContentFile: string | null = null;
+// Preview version of the currently-fetched text. An in-place edit (web Save or
+// external edit) keeps the path constant but bumps the version, so we must
+// refetch on a version change too — otherwise the text panel shows stale code
+// even though the file on disk (and the 3D preview) changed.
+let _gcodeContentVersion = -1;
 let _gcodeFetchAbort: AbortController | null = null;
 
 // Fetched preview state (polylines, stats, line numbers) for the currently
@@ -470,9 +477,12 @@ function _fetchBulk(
     });
 }
 
-function _applyGcodeFile(nextFile: string | null) {
-  if (nextFile === _gcodeContentFile) return;
+function _applyGcodeFile(nextFile: string | null, version = -1) {
+  // Refetch when the path OR the preview version changed. Same-path edits keep
+  // the path but bump the version (see _gcodeContentVersion).
+  if (nextFile === _gcodeContentFile && version === _gcodeContentVersion) return;
   _gcodeContentFile = nextFile;
+  _gcodeContentVersion = version;
   if (_gcodeFetchAbort) { _gcodeFetchAbort.abort(); _gcodeFetchAbort = null; }
   if (!nextFile) {
     gcodeContent.value = null;
@@ -481,15 +491,19 @@ function _applyGcodeFile(nextFile: string | null) {
   const ac = new AbortController();
   _gcodeFetchAbort = ac;
   const target = nextFile;
-  fetch(`/gcode?path=${encodeURIComponent(target)}`, { signal: ac.signal })
+  const ver = version;
+  // `v` is a cache-buster: FileResponse sets an mtime ETag but no immutable
+  // header, so a same-path refetch could otherwise be served from cache. The
+  // gateway ignores the unknown query param.
+  fetch(`/gcode?path=${encodeURIComponent(target)}&v=${ver}`, { signal: ac.signal })
     .then(r => r.ok ? r.text() : Promise.reject(new Error(`HTTP ${r.status}`)))
     .then(text => {
-      if (_gcodeContentFile === target) gcodeContent.value = text;
+      if (_gcodeContentFile === target && _gcodeContentVersion === ver) gcodeContent.value = text;
     })
     .catch(err => {
       if (err?.name !== "AbortError") {
         console.error("GET /gcode failed", err);
-        if (_gcodeContentFile === target) gcodeContent.value = null;
+        if (_gcodeContentFile === target && _gcodeContentVersion === ver) gcodeContent.value = null;
       }
     });
 }
@@ -523,194 +537,143 @@ function _fetchPreview(version: number) {
 let _nextMsgId = _stored.length > 0 ? Math.max(..._stored.map(m => m.id)) + 1 : 1;
 
 
-let ws: WebSocket | null = null;
-// Heartbeat runs inside a dedicated Worker so its interval isn't throttled
-// when the tab is backgrounded (Firefox/Chrome throttle main-thread
-// setInterval to ~1/min after ~5min hidden; Worker timers are exempt).
-let _hbWorker: Worker | null = null;
+// The WebSocket now lives inside a dedicated Worker (wsWorker.ts) so the 1 Hz
+// heartbeat is generated AND sent off the main thread — immune to main-thread
+// jank (fast editor typing, heavy 30 Hz reactive updates) that previously
+// starved the send and caused spurious disarms. The worker is a transparent
+// transport proxy; all message interpretation + reactive state stay here.
+let wsWorker: Worker | null = null;
 let _heartbeatSentAt = 0;   // used for network latency (pong)
 let _rtSentAt = 0;           // used for round-trip latency (next status)
 
-function _stopHeartbeatWorker() {
-  if (_hbWorker) {
-    try { _hbWorker.postMessage({ cmd: "stop" }); } catch (e) { console.warn("[ws] heartbeat worker stop postMessage failed", e); }
-    _hbWorker.terminate();
-    _hbWorker = null;
+// Status batching + one-shot tool_meta carry-over. Module scope so they
+// persist across the relay (previously closure-locals inside connectWs).
+let _pendingStatus: any = null;
+let _flushScheduled = false;
+let _lastToolMeta: { num: number; meta: any } | null = null;
+
+function _terminateWsWorker() {
+  if (wsWorker) {
+    try { wsWorker.postMessage({ type: "close" }); } catch { /* ignore */ }
+    wsWorker.terminate();
+    wsWorker = null;
   }
 }
 
-let _wsLastConnectAttemptAt = 0;
-let _wsAttemptCount = 0;
-let _wsLastCloseAt = 0;
-let _wsLastCloseCode = 0;
-let _wsBufferPressureTimer: ReturnType<typeof setInterval> | null = null;
-
 export function connectWs() {
-  // Close previous connection if any (prevents leaks during HMR)
-  if (ws) {
-    ws.onclose = null; // prevent auto-reconnect from the old socket
-    ws.close();
-  }
-  _stopHeartbeatWorker();
+  // The worker owns reconnect; connectWs is only called for the initial
+  // connection and on HMR. Tear down any prior worker first (HMR safety).
+  _terminateWsWorker();
 
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
   const wsUrl = `${wsProto}//${location.host}/ws`;
-  _wsAttemptCount++;
-  _wsLastConnectAttemptAt = performance.now();
-  emitTelemetry("ws.connect.attempt", {
-    attempt: _wsAttemptCount,
-    last_close_code: _wsLastCloseCode,
-    gap_ms: _wsLastCloseAt ? Math.round(performance.now() - _wsLastCloseAt) : 0,
+  wsWorker = new Worker(new URL("./wsWorker.ts", import.meta.url), { type: "module" });
+  wsWorker.onmessage = (ev: MessageEvent) => onWorkerMessage(ev.data);
+  wsWorker.postMessage({
+    type: "connect",
+    url: wsUrl,
+    session: _sessionId,
+    resumeArmed: _prevArmed,
+    hidden: typeof document !== "undefined" ? document.hidden : false,
   });
-  ws = new WebSocket(wsUrl);
-  // Required so msgpack frames arrive as ArrayBuffer, not Blob (Blob decode
-  // is async and would need an extra await). JSON text frames are unaffected.
-  ws.binaryType = "arraybuffer";
+  _prevArmed = false; // handed to the worker; reset for the next close→open
+}
 
-  // Connect-attempt timeout. Vite's WS proxy holds upstream upgrades open
-  // indefinitely while the gateway is down (browser sees a pending
-  // CONNECTING state with no error). Probe data on 2026-05-01 caught a
-  // single attempt sitting in CONNECTING for 272 s. We force-close after
-  // 3 s so onclose fires and the normal 2 s setTimeout reconnect cadence
-  // takes over — worst-case 5 s/cycle instead of "however long Vite
-  // waits." This is the load-bearing mitigation; the surrounding _wsProbe
-  // diagnostic that originally lived alongside it has been removed.
-  const _connectTimer = setTimeout(() => {
-    if (ws && ws.readyState === WebSocket.CONNECTING) {
-      try { ws.close(); } catch {}
-    }
-  }, 3000);
-
-  ws.onopen = () => {
-    clearTimeout(_connectTimer);
-    const dt = Math.round(performance.now() - _wsLastConnectAttemptAt);
-    emitTelemetry("ws.open", { dt_ms: dt, attempt: _wsAttemptCount });
-    _wsAttemptCount = 0;
-    connected.value = true;
-    serverShuttingDown.value = false;
-    // Tab handshake — must precede other commands so the gateway can
-    // associate this connection with the prior tab's armed state (if any)
-    // before the first heartbeat / fan-out arrives. `_prevArmed` captures
-    // whether this tab was armed when its previous WS closed; on a brief
-    // disconnect (Ctrl-R, Wi-Fi blip) the gateway may have a matching
-    // armed-resume hold and will silently re-arm us. Reset after use so a
-    // *future* close→open cycle starts from a fresh observation.
-    if (ws) {
+// Relay of worker → main events. Reactive ref updates that used to live in
+// ws.onopen / ws.onclose / ws.onmessage stay here on the main thread.
+function onWorkerMessage(m: any) {
+  switch (m?.type) {
+    case "open":
+      emitTelemetry("ws.open", { dt_ms: m.dtMs, attempt: m.attempt });
+      connected.value = true;
+      serverShuttingDown.value = false;
+      // Acquire screen wake-lock if enabled (not gated on armed, so passive
+      // viewer tabs stay awake too). Released on close.
       try {
-        ws.send(JSON.stringify({
-          cmd: "hello",
-          session: _sessionId,
-          resume_armed: _prevArmed,
-        }));
-      } catch (e) {
-        // Hello is the foundation of session-id resume — losing it means
-        // the gateway never associates this connection with the prior
-        // tab's armed-resume hold. Surface to telemetry rather than
-        // swallowing, per [[no-silent-fallbacks]]. (Phase 2 / E5.)
-        emitTelemetry("ws.hello_send_failed", {
-          error: String((e as Error)?.message ?? e),
-        });
+        if (loadDisplayDefaults().keepAwake) void enableWakeLock();
+      } catch { /* defaults may be unavailable pre-init; fine */ }
+      break;
+
+    case "close":
+      emitTelemetry("ws.close", {
+        code: m.code, reason: m.reason, clean: m.wasClean, since_attempt_ms: m.sinceAttemptMs,
+      });
+      connected.value = false;
+      // Capture armed state so the worker's NEXT reconnect hello can ask the
+      // gateway to restore armed=true via a still-valid armed-resume hold.
+      _prevArmed = armed.value;
+      armed.value = false;     // new connection starts disarmed
+      try { disableWakeLock(); } catch { /* ignored */ }
+      latency.value = null;
+      networkLatency.value = null;
+      _heartbeatSentAt = _rtSentAt = 0;
+      // The server forgets per-client halshow subscription on disconnect, so
+      // cached pin/signal/param values are stale snapshots that could shadow
+      // real values. Clear them so the panel honestly shows "no data".
+      halPins.value = [];
+      halSignals.value = [];
+      halParams.value = [];
+      halInitialized.value = false;
+      // Hand the freshly-captured armed state to the worker for its reconnect.
+      if (wsWorker) {
+        try { wsWorker.postMessage({ type: "updateConfig", resumeArmed: _prevArmed }); } catch { /* ignore */ }
       }
       _prevArmed = false;
-    }
-    // Acquire screen wake-lock if the user has it enabled. Releases on
-    // ws.onclose. Per the architecture cleanup: kept here (not gated on
-    // `armed`) so passive viewer tabs also stay awake while connected.
-    try {
-      if (loadDisplayDefaults().keepAwake) {
-        void enableWakeLock();
+      break;
+
+    case "attempt":
+      emitTelemetry("ws.connect.attempt", {
+        attempt: m.attempt, last_close_code: m.lastCloseCode, gap_ms: m.gapMs,
+      });
+      break;
+
+    case "reconnecting":
+      // No-op: the subsequent "attempt" carries the telemetry on actual retry.
+      break;
+
+    case "hbsent":
+      // Anchor RTT timing on the main thread. This is the arrival time of the
+      // worker's post (a sub-ms hop after the real send); under heavy main jank
+      // the latency readout may slightly overstate RTT, but the heartbeat
+      // itself went out on time on the worker thread. Diagnostic only.
+      _heartbeatSentAt = _rtSentAt = performance.now();
+      break;
+
+    case "bufferpressure":
+      emitTelemetry("ws.send_buffer_pressure", { buffered_bytes: m.buffered });
+      break;
+
+    case "error":
+      if (m.kind === "hello_send_failed") {
+        // Hello is the foundation of session-id resume — surface loudly rather
+        // than swallow, per [[no-silent-fallbacks]].
+        emitTelemetry("ws.hello_send_failed", { error: m.msg });
+      } else if (m.kind === "ws_error") {
+        emitTelemetry("ws.error", { type: m.msg });
+      } else {
+        emitTelemetry("ws.worker_error", { kind: m.kind, msg: m.msg });
       }
-    } catch { /* defaults may be unavailable pre-init; fine */ }
-    // Send initial tab visibility state to the gateway. Without this, a
-    // tab that connected while already hidden would receive full fan-out
-    // until the next visibilitychange event — which may never fire if the
-    // user opens 12 tabs at once and only the front one becomes visible.
-    if (ws) {
-      try {
-        ws.send(JSON.stringify({ cmd: "tab_visibility", hidden: document.hidden }));
-      } catch { /* ignored */ }
-    }
-    // Buffer-pressure sampler: peek at ws.bufferedAmount once a second
-    // while connected. Non-zero means the kernel/socket isn't draining
-    // our writes — the symmetric problem to gateway-side TCP back-pressure.
-    if (_wsBufferPressureTimer !== null) clearInterval(_wsBufferPressureTimer);
-    _wsBufferPressureTimer = setInterval(() => {
-      if (!ws || ws.readyState !== WebSocket.OPEN) return;
-      const buf = ws.bufferedAmount;
-      if (buf > 0) {
-        emitTelemetry("ws.send_buffer_pressure", { buffered_bytes: buf });
-      }
-    }, 1000);
-    _hbWorker = new Worker(new URL("./heartbeatWorker.ts", import.meta.url), { type: "module" });
-    _hbWorker.onmessage = () => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        // Timestamp on the main thread — worker performance.now() is on a
-        // different time origin and would mis-measure RTT by seconds.
-        _heartbeatSentAt = _rtSentAt = performance.now();
-        ws.send('{"cmd":"heartbeat"}');
-      }
-    };
-    _hbWorker.postMessage({ cmd: "start" });
-  };
+      break;
 
-  ws.onerror = (e) => {
-    const dtAttempt = Math.round(performance.now() - _wsLastConnectAttemptAt);
-    emitTelemetry("ws.error", { dt_ms: dtAttempt, type: (e as Event).type ?? "?" });
-  };
+    case "message":
+      onFrame(m.data);
+      break;
+  }
+}
 
-  ws.onclose = (ev) => {
-    clearTimeout(_connectTimer);
-    const dtAttempt = Math.round(performance.now() - _wsLastConnectAttemptAt);
-    _wsLastCloseAt = performance.now();
-    _wsLastCloseCode = ev.code;
-    emitTelemetry("ws.close", {
-      code: ev.code,
-      reason: String(ev.reason ?? ""),
-      clean: ev.wasClean,
-      since_attempt_ms: dtAttempt,
-    });
-    if (_wsBufferPressureTimer !== null) {
-      clearInterval(_wsBufferPressureTimer);
-      _wsBufferPressureTimer = null;
-    }
-    connected.value = false;
-    // Capture armed state for the next reconnect's hello, then reset.
-    // Lets the gateway match a still-valid armed-resume hold and silently
-    // restore armed=true on a brief blip (Ctrl-R, Wi-Fi handoff).
-    _prevArmed = armed.value;
-    armed.value = false;     // new connection starts disarmed
-    // Release the screen wake-lock when the WS drops. Re-acquired on the
-    // next ws.onopen if the user setting is still on.
-    try { disableWakeLock(); } catch { /* ignored */ }
-    latency.value = null;
-    networkLatency.value = null;
-    _heartbeatSentAt = _rtSentAt = 0;
-    _stopHeartbeatWorker();
-    // The server forgets per-client halshow subscription on disconnect, so
-    // any cached pin/signal/param values are stale snapshots that can shadow
-    // real values until the operator switches tabs. Clear them here so the
-    // halshow panel honestly shows "no data" until the next snapshot arrives.
-    halPins.value = [];
-    halSignals.value = [];
-    halParams.value = [];
-    halInitialized.value = false;
-    setTimeout(() => connectWs(), 2000);
-  };
-
-  let _pendingStatus: any = null;
-  let _flushScheduled = false;
-  let _lastToolMeta: { num: number; meta: any } | null = null;
-
-  ws.onmessage = (ev) => {
+// Decode + dispatch one relayed frame. Body is the former ws.onmessage handler;
+// `data` is a string (JSON) or ArrayBuffer (msgpack), transferred from the
+// worker. msgpack decode stays on the main thread by design.
+function onFrame(data: string | ArrayBuffer) {
     let msg: any;
     const _t0 = performance.now();
     try {
-      if (typeof ev.data === "string") {
-        msg = JSON.parse(ev.data);
-        _pushSample("ws_bytes", ev.data.length);
+      if (typeof data === "string") {
+        msg = JSON.parse(data);
+        _pushSample("ws_bytes", data.length);
       } else {
         // Binary frame (msgpack). ArrayBuffer because binaryType = "arraybuffer".
-        const buf = ev.data as ArrayBuffer;
+        const buf = data;
         msg = msgpackDecode(new Uint8Array(buf));
         _pushSample("ws_bytes", buf.byteLength);
       }
@@ -848,7 +811,7 @@ export function connectWs() {
       const version: number = msg.version ?? 0;
       const file: string | null = msg.file ?? null;
       _fetchPreview(version);
-      _applyGcodeFile(file);
+      _applyGcodeFile(file, version);
     } else if (msg.type === "surface_points_ready") {
       _fetchBulk(
         "/surface_points", msg.version ?? 0,
@@ -906,12 +869,11 @@ export function connectWs() {
         halInitialized.value = false;
       }
     }
-  };
 }
 
 export function send(obj: WsCommand) {
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(obj));
+  if (wsWorker) {
+    wsWorker.postMessage({ type: "send", payload: JSON.stringify(obj) });
   }
 }
 
@@ -942,21 +904,13 @@ export function markMessagesRead() {
   unreadCount.value = 0;
 }
 
-// Fire a heartbeat immediately when the tab becomes visible again — avoids
-// waiting up to 1s for the next Worker tick so last_hb is fresh right away.
-if (typeof document !== "undefined") {
-  document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible" && ws?.readyState === WebSocket.OPEN) {
-      _heartbeatSentAt = _rtSentAt = performance.now();
-      ws.send('{"cmd":"heartbeat"}');
-    }
-  });
-}
+// Note: becoming-visible fires an immediate heartbeat via the worker — the
+// `fireHeartbeat` flag in the visibilitychange handler above (updateConfig) —
+// so last_hb is fresh right away without waiting up to 1 s for the timer.
 
-// Clean up WebSocket on Vite HMR to prevent ghost clients
+// Clean up the WS worker on Vite HMR to prevent ghost clients.
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    if (ws) { ws.onclose = null; ws.close(); ws = null; }
-    _stopHeartbeatWorker();
+    _terminateWsWorker();
   });
 }

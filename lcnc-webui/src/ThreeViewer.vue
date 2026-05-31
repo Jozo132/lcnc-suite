@@ -305,7 +305,29 @@ let trackingMode: "none" | "tool" | "wcs" = "none";
 // flight and a non-zero tracking delta force a frame.
 let _needsRender = true;
 function requestRender() { _needsRender = true; }
-let _lastStateSig = "";
+
+// Render-on-demand change detection. Replaces a per-tick JSON.stringify of all
+// visually-relevant fields (~30 Hz) with cheap field-wise comparison against
+// the last applied values. Arrays are copied only when they actually change.
+const _pv: {
+  jointPos: number[] | null; machinePos: number[] | null;
+  g5x: number[] | null; g92: number[] | null; toolOffset: number[] | null;
+  toolNum: number | null; toolDiam: number | null; toolLen: number | null;
+  toolMeta: unknown; motionLine: number | null; rotationXy: number | null;
+} = {
+  jointPos: null, machinePos: null, g5x: null, g92: null, toolOffset: null,
+  toolNum: NaN as unknown as number, toolDiam: NaN, toolLen: NaN,
+  toolMeta: undefined, motionLine: NaN, rotationXy: NaN,
+};
+// Returns true if `next` differs from `prev`; when it differs, writes a fresh
+// copy back into the owner so subsequent ticks compare against the new value.
+function _numArrChanged(prev: number[] | null, next: unknown): boolean {
+  const arr = Array.isArray(next) ? (next as number[]) : null;
+  if (arr === null) return prev !== null;
+  if (prev === null || prev.length !== arr.length) return true;
+  for (let i = 0; i < arr.length; i++) if (prev[i] !== arr[i]) return true;
+  return false;
+}
 
 // ---- Path rendering ----
 let pathAlwaysOnTop = true; // default; overridden by setPathAlwaysOnTop()
@@ -318,10 +340,18 @@ let _unitScale = 1;
 let backplotLine: THREE.Line | null = null;
 let backplotGeom: THREE.BufferGeometry | null = null;
 let backplotPos: Float32Array | null = null;
-let backplotCount = 0;
+let backplotCount = 0;            // valid points in the window, 0..BACKPLOT_MAX
+let backplotHead = 0;             // next write slot, 0..BACKPLOT_MAX-1
 const BACKPLOT_MAX = 20000;   // points (10 Hz -> ~33 min)
 const BACKPLOT_EPS = 0.01;    // mm; min distance before adding a point
-let lastBackplotPt: THREE.Vector3 | null = null;
+// Scalar dedup anchor (no retained Vector3 → no per-point allocation).
+let lastBx = 0, lastBy = 0, lastBz = 0, hasLastBackplotPt = false;
+// Reused scratch vectors for the per-tick backplot append — avoids allocating
+// two Vector3 every status tick (GC churn → motion-animation hiccups).
+const _bpWorld = new THREE.Vector3();
+const _bpLocal = new THREE.Vector3();
+// Reused scratch for camera tracking — runs every rAF frame while tracking.
+const _trackTarget = new THREE.Vector3();
 
 let machineBoundsMesh: THREE.LineSegments | null = null;
 let toolpathBoundsBox: THREE.LineSegments | null = null;
@@ -378,7 +408,8 @@ function buildGizmo() {
 
 function resetBackplot() {
   backplotCount = 0;
-  lastBackplotPt = null;
+  backplotHead = 0;
+  hasLastBackplotPt = false;
 
   if (backplotGeom && backplotPos) {
     // Keep allocation, just “empty” it
@@ -740,38 +771,34 @@ function setTrackingMode(mode: "none" | "tool" | "wcs") {
   requestRender();
 }
 
-function pushBackplotPoint(p: [number, number, number]) {
+function pushBackplotPoint(x: number, y: number, z: number) {
   if (!backplotGeom || !backplotPos || !backplotLine) return;
 
-
-  const x = p[0] ?? 0;
-  const y = p[1] ?? 0;
-  const z = p[2] ?? 0;
-
-  const v = new THREE.Vector3(x, y, z);
-
-  if (lastBackplotPt) {
-    if (v.distanceTo(lastBackplotPt) < BACKPLOT_EPS) return;
+  if (hasLastBackplotPt) {
+    const dx = x - lastBx, dy = y - lastBy, dz = z - lastBz;
+    if (dx * dx + dy * dy + dz * dz < BACKPLOT_EPS * BACKPLOT_EPS) return;
   }
 
-  // Ensure objects exist (created in ensureCoreGroups)
-  if (!backplotGeom || !backplotPos || !backplotLine) return;
+  // Linearized circular buffer: the backing array is 2×BACKPLOT_MAX long, and
+  // every point is written to BOTH `slot` and `slot+BACKPLOT_MAX`. That keeps
+  // the most-recent BACKPLOT_MAX points contiguous and in chronological order
+  // at indices [head, head+BACKPLOT_MAX) once full — a single setDrawRange with
+  // zero per-point memmove (the old copyWithin shifted ~60 KB on every point).
+  const N = BACKPLOT_MAX;
+  const slot = backplotHead;
+  const a = slot * 3;
+  const b = (slot + N) * 3;
+  backplotPos[a + 0] = x; backplotPos[a + 1] = y; backplotPos[a + 2] = z;
+  backplotPos[b + 0] = x; backplotPos[b + 1] = y; backplotPos[b + 2] = z;
 
-  // If full, shift left by one (simple & robust)
-  if (backplotCount >= BACKPLOT_MAX) {
-    backplotPos.copyWithin(0, 3, BACKPLOT_MAX * 3);
-    backplotCount = BACKPLOT_MAX - 1;
-  }
+  backplotHead = (slot + 1) % N;
+  if (backplotCount < N) backplotCount++;
 
-  const i = backplotCount * 3;
-  backplotPos[i + 0] = v.x;
-  backplotPos[i + 1] = v.y;
-  backplotPos[i + 2] = v.z;
+  lastBx = x; lastBy = y; lastBz = z; hasLastBackplotPt = true;
 
-  backplotCount++;
-  lastBackplotPt = v;
-
-  backplotGeom.setDrawRange(0, backplotCount);
+  // Not yet wrapped: points fill [0, count). Full: window starts at head.
+  const start = backplotCount < N ? 0 : backplotHead;
+  backplotGeom.setDrawRange(start, backplotCount);
   backplotGeom.attributes.position!.needsUpdate = true;
 }
 
@@ -980,7 +1007,8 @@ function ensureCoreGroups(init: ViewerInit) {
   // ---- Backplot line (tool history in WORK coordinates) ----
 {
   backplotGeom = new THREE.BufferGeometry();
-  backplotPos = new Float32Array(BACKPLOT_MAX * 3);
+  // 2× length: linearized circular buffer (see pushBackplotPoint). +480 KB.
+  backplotPos = new Float32Array(BACKPLOT_MAX * 2 * 3);
   backplotGeom.setAttribute("position", new THREE.BufferAttribute(backplotPos, 3));
   backplotGeom.setDrawRange(0, 0);
 
@@ -1357,11 +1385,11 @@ function applyState(init: ViewerInit, st: ViewerState) {
   // Append the actual rendered tool tip position, expressed in work group local space.
   // This guarantees the backplot starts exactly at the tooltip (independent of joint_pos vs machine_pos nuances).
   if (toolMarker && _workGrp) {
-    const w = new THREE.Vector3();
-    toolMarker.getWorldPosition(w);
-
-    const xl = _workGrp.worldToLocal(w.clone());
-    pushBackplotPoint([xl.x, xl.y, xl.z]);
+    toolMarker.getWorldPosition(_bpWorld);
+    // worldToLocal mutates its argument in place, so convert a copy.
+    _bpLocal.copy(_bpWorld);
+    _workGrp.worldToLocal(_bpLocal);
+    pushBackplotPoint(_bpLocal.x, _bpLocal.y, _bpLocal.z);
   }
 
   // ---- Highlight current motion line in toolpath ----
@@ -1382,24 +1410,29 @@ function applyState(init: ViewerInit, st: ViewerState) {
   // Render-on-demand: detect whether anything visually changed since the last
   // applied state. Status broadcasts arrive at ~30 Hz; without this diff we'd
   // render every status arrival even when joints are still and motion_line is
-  // unchanged. Fields included cover everything applyState mutates visually.
-  const sig = JSON.stringify([
-    st.joint_pos,
-    st.machine_pos,
-    st.g5x_offset,
-    st.g92_offset,
-    st.tool_offset,
-    st.tool_number,
-    st.tool_diameter,
-    st.tool_length,
-    st.tool_meta,
-    st.motion_line,
-    st.rotation_xy,
-  ]);
-  if (sig !== _lastStateSig) {
-    _lastStateSig = sig;
-    _needsRender = true;
-  }
+  // unchanged. Fields checked cover everything applyState mutates visually.
+  // Cheap field-wise compare (no per-tick allocation) replaces JSON.stringify.
+  const toolNum = st.tool_number ?? null;
+  const toolDiam = st.tool_diameter ?? null;
+  const toolLen = st.tool_length ?? null;
+  const motionLine = st.motion_line ?? null;
+  const rotationXy = st.rotation_xy ?? null;
+  const toolMeta = st.tool_meta ?? null;
+  let changed = false;
+  if (_numArrChanged(_pv.jointPos, st.joint_pos)) { _pv.jointPos = st.joint_pos ? [...st.joint_pos] : null; changed = true; }
+  if (_numArrChanged(_pv.machinePos, st.machine_pos)) { _pv.machinePos = st.machine_pos ? [...st.machine_pos] : null; changed = true; }
+  if (_numArrChanged(_pv.g5x, st.g5x_offset)) { _pv.g5x = st.g5x_offset ? [...st.g5x_offset] : null; changed = true; }
+  if (_numArrChanged(_pv.g92, st.g92_offset)) { _pv.g92 = st.g92_offset ? [...st.g92_offset] : null; changed = true; }
+  if (_numArrChanged(_pv.toolOffset, st.tool_offset)) { _pv.toolOffset = st.tool_offset ? [...st.tool_offset] : null; changed = true; }
+  if (toolNum !== _pv.toolNum) { _pv.toolNum = toolNum; changed = true; }
+  if (toolDiam !== _pv.toolDiam) { _pv.toolDiam = toolDiam; changed = true; }
+  if (toolLen !== _pv.toolLen) { _pv.toolLen = toolLen; changed = true; }
+  if (motionLine !== _pv.motionLine) { _pv.motionLine = motionLine; changed = true; }
+  if (rotationXy !== _pv.rotationXy) { _pv.rotationXy = rotationXy; changed = true; }
+  // tool_meta is null on the vast majority of ticks; the gateway sends a fresh
+  // object only on a real change, so a reference compare is sufficient + cheap.
+  if (toolMeta !== _pv.toolMeta) { _pv.toolMeta = toolMeta; changed = true; }
+  if (changed) _needsRender = true;
 }
 
 /** Check if stored toolpath bbox exceeds machine bounds (in current WCS). */
@@ -1676,13 +1709,17 @@ function animate() {
   // Only flags a render if the tracked point actually moved this tick;
   // otherwise tracking-mode would force every frame even at machine idle.
   if (trackingMode !== "none" && controls && camera) {
-    const target = new THREE.Vector3();
+    // getWorldPosition overwrites _trackTarget each frame; .sub() then turns it
+    // into the delta in place — safe because we re-fetch before every use.
+    // Reset first so a non-matching mode falls back to origin (as the old
+    // fresh-Vector3 did) rather than reusing last frame's stale delta.
+    _trackTarget.set(0, 0, 0);
     if (trackingMode === "tool" && toolMarker) {
-      toolMarker.getWorldPosition(target);
+      toolMarker.getWorldPosition(_trackTarget);
     } else if (trackingMode === "wcs" && workOrigin) {
-      workOrigin.getWorldPosition(target);
+      workOrigin.getWorldPosition(_trackTarget);
     }
-    const delta = target.sub(controls.target);
+    const delta = _trackTarget.sub(controls.target);
     if (delta.lengthSq() > 1e-12) {
       controls.target.add(delta);
       camera.position.add(delta);

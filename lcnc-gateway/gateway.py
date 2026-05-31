@@ -1157,6 +1157,7 @@ _halshow_topology_sent: dict = {}              # client_id → True once topolog
 _gcode_preview_pending: Optional[dict] = None   # {"file","feed","feed_lines","rapid","stats"}
 _gcode_preview_version: int = int(time.time()) # bumps on file change (or unload); seeded from startup so ?v= URLs don't collide across restarts
 _gcode_last_file: Optional[str] = None          # edge detection in poller
+_gcode_last_mtime: Optional[float] = None       # re-parse on in-place edits of the same path
 _gcode_refresh_running: bool = False            # single-flight guard
 # Pre-encoded msgpack bytes of _gcode_preview_pending. Served over HTTP by
 # GET /preview so the 2.7 MB polyline payload never touches the WS writer.
@@ -1374,7 +1375,7 @@ async def _status_poller():
     global _comp_grid_pending, _comp_grid_version, _comp_grid_initialized, _last_comp_hal_ver
     global _status_event, _shared_clients_list
     global _gcode_preview_pending, _gcode_preview_version
-    global _gcode_last_file, _gcode_refresh_running
+    global _gcode_last_file, _gcode_last_mtime, _gcode_refresh_running
     global _gcode_preview_bytes, _gcode_preview_bytes_gz
     global _surface_points_bytes, _comp_grid_bytes
     loop = asyncio.get_event_loop()
@@ -1567,7 +1568,22 @@ async def _status_poller():
             # and un-offsets), so rotation edits and WCS switches never
             # trigger a re-parse — frontend re-applies LIVE origin+rotation
             # as scene-graph updates.
-            file_changed = bool(st.active_file) and st.active_file != _gcode_last_file
+            # Edge on either the path OR the file's mtime: re-loading the same
+            # path after an in-place edit (web editor Save, or an external
+            # edit) keeps active_file constant, so without the mtime check the
+            # preview would never re-parse and the UI would show stale content.
+            if st.active_file:
+                try:
+                    _cur_mtime = os.path.getmtime(st.active_file)
+                except OSError:
+                    # File momentarily absent (e.g. mid atomic-write swap).
+                    # Leave _gcode_last_mtime as-is; next tick re-checks.
+                    _cur_mtime = _gcode_last_mtime
+            else:
+                _cur_mtime = None
+            file_changed = bool(st.active_file) and (
+                st.active_file != _gcode_last_file or _cur_mtime != _gcode_last_mtime
+            )
             if file_changed and not _gcode_refresh_running:
                 _gcode_refresh_running = True
                 register_bg_task(asyncio.create_task(_refresh_gcode_preview(st.active_file)))
@@ -1577,6 +1593,7 @@ async def _status_poller():
                 _gcode_preview_bytes_gz = None
                 _gcode_preview_version += 1
                 _gcode_last_file = None
+                _gcode_last_mtime = None
 
             # Safety-trip detection via webui-safety.trip-count. The counter is
             # incremented by the independent hal_watchdog.py process on every
@@ -4381,9 +4398,16 @@ async def _refresh_gcode_preview(filepath: str):
     for multi-second programs.
     """
     global _gcode_preview_pending, _gcode_preview_version
-    global _gcode_last_file, _gcode_refresh_running
+    global _gcode_last_file, _gcode_last_mtime, _gcode_refresh_running
     global _gcode_preview_bytes, _gcode_preview_bytes_gz, _gcode_parse_proc
     t_start = time.monotonic()
+    # Snapshot mtime BEFORE the parse: if an edit lands while the subprocess is
+    # running, we record the pre-parse mtime, so the poller's next tick still
+    # sees a mismatch and re-parses the newest content rather than missing it.
+    try:
+        _mtime_at_parse: Optional[float] = os.path.getmtime(filepath)
+    except OSError:
+        _mtime_at_parse = None
     try:
         ini_path = getattr(STAT, "ini_filename", None) if STAT is not None else None
         if not ini_path:
@@ -4478,6 +4502,7 @@ async def _refresh_gcode_preview(filepath: str):
         _gcode_preview_bytes_gz = preview_bytes_gz
         _gcode_preview_version += 1
         _gcode_last_file = filepath
+        _gcode_last_mtime = _mtime_at_parse
         _trace.emit("gcode.publish",
                     version=_gcode_preview_version,
                     decode_ms=round((t_dec_done - t_dec) * 1000, 1),
@@ -5501,7 +5526,7 @@ async def ws_endpoint(ws: WebSocket):
 
         global _next_client_id, _estop_hold, _unacked_trip, _last_trip_count
         global _gcode_preview_pending, _gcode_preview_version
-        global _gcode_last_file
+        global _gcode_last_file, _gcode_last_mtime
         global _gcode_preview_bytes, _gcode_preview_bytes_gz, _gcode_refresh_running
         client_id = _next_client_id
         _next_client_id += 1
@@ -6369,6 +6394,7 @@ async def ws_endpoint(ws: WebSocket):
                 _gcode_preview_bytes_gz = None
                 _gcode_preview_version += 1
                 _gcode_last_file = None
+                _gcode_last_mtime = None
             await ws_send_json(ws, {"type": "reply", **reply})
 
     except (WebSocketDisconnect, RuntimeError) as _disc_e:

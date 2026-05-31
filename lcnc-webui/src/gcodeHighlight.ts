@@ -3,8 +3,31 @@ export type Token = {
   text: string;
 };
 
-/** Syntax highlighter for G-code lines */
+// Memoize tokenization by line content. The G-code viewer re-tokenizes its
+// visible window every time the running program advances `currentLine`
+// (5–50×/s), and as the window scrolls the same line strings recur constantly.
+// Caching by string makes those repeats free. Bounded to avoid unbounded growth
+// on very large files; oldest-inserted entries are evicted (Map keeps order).
+const _highlightCache = new Map<string, Token[]>();
+const _HIGHLIGHT_CACHE_MAX = 2000;
+
+/** Syntax highlighter for G-code lines (memoized by line content) */
 export function highlightGcode(line: string): Token[] {
+  const cached = _highlightCache.get(line);
+  if (cached) return cached;
+
+  const tokens = tokenizeLine(line);
+
+  if (_highlightCache.size >= _HIGHLIGHT_CACHE_MAX) {
+    // Evict the oldest entry (first inserted key).
+    const oldest = _highlightCache.keys().next().value;
+    if (oldest !== undefined) _highlightCache.delete(oldest);
+  }
+  _highlightCache.set(line, tokens);
+  return tokens;
+}
+
+function tokenizeLine(line: string): Token[] {
   const tokens: Token[] = [];
 
   // Check for comment (everything after semicolon or inside parentheses)

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
 import { loadMachineDefaults, STEP_RPM } from "./defaults";
@@ -126,18 +126,24 @@ const BUFFER = 10;
 
 const scrollTop = ref(0);
 
-const visibleRange = computed(() => {
+// Split into primitive computeds so a sub-line scroll (which leaves the integer
+// start/end unchanged) does NOT re-run visibleLines. During a running program
+// currentLine advances 5–50×/s, each nudging scrollTop; keying retokenization
+// off the integer bounds avoids redundant work on every sub-LINE_HEIGHT delta.
+const rangeStart = computed(() =>
+  Math.max(0, Math.floor(scrollTop.value / LINE_HEIGHT) - BUFFER)
+);
+const rangeEnd = computed(() => {
   const viewportH = codeViewerRef.value?.clientHeight ?? 400;
-  const start = Math.max(0, Math.floor(scrollTop.value / LINE_HEIGHT) - BUFFER);
   const count = Math.ceil(viewportH / LINE_HEIGHT) + BUFFER * 2;
-  const end = Math.min(lines.value.length, start + count);
-  return { start, end };
+  return Math.min(lines.value.length, rangeStart.value + count);
 });
 
 // Tokenize only the visible window — never the full file — to avoid blocking the
 // main thread (and delaying heartbeat) when a large G-code file is opened.
 const visibleLines = computed(() => {
-  const { start, end } = visibleRange.value;
+  const start = rangeStart.value;
+  const end = rangeEnd.value;
   return lines.value.slice(start, end).map((line, i) => ({
     lineNum: start + i + 1,
     tokens: highlightGcode(line),
@@ -145,7 +151,7 @@ const visibleLines = computed(() => {
 });
 
 const totalHeight = computed(() => lines.value.length * LINE_HEIGHT);
-const offsetY = computed(() => visibleRange.value.start * LINE_HEIGHT);
+const offsetY = computed(() => rangeStart.value * LINE_HEIGHT);
 
 function onCodeScroll(ev: Event) {
   scrollTop.value = (ev.target as HTMLElement).scrollTop;
@@ -296,16 +302,22 @@ function confirmRunFromLine() {
 }
 
 /** ---------- Edit mode ---------- */
+// The editor is an *uncontrolled* textarea: it owns its own value natively
+// while the user types, so there is no per-keystroke reactive round-trip over
+// the whole file (which made large files lag). We seed it once on open and read
+// it back only on Save.
 const editing = ref(false);
-const editBuffer = ref("");
+const editTextarea = ref<HTMLTextAreaElement | null>(null);
 const saving = ref(false);
 const saveError = ref<string | null>(null);
 
-function enterEdit() {
+async function enterEdit() {
   if (!props.gcodeContent || !props.activeFile) return;
-  editBuffer.value = props.gcodeContent;
   saveError.value = null;
   editing.value = true;
+  // Wait for v-if to mount the textarea, then seed its value imperatively.
+  await nextTick();
+  if (editTextarea.value) editTextarea.value.value = props.gcodeContent;
 }
 
 function discardEdit() {
@@ -314,11 +326,11 @@ function discardEdit() {
 }
 
 async function saveEdit() {
-  if (!props.activeFile) return;
+  if (!props.activeFile || !editTextarea.value) return;
   saving.value = true;
   saveError.value = null;
   try {
-    await saveFile(props.activeFile, editBuffer.value);
+    await saveFile(props.activeFile, editTextarea.value.value);
     editing.value = false;
     emit("loadFile", props.activeFile);
   } catch (e: any) {
@@ -437,7 +449,7 @@ async function saveEdit() {
           <span>{{ saveError }}</span>
           <MachineBtn type="close" @click="saveError = null">&times;</MachineBtn>
         </div>
-        <textarea class="editTextarea" v-model="editBuffer" spellcheck="false"></textarea>
+        <textarea ref="editTextarea" class="editTextarea" spellcheck="false"></textarea>
         <div class="editActions">
           <MachineBtn type="fileSave" class="actionBtn" @click="saveEdit" :disabled="saving">{{ saving ? 'Saving...' : 'Save' }}</MachineBtn>
           <MachineBtn type="fileOp" class="actionBtn" @click="discardEdit" :disabled="saving">Discard</MachineBtn>
