@@ -116,6 +116,7 @@ import { Text } from "troika-three-text";
 import { viewerInit, viewerGcode, gcodeContent, status, type ViewerInit, type ViewerGcode } from "./lcncWs";
 import { loadViewerDefaults, loadCameraDefaults, saveCameraDefaults, ALL_LAYERS, settingsVersion, type Vec3, type Layer } from "./defaults";
 import { fmtCoord } from "./format";
+import { recordApply, recordRender, setViewerPerfContext } from "./viewerPerf";
 import ViewCube from "./ViewCube.vue";
 import MachineBtn from "./MachineBtn.vue";
 import CameraPip from "./CameraPip.vue";
@@ -1196,6 +1197,17 @@ async function buildFromInit(init: ViewerInit) {
       };
     }
 
+    // Per-emit context for the frame-timing probe (viewerPerf). Closes over
+    // module-level state so it always reads live values; invoked once per
+    // summary window, not per frame. Lets the trace correlate hiccups with
+    // toolpath size and the backplot-ring-full memmove regime.
+    setViewerPerfContext(() => ({
+      feed_segs: feedSharedGeom?.getAttribute("position")?.count ?? 0,
+      rapid_segs: rapidSharedGeom?.getAttribute("position")?.count ?? 0,
+      backplot_pts: backplotCount,
+      backplot_full: backplotCount >= BACKPLOT_MAX,
+    }));
+
     // Apply any layer visibility that was requested before objects existed
     if (pendingLayers) {
       for (const [layer, on] of pendingLayers) {
@@ -1642,7 +1654,9 @@ function animate() {
   // state changes — so a steady 30 Hz status flood with no joint motion does
   // not force a render.
   if (pendingState && viewerInit.value) {
+    const _tApply = performance.now();
     applyState(viewerInit.value, pendingState as ViewerState);
+    recordApply(performance.now() - _tApply);
     pendingState = null;
 
     // Re-frame after first status update so camera accounts for actual axis positions
@@ -1708,7 +1722,9 @@ function animate() {
   // bottom transitions. The tween writes camera.position/quaternion directly
   // each frame; controls.update() runs once at tween completion to re-sync.
   if (!_tweenRaf) controls?.update();
+  const _tRender = performance.now();
   renderer?.render(scene!, camera!);
+  recordRender(performance.now() - _tRender);
 
   // Orientation gizmo — always ortho, render into bottom-right viewport
   // (top-left is the HUD, top-right is the ViewCube + quick-grid).
@@ -1838,6 +1854,7 @@ function applyViewerDefaults(opts: { initialMount?: boolean } = {}) {
 
 onUnmounted(() => {
   document.removeEventListener("visibilitychange", _onVisibilityChange);
+  setViewerPerfContext(null);
   resizeObs?.disconnect();
   resizeObs = null;
   cancelAnimationFrame(raf);
