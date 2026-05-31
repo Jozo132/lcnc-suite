@@ -1206,6 +1206,11 @@ async function buildFromInit(init: ViewerInit) {
       rapid_segs: rapidSharedGeom?.getAttribute("position")?.count ?? 0,
       backplot_pts: backplotCount,
       backplot_full: backplotCount >= BACKPLOT_MAX,
+      // Three.js resource counts — monotonic growth over a long run is a
+      // geometry/texture leak (the "~1 hr in" stutter suspect). Ride the 3 s
+      // probe so leak detection shares one event line with heap + gap.
+      geometries: renderer?.info.memory.geometries ?? 0,
+      textures: renderer?.info.memory.textures ?? 0,
     }));
 
     // Apply any layer visibility that was requested before objects existed

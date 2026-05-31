@@ -303,12 +303,20 @@ _start_proc_status_loop() {
                         nonvoluntary_ctxt*)  nvol=$(echo "$line"         | awk '{print $2}') ;;
                     esac
                 done < "/proc/$gw_pid/status"
+                # schedstat field 2 = cumulative ns the gateway was runnable
+                # but waiting for a CPU (run-queue wait). Rising fast between
+                # samples = CPU starvation — the direct signal behind the
+                # event-loop stalls that lag.window catches only after the fact.
+                local rq_wait_ns="0"
+                if [[ -r "/proc/$gw_pid/schedstat" ]]; then
+                    read -r _ss_oncpu rq_wait_ns _ss_slices < "/proc/$gw_pid/schedstat" 2>/dev/null || rq_wait_ns="0"
+                fi
                 # NDJSON line — same schema as gateway/hal_reader emit.
                 # Atomic O_APPEND under PIPE_BUF (4 KB) so this can't tear.
                 local now_ns
                 now_ns=$(date +%s%N)
-                printf '{"t_wall_ns":%s,"t_mono_ms":0,"proc":"launcher","pid":%s,"tag":"proc.status","level":"info","gw_pid":%s,"vm_rss_kb":%s,"threads":%s,"voluntary_ctxt":%s,"nonvoluntary_ctxt":%s}\n' \
-                    "$now_ns" "$$" "$gw_pid" "$rss" "$thr" "$vol" "$nvol" \
+                printf '{"t_wall_ns":%s,"t_mono_ms":0,"proc":"launcher","pid":%s,"tag":"proc.status","level":"info","gw_pid":%s,"vm_rss_kb":%s,"threads":%s,"voluntary_ctxt":%s,"nonvoluntary_ctxt":%s,"rq_wait_ns":%s}\n' \
+                    "$now_ns" "$$" "$gw_pid" "$rss" "$thr" "$vol" "$nvol" "$rq_wait_ns" \
                     >> "$LCNC_RESOLVED_LOG_DIR/trace.ndjson" 2>/dev/null || true
             fi
             sleep 1

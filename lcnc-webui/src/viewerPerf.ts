@@ -30,6 +30,16 @@ const SAMPLE_CAP = 1200;  // bound per-window gap-sample memory (~40 s @ 30 Hz)
 
 let _enabled = true;
 
+// Stable per-page-load client identity, so summaries from different browsers/
+// tabs can be told apart in the trace (the telemetry POST `peer` is a fresh
+// ephemeral port each batch and is useless for this). `host` distinguishes the
+// local viewer (localhost/127.0.0.1) from a remote LAN browser (the VM's IP).
+const _clientId =
+  typeof crypto !== "undefined" && crypto.randomUUID
+    ? crypto.randomUUID().slice(0, 8)
+    : Math.random().toString(36).slice(2, 10);
+const _host = typeof location !== "undefined" ? location.hostname : "?";
+
 // Per-window accumulators (reset on each emit).
 let _frames = 0;                  // applyState invocations this window
 const _gaps: number[] = [];       // statusGap samples (ms) for percentiles
@@ -93,6 +103,9 @@ function _flush(): void {
   if (_frames === 0) return; // idle window — stay quiet
   const sorted = _gaps.slice().sort((a, b) => a - b);
   emitTelemetry('viewer.perf', {
+    cid: _clientId,                // stable per-page-load id (separates tabs)
+    host: _host,                   // localhost = local VM browser, IP = remote
+    vis: typeof document !== 'undefined' ? document.visibilityState : '?',
     window_ms: WINDOW_MS,
     frames: _frames,
     // status-arrival cadence (the "is the stream bursty?" signal)
