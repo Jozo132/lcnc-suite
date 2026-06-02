@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
 import { evaluatePermissions, PERMISSIONS_KEY, type Permissions } from "./permissions";
-import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, gcodeContent, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, safetyTrip, acknowledgeSafetyTrip, readerStale, previewLoadError, serverShuttingDown, type LcncMessage } from "./lcncWs";
+import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, gcodeContent, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, safetyTrip, acknowledgeSafetyTrip, readerStale, configWarning, previewLoadError, serverShuttingDown, type LcncMessage } from "./lcncWs";
 import ThreeViewer from "./ThreeViewer.vue";
 import TabPanel from "./TabPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
@@ -166,6 +166,7 @@ const machineStateColor = computed(() => {
   if (safetyTrip.value) return '--state-danger';
   if (serverShuttingDown.value) return '--state-warn';
   if (readerStale.value) return '--state-warn';
+  if (configWarning.value) return '--state-warn';
   if (previewLoadError.value) return '--state-warn';
   return STATE_COLORS[machineState.value];
 });
@@ -218,6 +219,7 @@ const bannerFlashMode = computed<'none' | 'pulse' | 'flash'>(() => {
   if (s === 'estop' || s === 'disconnected') return 'flash';
   if (serverShuttingDown.value) return 'pulse';
   if (readerStale.value) return 'pulse';
+  if (configWarning.value) return 'pulse';
   if (previewLoadError.value) return 'pulse';
   if (s === 'unhomed' || s === 'toolchange' || s === 'idle') return 'pulse';
   return 'none';
@@ -1145,6 +1147,9 @@ watch(viewerGcode, (newGcode) => {
           </span>
           <span v-else-if="readerStale" :key="'reader-stale'" class="bannerError">
             HAL reader stale — UI values may be out of date
+          </span>
+          <span v-else-if="configWarning" :key="'config-warning'" class="bannerError">
+            Config fallback — {{ configWarning.reason }}
           </span>
           <span v-else-if="previewLoadError" :key="'preview-error'" class="bannerError">
             3D preview load failed — toolpath may be stale or missing

@@ -18,7 +18,7 @@ type Cfg = { url: string; session: string; resumeArmed: boolean; hidden: boolean
 
 type MainMsg =
   | { type: "connect"; url: string; session: string; resumeArmed: boolean; hidden: boolean }
-  | { type: "send"; payload: string }
+  | { type: "send"; payload: string; cmd?: string; dropIfClosed?: boolean }
   | { type: "updateConfig"; resumeArmed?: boolean; hidden?: boolean; fireHeartbeat?: boolean }
   | { type: "close" };
 
@@ -183,8 +183,13 @@ self.onmessage = (ev: MessageEvent<MainMsg>) => {
     case "send":
       if (ws && ws.readyState === WebSocket.OPEN) {
         try { ws.send(msg.payload); } catch { /* ignore */ }
+      } else if (msg.dropIfClosed) {
+        // Mutating/motion command issued while the socket is closed — DROP it
+        // rather than replay a stale operator action into a fresh connection
+        // after reconnect (issue #18). Surface it so the operator knows.
+        post({ type: "error", kind: "dropped_command", msg: String(msg.cmd ?? "?") });
       } else {
-        // Not open yet — queue so the command isn't lost during a brief blip.
+        // Read-only/telemetry — safe to queue across a brief blip.
         if (preOpenQueue.length >= QUEUE_MAX) {
           preOpenQueue.shift();
           post({ type: "error", kind: "send_queue_overflow", msg: String(QUEUE_MAX) });

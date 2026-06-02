@@ -380,12 +380,16 @@ which lcnc-suite    # should print ~/.local/bin/lcnc-suite
 | `WEBUI_PORT` | `8000` | HTTP/WebSocket port |
 | `WEBUI_BROWSER` | `1` | Auto-open browser on start |
 | `WEBUI_DEV` | `0` | `1` = Vite dev server on :5173 (hot-reload) |
+| `WEBUI_TOKEN` | *(none)* | Pre-shared auth token (issue #17). **Required** when `WEBUI_HOST` is non-loopback — the launcher aborts loudly if bound to a network interface without one. Required to connect the WS and to use REST mutation routes. Empty = auth disabled (loopback/dev only). |
+| `WEBUI_ALLOWED_ORIGINS` | *(same-host)* | Comma/space-separated WS/CORS Origin allow-list. Unset = allow only same-host origins (works for any LAN IP). Browser drive-by from other origins is rejected regardless. |
 | `LOG_DIR` | `<install-dir>/runlogs` | Optional suite log dir (all four processes). Unset = next to launcher; unwritable = loud launcher abort, no `/tmp` fallback |
 | `CAMERA_SOURCE` | *(disabled)* | USB device index (`0`, `1`) or URL (`rtsp://host/live`, `http://host/mjpeg`) |
 | `CAMERA_RESOLUTION` | `1280x720` | Capture resolution `WxH` (USB cameras only) |
 | `CAMERA_FPS` | `15` | MJPEG stream frame rate |
 
-Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. `LCNC_LOG_DIR` overrides `LOG_DIR`. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
+Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV`, `LCNC_WEBUI_TOKEN`, `LCNC_WEBUI_ALLOWED_ORIGINS` override INI values. `LCNC_LOG_DIR` overrides `LOG_DIR`. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
+
+**Auth (issue #17):** the gateway is a machine-control surface, so when bound to a network interface it requires `WEBUI_TOKEN`. The token is injected into the served `index.html` (`window.__LCNC_TOKEN__`), so browsers the gateway serves get it automatically; the WS carries it as `?token=` and REST mutations as the `X-Auth-Token` header (`sendBeacon` settings flush uses `?token=`). This blocks cross-origin WS hijack and unauthenticated REST mutation on a trusted LAN; it is **not** a defense against an attacker already running code on that LAN.
 
 **Development mode:** Set `WEBUI_DEV = 1` — launcher starts Vite on :5173 (hot-reload) alongside the gateway on :8000. Browser opens to :5173 where Vite proxies API/WS to the gateway.
 

@@ -2,6 +2,7 @@
  * REST API helpers for file upload/listing.
  * Complements lcncWs.ts (which handles WebSocket).
  */
+import { authHeaders } from "./auth";
 
 function getBaseUrl(): string {
   return location.origin;
@@ -60,7 +61,7 @@ export interface SaveResponse {
 export async function saveFile(path: string, content: string): Promise<SaveResponse> {
   const resp = await fetch(`${getBaseUrl()}/save`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ path, content }),
   });
   if (!resp.ok) await throwHttpError(resp);
@@ -95,14 +96,14 @@ export async function fetchSettings(): Promise<Record<string, any>> {
 export async function saveSettingsSection(section: string, data: any): Promise<void> {
   const resp = await fetch(`${getBaseUrl()}/settings/${section}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ data }),
   });
   if (!resp.ok) await throwHttpError(resp);
 }
 
 export async function resetServerSettings(): Promise<void> {
-  const resp = await fetch(`${getBaseUrl()}/settings`, { method: "DELETE" });
+  const resp = await fetch(`${getBaseUrl()}/settings`, { method: "DELETE", headers: authHeaders() });
   if (!resp.ok) await throwHttpError(resp);
 }
 
@@ -111,6 +112,7 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
   formData.append("file", file);
   const resp = await fetch(`${getBaseUrl()}/upload`, {
     method: "POST",
+    headers: authHeaders(),
     body: formData,
   });
   if (!resp.ok) await throwHttpError(resp);

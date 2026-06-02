@@ -46,6 +46,8 @@ if [[ -n "$INI_FILE" ]]; then
   ADAPTIVE_POLL="${WEBUI_ADAPTIVE_POLL:-$(ini_get WEBUI_ADAPTIVE_POLL)}"
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-$(ini_get WEBUI_IDLE_POLL_HZ)}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-$(ini_get WEBUI_WS_INIT_CONCURRENCY)}"
+  TOKEN="${LCNC_WEBUI_TOKEN:-$(ini_get WEBUI_TOKEN)}"
+  ALLOWED_ORIGINS="${LCNC_WEBUI_ALLOWED_ORIGINS:-$(ini_get WEBUI_ALLOWED_ORIGINS)}"
 else
   HOST="${LCNC_WEBUI_HOST:-}"
   PORT="${LCNC_WEBUI_PORT:-}"
@@ -60,6 +62,8 @@ else
   ADAPTIVE_POLL="${WEBUI_ADAPTIVE_POLL:-}"
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-}"
+  TOKEN="${LCNC_WEBUI_TOKEN:-}"
+  ALLOWED_ORIGINS="${LCNC_WEBUI_ALLOWED_ORIGINS:-}"
 fi
 
 # Apply defaults
@@ -69,6 +73,23 @@ BROWSER="${BROWSER:-1}"
 DEV="${DEV:-0}"
 
 VITE_PORT="5173"
+
+# ── Fail closed: refuse to expose the control plane on a non-loopback
+# interface without an auth token (issue #17). A LAN-reachable gateway with
+# no token is an unauthenticated machine-control surface. Loopback-only
+# (127.0.0.1 / ::1 / localhost) needs no token — single-operator/dev kiosk.
+case "$HOST" in
+  127.0.0.1|::1|localhost) ;;  # loopback — token optional
+  *)
+    if [[ -z "$TOKEN" ]]; then
+      echo "ERROR: WEBUI_HOST='$HOST' exposes the gateway on the network but no WEBUI_TOKEN is set." >&2
+      echo "Set WEBUI_TOKEN in the INI [DISPLAY] section (or the LCNC_WEBUI_TOKEN env) to a shared" >&2
+      echo "secret, or bind WEBUI_HOST to 127.0.0.1 for a local-only kiosk." >&2
+      echo "Refusing to start an unauthenticated machine-control surface." >&2
+      exit 1
+    fi
+    ;;
+esac
 
 # Pass INI path if available
 [[ -n "$INI_FILE" ]] && export LCNC_INI_FILE="$INI_FILE"
@@ -91,6 +112,14 @@ VITE_PORT="5173"
 # loop and trip the HAL safety chain. Higher values = lower per-tab
 # connect latency but bigger CPU peaks.
 [[ -n "$WS_INIT_CONC"  ]] && export WEBUI_WS_INIT_CONCURRENCY="$WS_INIT_CONC"
+
+# ── Auth / origin controls (issue #17) ──
+# Pre-shared token (required to connect + arm when bound non-loopback) and the
+# Origin allow-list. DEV is exported so the gateway can admit the Vite :5173
+# origin in development mode.
+[[ -n "$TOKEN"           ]] && export LCNC_WEBUI_TOKEN="$TOKEN"
+[[ -n "$ALLOWED_ORIGINS" ]] && export LCNC_WEBUI_ALLOWED_ORIGINS="$ALLOWED_ORIGINS"
+export LCNC_WEBUI_DEV="$DEV"
 
 # ── Ensure NVM Node is on PATH (LinuxCNC may launch with minimal PATH) ──
 if [[ -s "$HOME/.nvm/nvm.sh" ]]; then

@@ -1,4 +1,5 @@
 import { ref } from "vue";
+import { withToken } from "./auth";
 
 // ─── Input step constants ─────────────────────────────────────────
 export const STEP_DEFAULT = 1;
@@ -96,8 +97,10 @@ export function updateServerCache(data: Record<string, any>): void {
 /** Flush pending debounced saves via sendBeacon (called on page hide). */
 function flushPendingSaves(): void {
   for (const [section, data] of _pendingSaves) {
+    // sendBeacon can't set headers, so the token rides in the query string
+    // (the require_token dependency accepts ?token= as well as the header).
     navigator.sendBeacon(
-      `/settings/${section}`,
+      withToken(`/settings/${section}`),
       new Blob([JSON.stringify({ data })], { type: "application/json" }),
     );
   }

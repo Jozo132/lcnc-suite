@@ -1,8 +1,9 @@
 import { ref, shallowRef, computed } from "vue";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
-import { type WsCommand, OPERATOR_ERROR } from "./lcnc";
+import { type WsCommand, OPERATOR_ERROR, isQueueSafe } from "./lcnc";
 import { updateServerCache, loadDisplayDefaults, type Vec3 } from "./defaults";
 import { enableWakeLock, disableWakeLock } from "./wakeLock";
+import { withToken } from "./auth";
 
 // ---- Session id (per-tab, for armed-resume across brief reconnects) ----
 // Persisted in sessionStorage so Ctrl-R keeps the same id; tab close clears
@@ -71,6 +72,12 @@ export const safetyTrip = ref<{ reason: string } | null>(null);
 // depend on the reader (spindle RPM, eoffset, probe input, comp state) are
 // known to be stale rather than silently frozen.
 export const readerStale = ref(false);
+
+// Config fallback (issue #21): gateway sets `config_warning` on status messages
+// when it falls back to a default unit system or default machine geometry —
+// both unit-ambiguous and unsafe to apply silently. Latches server-side until a
+// subsequent successful read; surfaced as a non-blocking banner.
+export const configWarning = ref<{ reason: string; units: boolean } | null>(null);
 
 // Server is mid-shutdown (FastAPI lifespan teardown). Set when the gateway
 // broadcasts `{type: "server_shutdown"}` immediately before closing WS
@@ -566,7 +573,9 @@ export function connectWs() {
   _terminateWsWorker();
 
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${wsProto}//${location.host}/ws`;
+  // Token rides in the URL so the worker replays it for free on every
+  // reconnect (browsers can't set WS headers). Empty token ⇒ unchanged URL.
+  const wsUrl = withToken(`${wsProto}//${location.host}/ws`);
   wsWorker = new Worker(new URL("./wsWorker.ts", import.meta.url), { type: "module" });
   wsWorker.onmessage = (ev: MessageEvent) => onWorkerMessage(ev.data);
   wsWorker.postMessage({
@@ -650,6 +659,13 @@ function onWorkerMessage(m: any) {
         emitTelemetry("ws.hello_send_failed", { error: m.msg });
       } else if (m.kind === "ws_error") {
         emitTelemetry("ws.error", { type: m.msg });
+      } else if (m.kind === "dropped_command") {
+        // A mutating command was dropped because the socket was closed
+        // (issue #18). Surface to the operator and the telemetry timeline.
+        emitTelemetry("ws.dropped_command", { cmd: m.msg });
+        messages.value = [...messages.value, { id: _nextMsgId++, kind: OPERATOR_ERROR, text: `Command dropped — not connected: ${m.msg}`, ts: Date.now() }];
+        unreadCount.value++;
+        persistMessages(messages.value);
       } else {
         emitTelemetry("ws.worker_error", { kind: m.kind, msg: m.msg });
       }
@@ -771,6 +787,10 @@ function onFrame(data: string | ArrayBuffer) {
       const stale = msg.reader_stale === true;
       if (readerStale.value !== stale) readerStale.value = stale;
 
+      configWarning.value = msg.config_warning
+        ? { reason: msg.config_warning.reason, units: msg.config_warning.units === true }
+        : null;
+
       // Buffer status as plain data — flush to reactive ref once per rAF.
       // When messages queue up, only the latest triggers Vue reactivity.
       _pendingStatus = msg;
@@ -873,7 +893,15 @@ function onFrame(data: string | ArrayBuffer) {
 
 export function send(obj: WsCommand) {
   if (wsWorker) {
-    wsWorker.postMessage({ type: "send", payload: JSON.stringify(obj) });
+    // Classify here (main thread) where the structured command is visible.
+    // Mutating/motion commands must not be queued+replayed across a reconnect
+    // (issue #18); the worker drops them if the socket is closed.
+    wsWorker.postMessage({
+      type: "send",
+      payload: JSON.stringify(obj),
+      cmd: obj.cmd,
+      dropIfClosed: !isQueueSafe(obj.cmd),
+    });
   }
 }
 

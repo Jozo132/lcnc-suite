@@ -16,7 +16,7 @@ from fastapi.staticfiles import StaticFiles
 import re
 import shutil
 import tempfile
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, JSONResponse, FileResponse, Response
 
@@ -27,6 +27,17 @@ from contextlib import asynccontextmanager
 import lcnc_trace as _trace
 _trace.init("gateway")
 _trace.install_crash_hooks("gateway")
+
+# Pure, linuxcnc-free helpers (importable under pytest without the binding).
+from gateway_util import (
+    ALLOWED_EXTENSIONS,
+    sanitize_filename,
+    validate_extension,
+    validate_path_within,
+    origin_allowed,
+    token_ok,
+    finite_float,
+)
 
 
 # === TEMP LIFECYCLE PROBE (remove after debugging) ===
@@ -235,6 +246,47 @@ _status_encode_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="
 # init-concurrency limit.
 _WS_INIT_LIMIT = int(os.environ.get("WEBUI_WS_INIT_CONCURRENCY", "20"))
 _ws_init_sem = asyncio.Semaphore(_WS_INIT_LIMIT)
+
+
+# ── Auth / origin controls (issue #17) ──
+# Pre-shared token: empty string disables auth (loopback/dev). The launcher
+# fail-closed rule guarantees a token is set whenever HOST is non-loopback.
+WEBUI_TOKEN = os.environ.get("LCNC_WEBUI_TOKEN", "").strip()
+# Explicit Origin allow-list (comma/space-separated). Empty ⇒ same-host only.
+_ALLOWED_ORIGINS = {
+    o.strip() for o in re.split(r"[,\s]+", os.environ.get("LCNC_WEBUI_ALLOWED_ORIGINS", "").strip()) if o.strip()
+}
+_DEV = os.environ.get("LCNC_WEBUI_DEV", "0").strip() not in ("", "0", "false", "False")
+# In dev the page is served by Vite on :5173 and proxied to the gateway, so the
+# Origin won't match the gateway's host:port. Admit the standard local Vite
+# origins; LAN dev from another host must set WEBUI_ALLOWED_ORIGINS explicitly.
+_DEV_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"} if _DEV else set()
+
+
+def _ws_origin_ok(origin: Optional[str], host: Optional[str]) -> bool:
+    return origin_allowed(origin, host, _ALLOWED_ORIGINS, _DEV_ORIGINS)
+
+
+def _peer_of(ws: WebSocket) -> str:
+    return ws.client.host if ws.client else "?"
+
+
+async def require_token(request: Request):
+    """FastAPI dependency gating mutation routes (issue #17).
+
+    No-op when no token is configured (loopback/dev). Accepts the token from the
+    ``X-Auth-Token`` header OR a ``token`` query param — the latter is needed
+    because ``navigator.sendBeacon`` (settings flush on page exit) cannot set
+    headers.
+    """
+    if not WEBUI_TOKEN:
+        return
+    presented = request.headers.get("x-auth-token") or request.query_params.get("token")
+    if not token_ok(presented, WEBUI_TOKEN):
+        _trace.emit("rest.auth_rejected", level="warn",
+                    peer=(request.client.host if request.client else "?"),
+                    path=request.url.path)
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def _json_encoder_encode(obj):
@@ -1947,7 +1999,7 @@ else:
 
 
 # ---- NC files directory ----
-ALLOWED_EXTENSIONS = {".ngc", ".nc", ".gcode", ".tap", ".txt"}
+# ALLOWED_EXTENSIONS now lives in gateway_util (imported at top).
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
 _nc_files_dir: Optional[str] = None
 _ini_config: Optional[dict] = None
@@ -2436,25 +2488,8 @@ def _merge_tool_data(tbl_tools: list, library: dict) -> list:
 
 
 
-def sanitize_filename(name: str) -> str:
-    name = os.path.basename(name)
-    name = name.replace("\x00", "")
-    name = name.lstrip(".")
-    if not name:
-        name = "uploaded.ngc"
-    return name
-
-
-def validate_extension(filename: str) -> bool:
-    _, ext = os.path.splitext(filename)
-    return ext.lower() in ALLOWED_EXTENSIONS
-
-
-def validate_path_within(path: str, root: str) -> bool:
-    # Use abspath (not realpath) so symlinked subdirectories are allowed
-    abs_path = os.path.abspath(path)
-    abs_root = os.path.abspath(root)
-    return abs_path.startswith(abs_root + os.sep) or abs_path == abs_root
+# sanitize_filename / validate_extension / validate_path_within now live in
+# gateway_util (imported at top) so they're unit-testable without linuxcnc.
 
 
 @dataclass
@@ -3695,6 +3730,53 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
             return {"ok": True}
 
+        if cmd == "renumber_tool":
+            # One transactional renumber (issue #30): validate, then rewrite the
+            # tool table AND move the metadata together under the already-held
+            # _cmd_lock. Replaces the old add_tool+delete_tool client sequence,
+            # which could leave a duplicate / lost tool if the second send failed.
+            require_armed(armed)
+            old_num = int(msg["old_tool_number"])
+            new_num = int(msg["tool_number"])
+            tbl_path = get_tool_tbl_path()
+            if not tbl_path:
+                return {"ok": False, "error": "Tool table path not available"}
+
+            tbl_tools = parse_tool_table(tbl_path)
+            src = next((t for t in tbl_tools if t["T"] == old_num), None)
+            if src is None:
+                return {"ok": False, "error": f"Tool T{old_num} not found"}
+            if new_num != old_num and any(t["T"] == new_num for t in tbl_tools):
+                return {"ok": False, "error": f"Tool T{new_num} already exists"}
+
+            # Don't renumber the tool in the spindle — its active offset would
+            # shift under it.
+            STAT.poll()
+            current = safe_get("tool_in_spindle", None)
+            try:
+                current = int(current) if current is not None else None
+            except (ValueError, TypeError):
+                current = None
+            if current == old_num:
+                return {"ok": False, "error": f"Cannot renumber T{old_num} — currently in spindle"}
+
+            src["T"] = new_num
+            src["P"] = int(msg.get("pocket", new_num))
+            src["Z"] = finite_float(msg.get("z_offset", src.get("Z", 0.0)))
+            src["D"] = finite_float(msg.get("diameter", src.get("D", 0.0)))
+            src["remark"] = str(msg.get("remark", src.get("remark", "")))
+            write_tool_table(tbl_path, tbl_tools)
+            await _reload_tool_table_and_bump()
+
+            library = load_tool_library()
+            meta = library.pop(str(old_num), {}) or {}
+            for field in _TOOL_META_FIELDS:
+                if field in msg:
+                    meta[field] = msg[field]
+            library[str(new_num)] = meta
+            save_tool_library(library)
+            return {"ok": True, "tool_number": new_num}
+
         if cmd == "tool_change":
             require_armed(armed)
             blocked = reject_if_auto_running()
@@ -3748,7 +3830,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 return blocked
 
             axis = int(msg.get("axis"))
-            vel = float(msg.get("vel", 0.0))
+            vel = finite_float(msg.get("vel", 0.0))
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             await _cmd_blocking(CMD.jog, linuxcnc.JOG_CONTINUOUS, jf, axis, vel, wait=None)
@@ -3784,7 +3866,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
-                await _cmd_blocking(CMD.jog, linuxcnc.JOG_CONTINUOUS, jf, int(entry["axis"]), float(entry["vel"]), wait=None)
+                await _cmd_blocking(CMD.jog, linuxcnc.JOG_CONTINUOUS, jf, int(entry["axis"]), finite_float(entry["vel"]), wait=None)
             return {"ok": True}
 
         if cmd == "jog_stop_multi":
@@ -3810,8 +3892,8 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 return blocked
 
             axis = int(msg.get("axis"))
-            vel = abs(float(msg.get("vel", 0.0)))  # speed only; distance carries direction
-            dist = float(msg.get("distance", 0.0))
+            vel = abs(finite_float(msg.get("vel", 0.0)))  # speed only; distance carries direction
+            dist = finite_float(msg.get("distance", 0.0))
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             await _cmd_blocking(CMD.jog, linuxcnc.JOG_INCREMENT, jf, axis, vel, dist, wait=None)
@@ -3828,7 +3910,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
-                await _cmd_blocking(CMD.jog, linuxcnc.JOG_INCREMENT, jf, int(entry["axis"]), abs(float(entry["vel"])), float(entry["distance"]), wait=None)
+                await _cmd_blocking(CMD.jog, linuxcnc.JOG_INCREMENT, jf, int(entry["axis"]), abs(finite_float(entry["vel"])), finite_float(entry["distance"]), wait=None)
             return {"ok": True}
 
         if cmd == "home_all":
@@ -3878,7 +3960,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_feed_override":
             require_armed(armed)
-            scale = float(msg.get("scale", 1.0))
+            scale = finite_float(msg.get("scale", 1.0), 1.0)
             # Clamp to reasonable range (0-200%)
             scale = max(0.0, min(2.0, scale))
             await _cmd_blocking(CMD.feedrate, scale, wait=None)
@@ -3886,7 +3968,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_spindle_override":
             require_armed(armed)
-            scale = float(msg.get("scale", 1.0))
+            scale = finite_float(msg.get("scale", 1.0), 1.0)
             # Clamp to reasonable range (50-200%)
             scale = max(0.5, min(2.0, scale))
             await _cmd_blocking(CMD.spindleoverride, scale, wait=None)
@@ -3894,14 +3976,14 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "spindle_forward":
             require_armed(armed)
-            speed = float(msg.get("speed", 0))
+            speed = finite_float(msg.get("speed", 0))
             await set_mode(linuxcnc.MODE_MANUAL)
             await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_FORWARD, speed, wait=None)
             return {"ok": True}
 
         if cmd == "spindle_reverse":
             require_armed(armed)
-            speed = float(msg.get("speed", 0))
+            speed = finite_float(msg.get("speed", 0))
             await set_mode(linuxcnc.MODE_MANUAL)
             await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_REVERSE, speed, wait=None)
             return {"ok": True}
@@ -3946,7 +4028,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_rapid_override":
             require_armed(armed)
-            scale = float(msg.get("scale", 1.0))
+            scale = finite_float(msg.get("scale", 1.0), 1.0)
             # Clamp to 0-100%
             scale = max(0.0, min(1.0, scale))
             await _cmd_blocking(CMD.rapidrate, scale, wait=None)
@@ -3966,7 +4048,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_max_velocity":
             require_armed(armed)
-            velocity = float(msg.get("velocity", 0.0))
+            velocity = finite_float(msg.get("velocity", 0.0))
             # Clamp to positive values
             velocity = max(0.0, velocity)
             await _cmd_blocking(CMD.maxvel, velocity, wait=None)
@@ -4145,20 +4227,49 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 # Viewer support (Web 3D)
 # -----------------------------
 
+# ── Config-fallback degraded state (issue #21) ──
+# A unit-system or machine-geometry fallback is dangerous for a CNC, so it is
+# surfaced to the operator (status_msg["config_warning"]) instead of silently
+# becoming a normal default. Flags latch until a subsequent successful read.
+_units_fallback_active = False
+_units_fallback_reason = ""
+_config_warning_active = False
+_config_warning_reason = ""
+
+
+def _set_units_fallback(active: bool, reason: str = "") -> None:
+    global _units_fallback_active, _units_fallback_reason
+    if active and not _units_fallback_active:
+        _trace.emit("config.units_fallback", level="warn", reason=reason)
+    _units_fallback_active = active
+    _units_fallback_reason = reason if active else ""
+
+
 def get_machine_units() -> str:
-    """Return 'in' or 'mm' based on INI [TRAJ]LINEAR_UNITS."""
+    """Return 'in' or 'mm' based on INI [TRAJ]LINEAR_UNITS.
+
+    Falling back to 'mm' is unit-ambiguous and unsafe for visualization/motion,
+    so each fallback is surfaced via _set_units_fallback (issue #21) rather than
+    silently returning a default.
+    """
     if not STAT or not getattr(STAT, "ini_filename", None):
+        _set_units_fallback(True, "no INI loaded")
         return "mm"
     try:
-        ini = linuxcnc.ini(STAT.ini_filename)
-        lu = (ini.find("TRAJ", "LINEAR_UNITS") or "mm").strip().lower()
-        return "in" if lu in ("inch", "in", "imperial") else "mm"
-    except Exception:
+        lu = linuxcnc.ini(STAT.ini_filename).find("TRAJ", "LINEAR_UNITS")
+        if not lu:
+            _set_units_fallback(True, "[TRAJ]LINEAR_UNITS missing")
+            return "mm"
+        _set_units_fallback(False)
+        return "in" if lu.strip().lower() in ("inch", "in", "imperial") else "mm"
+    except Exception as e:
+        _set_units_fallback(True, f"INI parse error: {type(e).__name__}")
         return "mm"
 
 
 def _load_machine_config() -> dict:
     """Load machine model config from machine.json, or return hardcoded defaults."""
+    global _config_warning_active, _config_warning_reason
     cfg_path = MACHINE_DIR / "machine.json"
     if cfg_path.exists():
         try:
@@ -4167,7 +4278,15 @@ def _load_machine_config() -> dict:
             print(f"[VINIT] Loaded machine config: {cfg.get('name', '?')}", flush=True)
             return cfg
         except Exception as e:
-            print(f"[VINIT] Failed to load machine.json: {e}, using defaults", flush=True)
+            # Wrong geometry is an operator-visible degraded state, not a silent
+            # default (issue #21).
+            _trace.emit_exc("config.machine_json_load_failed", e, level="warn")
+            _config_warning_active = True
+            _config_warning_reason = f"machine.json load failed ({type(e).__name__}) — using default geometry"
+    else:
+        _trace.emit("config.machine_json_missing", level="warn", path=str(cfg_path))
+        _config_warning_active = True
+        _config_warning_reason = "machine.json missing — using default geometry"
     # Fallback: hardcoded defaults (original PM-25MV setup)
     return {
         "name": "Default",
@@ -4661,9 +4780,15 @@ async def lifespan(app: "FastAPI"):
 app = FastAPI(lifespan=lifespan)
 _trace.emit("boot.app_instantiated")
 
+# CORS is defense-in-depth only — the WS Origin gate and the REST token
+# dependency are the real boundary (issue #17). When an explicit allow-list is
+# configured, honour it (plus dev origins); otherwise fall back to "*", since
+# the gateway can't enumerate its own same-host origins at config time and the
+# token (a custom header, never served cross-origin) is what actually gates.
+_cors_origins = sorted(_ALLOWED_ORIGINS | _DEV_ORIGINS) if _ALLOWED_ORIGINS else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -4795,7 +4920,7 @@ async def telemetry(request: Request):
     return {"ok": True, "events": accepted, "rejected": rejected}
 
 
-@app.post("/upload")
+@app.post("/upload", dependencies=[Depends(require_token)])
 async def upload_gcode(file: UploadFile = File(...)):
     """Upload a G-code file to the NC files directory."""
     if not file.filename:
@@ -4826,7 +4951,7 @@ async def upload_gcode(file: UploadFile = File(...)):
     return {"ok": True, "path": dest_path, "filename": safe_name, "size": len(content)}
 
 
-@app.put("/save")
+@app.put("/save", dependencies=[Depends(require_token)])
 async def save_gcode(path: str = Body(...), content: str = Body(...)):
     """Save edited G-code content back to an existing file."""
     nc_dir = get_nc_files_dir()
@@ -5000,7 +5125,7 @@ def _parse_fusion_library(data: dict) -> tuple[list, list]:
     return tools, skipped
 
 
-@app.post("/import-tool-library")
+@app.post("/import-tool-library", dependencies=[Depends(require_token)])
 async def import_tool_library(file: UploadFile = File(...)):
     """Preview or apply a Fusion 360 tool library import.
 
@@ -5045,7 +5170,7 @@ async def import_tool_library(file: UploadFile = File(...)):
             "skipped_duplicates": skipped_preview}
 
 
-@app.post("/import-tool-library/apply")
+@app.post("/import-tool-library/apply", dependencies=[Depends(require_token)])
 async def apply_tool_library_import(
     file: UploadFile = File(...),
 ):
@@ -5522,6 +5647,18 @@ async def ws_endpoint(ws: WebSocket):
     # overload (e.g. >20 tabs reconnecting in lockstep).
     async with _ws_init_sem:
         await ws.accept()
+        # ── Auth + origin gate (issue #17) ── reject BEFORE registering the
+        # client or starting any background loop. Browsers always send Origin
+        # on a WS handshake, so a foreign Origin that fails the check is a
+        # cross-origin hijack attempt; the token gates non-browser clients.
+        if not _ws_origin_ok(ws.headers.get("origin"), ws.headers.get("host")):
+            _trace.emit("ws.auth_rejected", level="warn", peer=_peer_of(ws), reason="origin")
+            await ws.close(code=1008)
+            return
+        if not token_ok(ws.query_params.get("token"), WEBUI_TOKEN):
+            _trace.emit("ws.auth_rejected", level="warn", peer=_peer_of(ws), reason="token")
+            await ws.close(code=1008)
+            return
         armed = False  # connection-local arming
 
         global _next_client_id, _estop_hold, _unacked_trip, _last_trip_count
@@ -5802,6 +5939,11 @@ async def ws_endpoint(ws: WebSocket):
                         status_msg["safety_trip"] = _unacked_trip
                     if _reader_is_stale():
                         status_msg["reader_stale"] = True
+                    if _units_fallback_active or _config_warning_active:
+                        status_msg["config_warning"] = {
+                            "reason": _config_warning_reason or _units_fallback_reason,
+                            "units": _units_fallback_active,
+                        }
                     if _probe_results:
                         status_msg["probe_results"] = _probe_results
 
@@ -6383,19 +6525,31 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             _set_phase(f"handle_command cmd={msg.get('cmd', '?')} client#{client_id}")
-            reply = await handle_command(msg, armed)
-            if msg.get("cmd") == "unload_file" and reply.get("ok"):
-                # reset_interpreter doesn't clear stat.file, so the shared
-                # poller's file-change edge won't fire. Clear the shared
-                # cache and bump the version so every client's status_loop
-                # sends an empty viewer_gcode on the next cycle.
-                _gcode_preview_pending = None
-                _gcode_preview_bytes = None
-                _gcode_preview_bytes_gz = None
-                _gcode_preview_version += 1
-                _gcode_last_file = None
-                _gcode_last_mtime = None
-            await ws_send_json(ws, {"type": "reply", **reply})
+            try:
+                reply = await handle_command(msg, armed)
+            except (ValueError, TypeError, KeyError, PermissionError) as _val_e:
+                # Malformed payload or failed precondition (bad numeric cast,
+                # missing field, not-armed). Return a bounded structured error
+                # rather than letting it bubble out of the receive loop — an
+                # uncaught exception here would tear down the socket and trip
+                # the armed-disconnect side effects in `finally` (issue #27).
+                _trace.emit("ws.command_invalid", level="warn",
+                            client_id=client_id, cmd=msg.get("cmd"),
+                            exc=type(_val_e).__name__, msg=str(_val_e))
+                reply = {"ok": False, "error": f"{type(_val_e).__name__}: {_val_e}"}
+            else:
+                if msg.get("cmd") == "unload_file" and reply.get("ok"):
+                    # reset_interpreter doesn't clear stat.file, so the shared
+                    # poller's file-change edge won't fire. Clear the shared
+                    # cache and bump the version so every client's status_loop
+                    # sends an empty viewer_gcode on the next cycle.
+                    _gcode_preview_pending = None
+                    _gcode_preview_bytes = None
+                    _gcode_preview_bytes_gz = None
+                    _gcode_preview_version += 1
+                    _gcode_last_file = None
+                    _gcode_last_mtime = None
+            await ws_send_json(ws, {"type": "reply", "cmd": msg.get("cmd"), **reply})
 
     except (WebSocketDisconnect, RuntimeError) as _disc_e:
         _set_phase(f"ws_endpoint.WebSocketDisconnect_caught client#{client_id}")
@@ -6527,8 +6681,8 @@ async def get_settings():
     return {"ok": True, "settings": data}
 
 
-@app.put("/settings/{section}")
-@app.post("/settings/{section}")  # POST used by sendBeacon on page exit
+@app.put("/settings/{section}", dependencies=[Depends(require_token)])
+@app.post("/settings/{section}", dependencies=[Depends(require_token)])  # POST used by sendBeacon on page exit
 async def put_settings_section(section: str, request: Request):
     if section not in _VALID_SETTINGS_SECTIONS:
         return JSONResponse({"ok": False, "error": f"Unknown section: {section}"}, status_code=400)
@@ -6547,7 +6701,7 @@ async def put_settings_section(section: str, request: Request):
     return {"ok": True}
 
 
-@app.delete("/settings")
+@app.delete("/settings", dependencies=[Depends(require_token)])
 async def delete_settings():
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, reset_settings)
@@ -6590,4 +6744,28 @@ async def camera_status():
 # and mount("/") is a catch-all that would swallow WebSocket connections.
 _DIST_DIR = os.environ.get("LCNC_WEBUI_DIST_DIR")
 if _DIST_DIR and Path(_DIST_DIR).is_dir():
+    # Serve index.html ourselves so we can inject the auth token (issue #17):
+    # the SPA reads window.__LCNC_TOKEN__ and presents it on the WS URL + REST
+    # headers. Anyone the gateway serves the page to is already a client it
+    # chose to serve, so handing them the LAN-admission token in that page does
+    # not weaken it against the real threats (cross-origin WS hijack, which
+    # can't read this page cross-origin, and unauthenticated REST mutation).
+    def _serve_index() -> Response:
+        try:
+            html = (Path(_DIST_DIR) / "index.html").read_text(encoding="utf-8")
+        except Exception:
+            raise HTTPException(status_code=404, detail="index.html not found")
+        inject = f"<script>window.__LCNC_TOKEN__ = {json.dumps(WEBUI_TOKEN)};</script>"
+        html = html.replace("</head>", inject + "</head>", 1) if "</head>" in html else inject + html
+        return Response(content=html, media_type="text/html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/")
+    async def spa_index():
+        return _serve_index()
+
+    @app.get("/index.html")
+    async def spa_index_html():
+        return _serve_index()
+
+    # Catch-all for assets — MUST come after the explicit index routes above.
     app.mount("/", StaticFiles(directory=_DIST_DIR, html=True), name="spa")
