@@ -16,6 +16,7 @@ from fastapi.staticfiles import StaticFiles
 import re
 import shutil
 import tempfile
+from urllib.parse import urlsplit
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, JSONResponse, FileResponse, Response
@@ -259,12 +260,25 @@ _ALLOWED_ORIGINS = {
 _DEV = os.environ.get("LCNC_WEBUI_DEV", "0").strip() not in ("", "0", "false", "False")
 # In dev the page is served by Vite on :5173 and proxied to the gateway, so the
 # Origin won't match the gateway's host:port. Admit the standard local Vite
-# origins; LAN dev from another host must set WEBUI_ALLOWED_ORIGINS explicitly.
+# origins explicitly; the port rule in _ws_origin_ok also covers LAN dev.
 _DEV_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"} if _DEV else set()
+_VITE_DEV_PORT = 5173
 
 
 def _ws_origin_ok(origin: Optional[str], host: Optional[str]) -> bool:
-    return origin_allowed(origin, host, _ALLOWED_ORIGINS, _DEV_ORIGINS)
+    if origin_allowed(origin, host, _ALLOWED_ORIGINS, _DEV_ORIGINS):
+        return True
+    # Dev convenience: the Vite dev server is reachable on any LAN IP, and the
+    # proxied WS may not preserve the Host header for a same-host match. So in
+    # dev mode admit any origin on the Vite port — the token still gates the
+    # connection. Never active in production (_DEV is false).
+    if _DEV and origin:
+        try:
+            if urlsplit(origin).port == _VITE_DEV_PORT:
+                return True
+        except ValueError:
+            pass
+    return False
 
 
 def _peer_of(ws: WebSocket) -> str:

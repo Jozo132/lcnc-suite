@@ -120,6 +120,11 @@ esac
 [[ -n "$TOKEN"           ]] && export LCNC_WEBUI_TOKEN="$TOKEN"
 [[ -n "$ALLOWED_ORIGINS" ]] && export LCNC_WEBUI_ALLOWED_ORIGINS="$ALLOWED_ORIGINS"
 export LCNC_WEBUI_DEV="$DEV"
+# In dev mode the page is served by Vite, not the gateway, so the token can't be
+# injected into index.html. Expose it to the Vite build env as VITE_WEBUI_TOKEN
+# (Vite's loadEnv picks up VITE_-prefixed process env vars) so the dev frontend
+# reads it via import.meta.env. Harmless in prod (baked at build, unused there).
+[[ -n "$TOKEN"           ]] && export VITE_WEBUI_TOKEN="$TOKEN"
 
 # ── Ensure NVM Node is on PATH (LinuxCNC may launch with minimal PATH) ──
 if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
