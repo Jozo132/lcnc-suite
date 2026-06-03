@@ -4,6 +4,27 @@
 **Source:** derived from `ARCHITECTURE_HANDOFF.md` after the 2026-06-03 reviewer re-baseline.
 **Status:** planning artifact — no behavior changes yet.
 
+## Status — 2026-06-03 (tracker reconciliation)
+
+Most underlying issues have since closed; the remaining surface is small.
+**⚠ = flagged as only *partially* done — verify before treating as complete.**
+
+**Closed (resolved):**
+- §8 security — #17 auth, #18 queue-drop, #20 symlink-realpath ✅
+- §3 payload validation — #27 ✅ (the WS1 validation half)
+- §5 cache-to-INI keying — #29 ✅
+- §6 / WS3 stores + locks — #24, #30 ✅ → **WS3 complete** ⚠ (confirm threading-vs-asyncio lock decision)
+- silent fallbacks — #21 ✅ · misc — #22, #23, #25, #32 ✅
+
+**Still open — remaining work, in priority order:**
+1. **#19** backend permission gates + **#31** frontend command-policy path → **WS1** (highest value, still open)
+2. **#26** lint/test/tooling coverage → **WS2** (must precede #33)
+3. **#33** gateway modularization → **WS4** (gated on #26)
+4. **#28** request IDs → deferred (WS5)
+
+Net: WS3 done; WS1 (#19/#31) is now the top open item; WS2 (#26) still gates WS4 (#33);
+the deferred set shrank to just #28.
+
 ## Purpose
 
 Make machine-control authority **explicit** without a rewrite. The handoff doc's thesis is
@@ -37,7 +58,11 @@ This plan acts only on what is **actually still open**, in an order that is safe
 
 ---
 
-## Workstream 1 — Backend safety-invariant command policy  *(highest value)*
+## Workstream 1 — Backend safety-invariant command policy  *(highest value — now top open item)*
+
+> **Status (2026-06-03):** the validation half (#27) is **closed**; the enforcement half
+> (#19 backend gates + #31 frontend command-policy path) is **still open** and is now the
+> highest-priority remaining work.
 
 **Goal:** a direct WS client (even with the LAN token) cannot drive the machine into states the
 UI forbids. The backend enforces the *safety-relevant* subset of the frontend permission model.
@@ -88,6 +113,10 @@ changes silently. **Effort:** ~1 week for a useful baseline.
 ---
 
 ## Workstream 3 — Stores with real transaction locks  *(contained win)*
+
+> **Status (2026-06-03): COMPLETE — #24 and #30 closed.** ⚠ Verify the
+> threading-vs-asyncio lock decision (Task 3 below) was actually resolved and not just
+> the atomic-write/lock primitives added, before considering this fully done.
 
 **Goal:** kill lost-update / multi-tab races on settings and tool table; resolve the
 threading-vs-asyncio lock question.
