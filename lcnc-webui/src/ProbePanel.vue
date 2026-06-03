@@ -2,6 +2,7 @@
 import { ref, computed, inject, onMounted, onUnmounted, watch, type Ref } from "vue";
 import MachineBtn from "./MachineBtn.vue";
 import { fmtNum } from "./format";
+import { AXIS_HEX, AXIS_CSS } from "./axisColors";
 import MachineInput from "./MachineInput.vue";
 import MachineToggle from "./MachineToggle.vue";
 import MachineRadio from "./MachineRadio.vue";
@@ -558,17 +559,17 @@ function render3DSurface(pts: [number, number, number][]) {
       // X/Y/Z axis arrows with labels
       const arrowLen = Math.max(xRange, yRange) * 0.18;
       const arrowOrigin = new THREE.Vector3(-xRange / 2 - arrowLen * 0.3, -yRange / 2 - arrowLen * 0.3, 0);
-      const xArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), arrowOrigin, arrowLen, 0xff4444, arrowLen * 0.15, arrowLen * 0.08);
-      const yArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), arrowOrigin, arrowLen, 0x44ff44, arrowLen * 0.15, arrowLen * 0.08);
-      const zArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), arrowOrigin, arrowLen, 0x4488ff, arrowLen * 0.15, arrowLen * 0.08);
+      const xArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), arrowOrigin, arrowLen, AXIS_HEX.x, arrowLen * 0.15, arrowLen * 0.08);
+      const yArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), arrowOrigin, arrowLen, AXIS_HEX.y, arrowLen * 0.15, arrowLen * 0.08);
+      const zArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), arrowOrigin, arrowLen, AXIS_HEX.z, arrowLen * 0.15, arrowLen * 0.08);
       _svScene.add(xArrow, yArrow, zArrow);
       _svItems.push(xArrow, yArrow, zArrow);
 
       const axisFs = arrowLen * 0.35;
       for (const [text, color, offset] of [
-        ["X", "#ff4444", new THREE.Vector3(arrowLen * 1.15, 0, 0)],
-        ["Y", "#44ff44", new THREE.Vector3(0, arrowLen * 1.15, 0)],
-        ["Z", "#4488ff", new THREE.Vector3(0, 0, arrowLen * 1.15)],
+        ["X", AXIS_CSS.x, new THREE.Vector3(arrowLen * 1.15, 0, 0)],
+        ["Y", AXIS_CSS.y, new THREE.Vector3(0, arrowLen * 1.15, 0)],
+        ["Z", AXIS_CSS.z, new THREE.Vector3(0, 0, arrowLen * 1.15)],
       ] as [string, string, InstanceType<typeof THREE.Vector3>][]) {
         const lbl = new Text();
         lbl.text = text;

@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { buildToolProfile, splitProfileAt, buildToolGeometry, buildHolderGeometry, type ToolMeta } from "./toolGeometry";
 import { loadGeometryFromIDB, storeGeometryInIDB, pruneStaleVersions } from "./geometryCache";
+import { AXIS_HEX, AXIS_CSS } from "./axisColors";
 
 
 // ---- Central caches (shared across ALL ThreeViewer instances) ----
@@ -386,16 +387,16 @@ function mkTextLabel(text: string, color: string, fontSize: number): Text {
 function buildGizmo() {
   _gizmoScene = new THREE.Scene();
   const al = 60, ah = al * 0.15, aw = al * 0.08;
-  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), al, 0xff4444, ah, aw));
-  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), al, 0x44ff44, ah, aw));
-  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), al, 0x4488ff, ah, aw));
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), al, AXIS_HEX.x, ah, aw));
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), al, AXIS_HEX.y, ah, aw));
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), al, AXIS_HEX.z, ah, aw));
 
   const fs = al * 0.35;
   const lblOff = al * 1.15;
   for (const [text, color, pos] of [
-    ["X", "#ff4444", [lblOff, 0, 0]],
-    ["Y", "#44ff44", [0, lblOff, 0]],
-    ["Z", "#4488ff", [0, 0, lblOff]],
+    ["X", AXIS_CSS.x, [lblOff, 0, 0]],
+    ["Y", AXIS_CSS.y, [0, lblOff, 0]],
+    ["Z", AXIS_CSS.z, [0, 0, lblOff]],
   ] as [string, string, number[]][]) {
     const lbl = mkTextLabel(text, color, fs);
     lbl.position.set(pos[0]!, pos[1]!, pos[2]!);
@@ -998,9 +999,9 @@ function ensureCoreGroups(init: ViewerInit) {
   workAxes = new THREE.Group();
   const _al = 60 * _unitScale;
   const _ah = _al * 0.15, _aw = _al * 0.08;
-  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(), _al, 0xff4444, _ah, _aw));
-  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(), _al, 0x44ff44, _ah, _aw));
-  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(), _al, 0x4488ff, _ah, _aw));
+  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(), _al, AXIS_HEX.x, _ah, _aw));
+  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(), _al, AXIS_HEX.y, _ah, _aw));
+  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(), _al, AXIS_HEX.z, _ah, _aw));
 
   workRotGroup.add(workAxes);
 
@@ -1529,9 +1530,9 @@ function rebuildToolpathBounds() {
                viewerInit.value?.units === "inch" ? "in" : "mm";
   const ox = toolpathBBox.min[0], oy = toolpathBBox.min[1], oz = toolpathBBox.min[2];
   const axes: [string, number, THREE.Vector3, string][] = [
-    ["X", sx, new THREE.Vector3(ox + sx / 2, oy, oz), "#ff4444"],
-    ["Y", sy, new THREE.Vector3(ox, oy + sy / 2, oz), "#44ff44"],
-    ["Z", sz, new THREE.Vector3(ox, oy, oz + sz / 2), "#4488ff"],
+    ["X", sx, new THREE.Vector3(ox + sx / 2, oy, oz), AXIS_CSS.x],
+    ["Y", sy, new THREE.Vector3(ox, oy + sy / 2, oz), AXIS_CSS.y],
+    ["Z", sz, new THREE.Vector3(ox, oy, oz + sz / 2), AXIS_CSS.z],
   ];
   for (const [name, size, pos, c] of axes) {
     const lbl = mkTextLabel(`${name}: ${size.toFixed(0)} ${unit}`, c, fs);
