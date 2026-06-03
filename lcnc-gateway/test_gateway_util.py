@@ -6,6 +6,8 @@ Written as unittest.TestCase so they run with zero extra install via
 """
 
 import math
+import os
+import tempfile
 import unittest
 
 from gateway_util import (
@@ -19,22 +21,52 @@ from gateway_util import (
 
 
 class TestPathContainment(unittest.TestCase):
+    """Uses a real temp tree + real symlinks so realpath behaviour (issue #20)
+    is exercised deterministically rather than depending on the host FS."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.root = os.path.join(self.tmp, "ncfiles")
+        self.outside = os.path.join(self.tmp, "secret")
+        os.makedirs(os.path.join(self.root, "sub"))
+        os.makedirs(self.outside)
+        with open(os.path.join(self.outside, "passwd"), "w") as f:
+            f.write("x")
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
     def test_within(self):
-        self.assertTrue(validate_path_within("/root/sub/f.ngc", "/root"))
+        self.assertTrue(validate_path_within(os.path.join(self.root, "sub", "f.ngc"), self.root))
 
     def test_equal_root(self):
-        self.assertTrue(validate_path_within("/root", "/root"))
+        self.assertTrue(validate_path_within(self.root, self.root))
 
     def test_outside(self):
-        self.assertFalse(validate_path_within("/etc/passwd", "/root"))
+        self.assertFalse(validate_path_within(os.path.join(self.outside, "passwd"), self.root))
 
     def test_dotdot_traversal_normalized_out(self):
-        # abspath collapses /root/../etc -> /etc, which is outside.
-        self.assertFalse(validate_path_within("/root/../etc", "/root"))
+        self.assertFalse(validate_path_within(os.path.join(self.root, "..", "secret"), self.root))
 
     def test_sibling_prefix_not_confused(self):
-        # /root2 must NOT count as inside /root (the +os.sep guard).
-        self.assertFalse(validate_path_within("/root2/f.ngc", "/root"))
+        # ncfiles2 must NOT count as inside ncfiles (the +os.sep guard).
+        sibling = self.root + "2"
+        os.makedirs(sibling)
+        self.assertFalse(validate_path_within(os.path.join(sibling, "f.ngc"), self.root))
+
+    def test_symlink_inside_root_escaping_is_rejected(self):
+        # The #20 fix: a symlink inside the root pointing OUTSIDE resolves out.
+        link = os.path.join(self.root, "escape")
+        os.symlink(self.outside, link)
+        self.assertFalse(validate_path_within(os.path.join(link, "passwd"), self.root))
+
+    def test_symlinked_root_still_allowed(self):
+        # A symlinked NC-files root must keep working: resolving the root too
+        # means a real file under it still validates.
+        linked_root = os.path.join(self.tmp, "ncfiles_link")
+        os.symlink(self.root, linked_root)
+        self.assertTrue(validate_path_within(os.path.join(linked_root, "sub", "f.ngc"), linked_root))
 
 
 class TestFilename(unittest.TestCase):

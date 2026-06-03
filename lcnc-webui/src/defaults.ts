@@ -111,9 +111,14 @@ function flushPendingSaves(): void {
   }
 }
 
-document.addEventListener("visibilitychange", () => {
+const _onVisibilityFlush = () => {
   if (document.visibilityState === "hidden") flushPendingSaves();
-});
+};
+document.addEventListener("visibilitychange", _onVisibilityFlush);
+// Remove on HMR dispose so reloads don't stack duplicate flush listeners (#32).
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => document.removeEventListener("visibilitychange", _onVisibilityFlush));
+}
 
 function readAll(): Record<string, any> {
   if (!_cache) _cache = {};

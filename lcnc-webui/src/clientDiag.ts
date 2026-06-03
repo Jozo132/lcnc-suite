@@ -56,3 +56,16 @@ export function startClientDiag(): void {
     send({ cmd: 'client_diag', data: snapshot() });
   }, CLIENT_DIAG_INTERVAL);
 }
+
+export function stopClientDiag(): void {
+  if (timer !== null) {
+    clearInterval(timer);
+    timer = null;
+  }
+}
+
+// Stop the interval on HMR dispose so reloads don't stack duplicate timers
+// (issue #32).
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => stopClientDiag());
+}

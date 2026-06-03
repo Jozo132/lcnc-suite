@@ -36,11 +36,15 @@ def validate_extension(filename: str) -> bool:
 
 
 def validate_path_within(path: str, root: str) -> bool:
-    # Use abspath (not realpath) so symlinked subdirectories are allowed.
-    # (See issue #20 for the realpath hardening discussion.)
-    abs_path = os.path.abspath(path)
-    abs_root = os.path.abspath(root)
-    return abs_path.startswith(abs_root + os.sep) or abs_path == abs_root
+    # realpath resolves symlinks on BOTH the candidate and the root (issue #20).
+    # Resolving the root too keeps an intentionally symlinked NC-files root
+    # working (a common setup), while a symlink *inside* the root that points
+    # outside now resolves out and is correctly rejected. realpath also collapses
+    # `..`, and on a not-yet-existing upload target it resolves the existing
+    # parent and appends the literal tail — exactly what containment needs.
+    real_path = os.path.realpath(path)
+    real_root = os.path.realpath(root)
+    return real_path == real_root or real_path.startswith(real_root + os.sep)
 
 
 def token_ok(presented: Optional[str], configured: str) -> bool:

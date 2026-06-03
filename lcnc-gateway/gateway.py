@@ -1205,6 +1205,7 @@ _comp_grid_pending: dict | None = None       # latest parsed probe-results-grid.
 _comp_grid_version: int = int(time.time())   # bumped each time new grid is ready; seeded from startup so ?v= URLs don't collide across restarts
 _comp_grid_initialized: bool = False         # True after startup file-read attempted
 _last_comp_hal_ver: int | None = None        # last seen compensation.grid-version HAL value
+_caches_ini: Optional[str] = None            # INI path the surface/comp caches were populated for; on change they're invalidated (issue #29)
 _tool_table_version: int = int(time.time())  # bumped after every CMD.load_tool_table(); per-client trackers in status_loop send a `tool_table_changed` ping so other clients refetch
 
 # Halshow live loop — pushes value deltas to clients viewing the Settings → Halshow tab.
@@ -1439,6 +1440,7 @@ async def _status_poller():
     global _status_gen, lcnc_connected, STAT, CMD, ERR, _reconnect_fails, _shared_timing
     global _surface_points_pending, _surface_points_version, _surface_initialized
     global _comp_grid_pending, _comp_grid_version, _comp_grid_initialized, _last_comp_hal_ver
+    global _caches_ini
     global _status_event, _shared_clients_list
     global _gcode_preview_pending, _gcode_preview_version
     global _gcode_last_file, _gcode_last_mtime, _gcode_refresh_running
@@ -1550,6 +1552,25 @@ async def _status_poller():
                         surface_scan_done = True
                         continue  # consume — don't forward to frontend as an error
                 errs.append((kind, text))
+
+            # INI-change invalidation (issue #29): if the active INI changed
+            # under a persistent gateway, the surface/comp caches hold the
+            # previous config's data. Reset the init flags + clear pending/bytes
+            # and bump versions so clients refetch — the init blocks below then
+            # reload from the new config's result files (or stay empty).
+            _cur_ini = getattr(STAT, "ini_filename", None)
+            if _cur_ini and _caches_ini is not None and _caches_ini != _cur_ini:
+                _surface_initialized = False
+                _comp_grid_initialized = False
+                _surface_points_pending = None
+                _surface_points_bytes = None
+                _comp_grid_pending = None
+                _comp_grid_bytes = None
+                _surface_points_version += 1
+                _comp_grid_version += 1
+                _trace.emit("cache.ini_changed_invalidated", old=_caches_ini, new=_cur_ini)
+            if _cur_ini:
+                _caches_ini = _cur_ini
 
             # Startup init: push existing probe-results.txt to new clients on first connect
             if not _surface_initialized and getattr(STAT, "ini_filename", None):
@@ -2400,6 +2421,12 @@ _TOOL_META_FIELDS = (
 # ---- Server-Side Settings ----
 SETTINGS_PATH = BASE_DIR / "settings.json"
 _settings_version = 0
+# Serializes the settings read-modify-write sequences (issue #24). These run in
+# executor threads from BOTH the WS save path and the REST save/reset routes —
+# the latter is not under _cmd_lock — so without this two concurrent saves
+# (e.g. multi-tab sendBeacon on page exit) could lose an update. threading.Lock
+# (not asyncio) because the guarded functions run in executor threads.
+_settings_lock = threading.Lock()
 _settings_cache: Optional[dict] = None
 _settings_load_failed = False  # True if the on-disk settings.json failed to parse
 _fb_scale = 60  # spindle feedback scale: 60 (RPS→RPM) or 1 (already RPM)
@@ -2456,24 +2483,26 @@ def load_settings() -> dict:
 def save_settings_section(section: str, data):
     """Save a single settings section for the current INI config."""
     global _settings_version
-    all_data = _load_settings_all()
-    ini = _current_ini_path()
-    if ini not in all_data:
-        all_data[ini] = {}
-    all_data[ini][section] = data
-    _save_settings_all(all_data)
-    _settings_version += 1
+    with _settings_lock:
+        all_data = _load_settings_all()
+        ini = _current_ini_path()
+        if ini not in all_data:
+            all_data[ini] = {}
+        all_data[ini][section] = data
+        _save_settings_all(all_data)
+        _settings_version += 1
 
 
 def reset_settings():
     """Reset all settings for the current INI config."""
     global _settings_version
-    all_data = _load_settings_all()
-    ini = _current_ini_path()
-    if ini in all_data:
-        del all_data[ini]
-        _save_settings_all(all_data)
-    _settings_version += 1
+    with _settings_lock:
+        all_data = _load_settings_all()
+        ini = _current_ini_path()
+        if ini in all_data:
+            del all_data[ini]
+            _save_settings_all(all_data)
+        _settings_version += 1
 
 
 def _merge_tool_data(tbl_tools: list, library: dict) -> list:
@@ -3469,6 +3498,18 @@ def require_armed(armed: bool):
         raise PermissionError("Not armed")
 
 
+def require_no_eoffset():
+    """Mirror the frontend probe/zero gate (issue #19): refuse a touch-off / work
+    offset edit while surface-compensation Z eoffset is active, or LinuxCNC would
+    bake the eoffset into the new offset (the current position the offset is
+    derived from is contaminated). LinuxCNC itself doesn't enforce this web-UI
+    gate, so a direct client could otherwise bypass it. Mirrors the frontend's
+    `!eoffsetEnabled` condition: only blocks when the pin is definitely enabled
+    (None/stale → allowed, matching the UI)."""
+    if _reader_get("z_eoffset_enable"):
+        raise PermissionError("Surface compensation active — clear the eoffset before editing work offsets")
+
+
 async def handle_command(msg: Dict[str, Any], armed: bool):
     # Acquire the CMD lock before dispatching. Every path that touches CMD.*
     # must hold this lock; see _cmd_lock docstring.
@@ -4204,6 +4245,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_wcs":
             require_armed(armed)
+            require_no_eoffset()  # touch-off contamination guard (issue #19)
             blocked = reject_if_auto_running()
             if blocked:
                 return blocked

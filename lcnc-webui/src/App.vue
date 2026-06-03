@@ -483,7 +483,9 @@ const activeMcodes = computed(() => {
 // Tool change dialog (global — tool changes can happen from any context)
 const toolChangeRequested = computed(() => !!st.value.tool_change_requested);
 const toolChangeTool = computed(() => st.value.tool_change_tool ?? null);
-function confirmToolChange() { send({ cmd: "confirm_tool_change" }); }
+// Discrete confirm action — route through fire() so an accidental double-click
+// is debounced (issue #31). No gate: it happens mid tool-change, not at idle.
+function confirmToolChange() { fire({ cmd: "confirm_tool_change" }); }
 
 const feedSlider = ref(100);
 const spindleSlider = ref(100);
@@ -598,6 +600,11 @@ function toggleMist() {
 const optionalStopOn = computed(() => !!st.value.optional_stop);
 const blockDeleteOn = computed(() => !!st.value.block_delete);
 
+// These two are server-authoritative toggles (state comes from st.value), and
+// they're inside the permission-gated program controls. They intentionally use
+// raw send() rather than fire() (issue #31): fire()'s 200 ms busy-gate/cooldown
+// is for debouncing motion, and would make a flag toggle feel laggy / drop a
+// click. Backend require_armed still applies.
 function toggleOptionalStop() {
   send({ cmd: "set_optional_stop", value: !optionalStopOn.value });
 }
@@ -1047,6 +1054,7 @@ onUnmounted(() => {
   window.removeEventListener("blur", stopAllJog);
   document.removeEventListener("visibilitychange", visHandler);
   document.removeEventListener("focusin", onNumFocus);
+  document.removeEventListener("fullscreenchange", onFullscreenChange);  // issue #32
   gamepad.stop();
 });
 

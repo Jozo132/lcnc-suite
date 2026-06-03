@@ -172,53 +172,58 @@ function _flushTelemetryViaBeacon(): void {
   } catch { /* drop */ }
 }
 
-if (typeof window !== "undefined") {
+// Named handlers (issue #32) so HMR dispose can remove them — anonymous
+// listeners would otherwise stack one set per hot reload. Bodies unchanged.
+const _onPagehide = () => {
   // Flush on tab close / navigation. Both events fire across browsers;
   // pagehide is the modern signal for bfcache, beforeunload for legacy.
-  window.addEventListener("pagehide", () => {
-    emitTelemetry("tab.pagehide", {});
-    _flushTelemetryViaBeacon();
+  emitTelemetry("tab.pagehide", {});
+  _flushTelemetryViaBeacon();
+};
+const _onBeforeunload = () => {
+  emitTelemetry("tab.beforeunload", {});
+  _flushTelemetryViaBeacon();
+};
+// Tab visibility changes — the known storm trigger.
+//   1. Emit a telemetry event for the trace bus (off-band signal).
+//   2. Send a `tab_visibility` WS command so the gateway can skip status
+//      fan-out to this client while hidden — backgrounded tabs stop draining
+//      the WS, fill the kernel TCP buffer, and stall the gateway's asyncio
+//      loop. Suppressing fan-out at the source eliminates the feedback loop.
+const _onVisibility = () => {
+  const hidden = document.hidden;
+  emitTelemetry("tab.visibility", {
+    visibilityState: document.visibilityState,
+    hidden,
   });
-  window.addEventListener("beforeunload", () => {
-    emitTelemetry("tab.beforeunload", {});
-    _flushTelemetryViaBeacon();
+  // Relay to the worker, which owns the socket. When becoming visible, also
+  // request an immediate heartbeat so the gateway's last_hb is fresh at once.
+  if (wsWorker) {
+    try {
+      wsWorker.postMessage({ type: "updateConfig", hidden, fireHeartbeat: !hidden });
+    } catch { /* ignored */ }
+  }
+};
+const _onError = (ev: ErrorEvent) => {
+  emitTelemetry("error.console", {
+    msg: String(ev.message ?? ""),
+    filename: String(ev.filename ?? ""),
+    lineno: Number(ev.lineno ?? 0),
+    colno: Number(ev.colno ?? 0),
   });
-  // Tab visibility changes — the known storm trigger.
-  // Two effects:
-  //   1. Emit a telemetry event for the trace bus (off-band signal).
-  //   2. Send a `tab_visibility` WS command so the gateway can skip status
-  //      fan-out to this client while hidden — backgrounded tabs stop
-  //      draining the WS, fill the kernel TCP buffer, and stall the
-  //      gateway's asyncio loop. Suppressing fan-out at the source
-  //      eliminates the slow-consumer feedback loop.
-  document.addEventListener("visibilitychange", () => {
-    const hidden = document.hidden;
-    emitTelemetry("tab.visibility", {
-      visibilityState: document.visibilityState,
-      hidden,
-    });
-    // Relay to the worker, which owns the socket. When becoming visible, also
-    // request an immediate heartbeat so the gateway's last_hb is fresh at once.
-    if (wsWorker) {
-      try {
-        wsWorker.postMessage({ type: "updateConfig", hidden, fireHeartbeat: !hidden });
-      } catch { /* ignored */ }
-    }
+};
+const _onRejection = (ev: PromiseRejectionEvent) => {
+  emitTelemetry("error.unhandled_rejection", {
+    reason: String(ev.reason ?? ""),
   });
-  // Global error reporters → trace bus.
-  window.addEventListener("error", (ev) => {
-    emitTelemetry("error.console", {
-      msg: String(ev.message ?? ""),
-      filename: String(ev.filename ?? ""),
-      lineno: Number(ev.lineno ?? 0),
-      colno: Number(ev.colno ?? 0),
-    });
-  });
-  window.addEventListener("unhandledrejection", (ev) => {
-    emitTelemetry("error.unhandled_rejection", {
-      reason: String((ev as PromiseRejectionEvent).reason ?? ""),
-    });
-  });
+};
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", _onPagehide);
+  window.addEventListener("beforeunload", _onBeforeunload);
+  document.addEventListener("visibilitychange", _onVisibility);
+  window.addEventListener("error", _onError);
+  window.addEventListener("unhandledrejection", _onRejection);
 }
 
 
@@ -940,5 +945,13 @@ export function markMessagesRead() {
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     _terminateWsWorker();
+    // Remove module-level listeners so a hot reload doesn't stack them (#32).
+    if (typeof window !== "undefined") {
+      window.removeEventListener("pagehide", _onPagehide);
+      window.removeEventListener("beforeunload", _onBeforeunload);
+      document.removeEventListener("visibilitychange", _onVisibility);
+      window.removeEventListener("error", _onError);
+      window.removeEventListener("unhandledrejection", _onRejection);
+    }
   });
 }

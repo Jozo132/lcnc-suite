@@ -135,6 +135,14 @@ function _flush(): void {
 
 // One self-quieting timer: flushes only when the window saw activity, so an
 // idle viewer produces no trace volume. Survives across jobs without toggling.
+let _flushTimer: number | null = null;
 if (typeof window !== 'undefined') {
-  window.setInterval(_flush, WINDOW_MS);
+  _flushTimer = window.setInterval(_flush, WINDOW_MS);
+}
+
+// Clear the timer on HMR dispose so reloads don't stack duplicate timers (#32).
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    if (_flushTimer !== null) { clearInterval(_flushTimer); _flushTimer = null; }
+  });
 }
