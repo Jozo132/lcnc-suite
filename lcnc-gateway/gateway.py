@@ -43,6 +43,7 @@ from gateway_util import (
 from command_policy import (
     MachineState as _PolicyMachineState,
     evaluate_permissions,
+    check_command,
 )
 
 
@@ -3616,6 +3617,24 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
     if not lcnc_connected:
         return {"ok": False, "error": "LinuxCNC not connected"}
+
+    # Backend command authorization (issue #19). Enforces the SAME unified policy
+    # the frontend consumes (command_policy). Because the frontend's Gate/fire()
+    # layer already gates on these exact classes, this never rejects a
+    # conforming-UI command — it backstops direct / buggy / malicious clients.
+    # 'always' commands (jog_stop, estop, abort, …) pass. The handler-level
+    # require_armed()/reject_if_auto_running() guards remain as defense in depth.
+    # Denials are bounded + traced — never silently dropped
+    # (feedback_no_silent_fallbacks).
+    if _shared_status is not None:
+        _deny = check_command(cmd, _policy_state_from_payload(_shared_status, armed))
+        if _deny is not None:
+            _trace.emit("ws.command_denied", level="warn", cmd=cmd, reason=_deny)
+            return {"ok": False, "error": _deny}
+    else:
+        # No status snapshot yet (pre-first-poll window). Can't evaluate state;
+        # the handler-level guards still apply. Trace so the gap is auditable.
+        _trace.emit("policy.check_skipped_no_state", level="warn", cmd=cmd)
 
     try:
         if cmd == "arm":
