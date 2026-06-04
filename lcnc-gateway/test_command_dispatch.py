@@ -135,5 +135,52 @@ class TestNotOverBlocked(unittest.TestCase):
         self.assertIsNone(gateway.check_command("jog_stop", st))
 
 
+class TestPayloadValidation(unittest.TestCase):
+    """Bad numeric payloads return a bounded {ok:false} via the dispatch, rather
+    than crashing the socket or (the #27 bug) silently flowing a non-finite
+    value into the machine. Runs on a ready machine so the policy passes and the
+    handler reaches its casts; rejection happens before any CMD.* call."""
+
+    def setUp(self):
+        gateway.lcnc_connected = True
+        # Some handlers call STAT.poll() directly (e.g. reject_if_auto_running),
+        # not the None-safe safe_get — give them a fake stat with a no-op poll().
+        gateway.STAT = linuxcnc.stat()
+
+    def _send(self, msg):
+        gateway._shared_status = _payload()   # ready -> passes policy
+        return _run(gateway.handle_command(msg, True))
+
+    def _assert_validation_rejection(self, r, contains):
+        # Guard against passing for the wrong reason: the reply must be a real
+        # ValueError from the validation layer (not an incidental AttributeError/
+        # crash) AND carry the specific reason.
+        self.assertFalse(r["ok"])
+        err = r["error"].lower()
+        self.assertIn("valueerror", err, f"not a validation rejection: {r['error']!r}")
+        self.assertIn(contains, err, f"wrong reason: {r['error']!r}")
+
+    def test_jog_garbage_axis_rejected(self):
+        r = self._send({"cmd": "jog_cont", "axis": "x", "vel": 1.0})
+        self._assert_validation_rejection(r, "convert")  # float('x') fails
+
+    def test_jog_negative_axis_rejected(self):
+        r = self._send({"cmd": "jog_cont", "axis": -1, "vel": 1.0})
+        self._assert_validation_rejection(r, "minimum")  # finite_int lo=0
+
+    def test_jog_non_finite_velocity_rejected(self):
+        # The motion-value guard: Infinity must not reach CMD.jog.
+        r = self._send({"cmd": "jog_cont", "axis": 0, "vel": "Infinity"})
+        self._assert_validation_rejection(r, "non-finite")
+
+    def test_add_tool_garbage_number_rejected(self):
+        r = self._send({"cmd": "add_tool", "tool_number": "abc"})
+        self._assert_validation_rejection(r, "convert")
+
+    def test_add_tool_negative_number_rejected(self):
+        r = self._send({"cmd": "add_tool", "tool_number": -5})
+        self._assert_validation_rejection(r, "minimum")
+
+
 if __name__ == "__main__":
     unittest.main()
