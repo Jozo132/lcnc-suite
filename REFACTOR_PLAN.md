@@ -65,12 +65,60 @@ This plan acts only on what is **actually still open**, in an order that is safe
 
 ## Workstream 1 — Backend safety-invariant command policy  *(highest value — now top open item)*
 
-> **Status (2026-06-03):** all three pieces open — validation (#27, **reopened**: bounded
-> errors done, finite/range checks remain), backend gates (#19), and frontend command-policy
-> path (#31). This is the highest-priority remaining cluster.
+> **Status (2026-06-04):**
+> - **#27 validation** — items 1–2 shipped (`b7acf0b`); item 3 (range/enum) deferred to WS2.
+> - **#19 policy engine** — pure `command_policy.py` built + tested, committed **inert** (`ee678fc`).
+> - **Architecture decided (2026-06-04): UNIFY** — see below. This supersedes the original
+>   "backend mirrors the frontend policy" framing (which kept the rules in two places).
 
-**Goal:** a direct WS client (even with the LAN token) cannot drive the machine into states the
-UI forbids. The backend enforces the *safety-relevant* subset of the frontend permission model.
+### Architecture decision (2026-06-04) — one policy definition, consumed everywhere
+
+Three layers (frontend / backend / LinuxCNC), but two *different* things flow through them:
+
+- **State** (homed/idle/estop/eoffset/…) originates in LinuxCNC + HAL and already flows one-way:
+  LCNC → gateway (poll) → broadcast → frontend. **LinuxCNC is the state authority; nobody invents
+  state.** Unchanged.
+- **Policy** (which state permits which command) does **not** exist in LinuxCNC — it is permissive
+  by design (`cycle_start` unhomed, touch-off with eoffset active, the whole `armed` concept: none
+  are enforced by LCNC). So *we* must define policy — but only **once**.
+
+**Decision:** the policy *formulas* live once, in `command_policy.py` (Python, backend). The
+backend (a) **enforces** them on every incoming command and (b) **broadcasts** the evaluated
+permission classes in the status payload. The frontend stops re-deriving them — `permissions.ts`
+drops `evaluatePermissions` and becomes a thin **consumer**. This *removes* the
+`permissions.ts` ↔ `command_policy.py` duplication rather than adding a third copy.
+
+**Why the frontend still applies two terms (not duplication).** The status payload is a single
+shared broadcast (encoded once, sent verbatim to all clients — `gateway.py:315`); per-client
+`armed` lives in the `clients` envelope, not in the payload. So the backend broadcasts permissions
+computed as if `armed=True`, and the frontend ANDs the only two genuinely client-local inputs it
+owns: `armed` (per-client authorization) + `busy` (per-tab debounce), with `always` exempt from
+the `armed` AND. The drift-prone combinatorics (homed/idle/running/paused/eoffset/estop/enabled)
+live solely in the backend.
+
+**Server-side move — estop/enabled "merged truth."** The frontend merges `STAT.estop`/`enabled`
+with the HAL chain (`emc_enable_in`) at its `isEstop`/`isEnabled` computeds (issue #14 edge-detect
+guard). That merge must move into the backend `MachineState` builder so the broadcast permissions
+are correct. `emc_enable_in` is already in `StatusPayload`.
+
+### Implementation sequence
+
+1. **Backend broadcast** *(zero machine-risk, display-only)* — add `_policy_state(armed)` building
+   `command_policy.MachineState` from polled values (incl. the estop/enabled merge); compute
+   `evaluate_permissions(state(armed=True))`; ship it in the broadcast. No command is rejected.
+2. **Frontend consume** — `permissions.ts` drops `evaluatePermissions`, adds a consumer reading
+   `status.permissions` + overlay (`armed` on all but `always`; `!busy` on the busy-subset; all
+   false when no status). App.vue keeps providing `PERMISSIONS_KEY` — every MachineBtn/Gate
+   consumer is untouched. `npm run build` must stay green.
+3. **Enforcement (#19 wiring — needs COMMAND_GATES mapping sign-off)** — central
+   `check_command(cmd, _policy_state(client_armed))` in `_handle_command_impl` → bounded deny.
+4. **#31** folds in once the frontend has a single permission source.
+
+Land **1+2 together** (they're a matched pair); **3 after** the mapping is signed off. The
+"safety-invariant scope" table below still describes what step 3 enforces.
+
+**Goal:** a direct WS client (even with the LAN token) cannot drive the machine into states the UI
+forbids — *and* the policy is defined exactly once.
 
 **Scope — enforce only these invariants** (not all 14 frontend classes):
 
