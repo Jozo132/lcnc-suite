@@ -67,9 +67,15 @@ This plan acts only on what is **actually still open**, in an order that is safe
 
 > **Status (2026-06-04):**
 > - **#27 validation** — items 1–2 shipped (`b7acf0b`); item 3 (range/enum) deferred to WS2.
-> - **#19 policy engine** — pure `command_policy.py` built + tested, committed **inert** (`ee678fc`).
-> - **Architecture decided (2026-06-04): UNIFY** — see below. This supersedes the original
->   "backend mirrors the frontend policy" framing (which kept the rules in two places).
+> - **#19 / #31 unified policy — DONE (code):** engine `ee678fc` → broadcast+consume `c7a13b7`
+>   → enforcement `cb15d50`. Policy is now defined **once** (backend `command_policy.py`),
+>   broadcast in the status payload, consumed by the frontend (`permissions.ts` is a thin
+>   `armed`/`busy` overlay), and enforced on the dispatch (`check_command`, bounded+traced deny).
+> - **Pending: hardware validation** — verified by build + 71 unit tests + equivalence reasoning,
+>   but not a live gateway+LinuxCNC run. Watch `trace.ndjson` for `ws.command_denied` on a real
+>   machine to confirm no conforming-UI command is rejected.
+> - **Architecture (2026-06-04): UNIFY** — see below. Superseded the original "backend mirrors
+>   the frontend policy" framing (which kept the rules in two places).
 
 ### Architecture decision (2026-06-04) — one policy definition, consumed everywhere
 
