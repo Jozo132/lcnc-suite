@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
-import { evaluatePermissions, PERMISSIONS_KEY, type Permissions } from "./permissions";
+import { applyClientOverlay, PERMISSIONS_KEY, type Permissions } from "./permissions";
 import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, gcodeContent, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, safetyTrip, acknowledgeSafetyTrip, readerStale, configWarning, previewLoadError, serverShuttingDown, type LcncMessage } from "./lcncWs";
 import ThreeViewer from "./ThreeViewer.vue";
 import TabPanel from "./TabPanel.vue";
@@ -368,20 +368,11 @@ const canResetEstop = computed(() => armed.value && isEstop.value);
 /** Centralized permissions — single source of truth for all button enable/disable.
  *  Memoized: returns the same object reference when values haven't changed,
  *  so child components using usePermissions() don't re-render on every status update. */
-let _prevPerms: ReturnType<typeof evaluatePermissions> | null = null;
+let _prevPerms: Permissions | null = null;
 const permissions = computed(() => {
-  const next = evaluatePermissions({
-    armed: armed.value,
-    isEstop: isEstop.value,
-    isEnabled: isEnabled.value,
-    isHomed: isHomed.value,
-    isIdle: isIdle.value,
-    isRunning: isRunning.value,
-    isPaused: isPaused.value,
-    busy: busy.value,
-    hasFile: !!activeFile.value,
-    eoffsetEnabled: !!st.value.eoffset_enabled,
-  });
+  // Policy lives on the backend now (issue #19): consume the broadcast
+  // permission classes and overlay only the client-local armed + busy terms.
+  const next = applyClientOverlay(st.value.permissions, armed.value, busy.value);
   const keys = Object.keys(next) as (keyof typeof next)[];
   if (_prevPerms && keys.every(k => _prevPerms![k] === next[k])) return _prevPerms;
   _prevPerms = next;
@@ -407,7 +398,6 @@ const isTeleop = computed(() => motionMode.value === TRAJ_MODE_TELEOP);
 const interpState = computed(() => st.value.interp_state ?? INTERP_IDLE);
 const isPaused = computed(() => st.value.paused ?? interpState.value === INTERP_PAUSED);
 const isRunning = computed(() => !isPaused.value && (interpState.value === INTERP_READING || interpState.value === INTERP_WAITING));
-const isIdle = computed(() => interpState.value === INTERP_IDLE);
 
 /** ---------- program elapsed timer ----------
  * Server-authoritative: gateway tracks the anchor across pause/resume and

@@ -1,48 +1,34 @@
-import { inject, type ComputedRef } from "vue";
+import { inject, type ComputedRef, type InjectionKey } from "vue";
 
 /**
- * Anti-desync principle for `isEstop` / `isEnabled`:
+ * Permission classes — which controls are enabled in which machine state.
  *
- *   These two MachineState booleans must come from the MERGED truth of
- *   LinuxCNC's task state AND the HAL safety chain (iocontrol.0.emc-enable-in).
- *   `STAT.estop` / `STAT.enabled` alone can lie: iocontrol drives task_state
- *   transitions via EDGE detection on emc-enable-in, so a chain that was
- *   already LOW at command time is silently missed (issue #14) — task ends
- *   up in STATE_ESTOP_RESET / STATE_ON with the machine still HAL-locked.
+ * The POLICY now lives on the backend (issue #19). `gateway.py` computes these
+ * classes from machine state — `command_policy.evaluate_permissions()`, the
+ * mirror of what this file used to compute — and ships them in every status
+ * payload as `status.data.permissions`. This module no longer re-derives the
+ * policy; it only applies the two genuinely CLIENT-LOCAL terms the backend
+ * cannot observe:
  *
- *   Every other STAT boolean (inpos, probing, probe_tripped, flood, mist,
- *   homed, …) is either level-polled by the motion controller, has no HAL
- *   counterpart, or is an output command — none of them have the iocontrol
- *   edge-detection failure mode and STAT alone is safe.
+ *   - `armed` — this client's server-authoritative arming. ANDed into every
+ *     gate except `always` (Arm / E-Stop stay reachable while disarmed).
+ *   - `busy`  — a per-tab debounce while a command settles. ANDed as `!busy`
+ *     into the gates that carried a top-level `!busy` term in the old formula.
  *
- *   The rule for any future STAT-derived boolean: if its value is gated by
- *   a HAL input pin via iocontrol's NML pump, it needs the same merged-
- *   truth treatment. If not, STAT is fine. The merge happens at the
- *   App.vue computed seam (isEstop / isEnabled); this layer just consumes
- *   the sharpened booleans, no special-casing here.
+ * The backend computes with `armed=true` and without `busy` (the status payload
+ * is a single shared broadcast — `gateway.py:315`), so the overlay below
+ * reproduces the previous `evaluatePermissions` output. The estop/enabled
+ * HAL-merge that used to live here (issue #14) now lives in the backend
+ * `_policy_state_from_payload`. See REFACTOR_PLAN.md (WS1).
  */
-
-/** Machine state inputs for permission evaluation */
-export type MachineState = {
-  armed: boolean;
-  isEstop: boolean;
-  isEnabled: boolean;
-  isHomed: boolean;
-  isIdle: boolean;
-  isRunning: boolean;
-  isPaused: boolean;
-  busy: boolean;
-  hasFile: boolean;
-  eoffsetEnabled: boolean;
-};
 
 /** Permission classes — each maps to a set of buttons */
 export type Permissions = {
   /** idle: machine on and idle (home, unhome, zero, G5x, file ops) */
   idle: boolean;
-  /** jog: can jog axes (idle + homed, no busy gate for hold-to-move) */
+  /** jog: can jog axes (idle + homed) */
   jog: boolean;
-  /** override: can adjust feed/spindle/rapid overrides (works during execution) */
+  /** override: feed/spindle/rapid overrides (works during execution) */
   override: boolean;
   /** ready: idle + homed (MDI, cycle start, spindle direction, coolant) */
   ready: boolean;
@@ -50,58 +36,69 @@ export type Permissions = {
   pause: boolean;
   /** resume: can resume a paused program */
   resume: boolean;
-  /** step: can single-step (ready to start OR paused to continue) */
+  /** step: single-step (ready to start OR paused to continue) */
   step: boolean;
   /** abort: can abort/stop */
   abort: boolean;
-  /** probe: ready + no eoffset (probing with comp active contaminates results) */
+  /** probe: ready + no eoffset (probing with comp active contaminates) */
   probe: boolean;
   /** zero: idle + no eoffset (zeroing with comp active bakes offset into G5x) */
   zero: boolean;
-  /** safety: armed + estop cleared — for Machine On/Off (doesn't require enabled) */
+  /** safety: armed + estop cleared — Machine On/Off (no enabled needed) */
   safety: boolean;
-  /** setup: armed + estop cleared + idle (admin ops that don't need machine enabled) */
+  /** setup: armed + estop cleared + idle (admin ops, no enabled needed) */
   setup: boolean;
-  /** armed: client is armed — outer content gate, allows navigation during E-Stop */
+  /** armed: client is armed — outer content gate, allows nav during E-Stop */
   armed: boolean;
   /** always: unconditional — only for Arm and E-Stop */
   always: boolean;
 };
 
-/** Evaluate all permission classes from machine state — single source of truth */
-export function evaluatePermissions(s: MachineState): Permissions {
-  const base = s.armed && !s.isEstop && s.isEnabled;
-  return {
-    idle:     base && s.isIdle && !s.busy,
-    jog:      base && s.isIdle && s.isHomed,
-    override: base && !s.busy,
-    ready:    base && s.isIdle && !s.busy && s.isHomed,
-    pause:    base && s.isRunning && !s.isPaused,
-    resume:   base && s.isPaused,
-    step:     base && ((s.isIdle && !s.busy && s.isHomed) || s.isPaused),
-    abort:    base,
-    probe:    base && s.isIdle && !s.busy && s.isHomed && !s.eoffsetEnabled,
-    zero:     base && s.isIdle && !s.busy && !s.eoffsetEnabled,
-    safety:   s.armed && !s.isEstop,
-    setup:    s.armed && !s.isEstop && s.isIdle && !s.busy,
-    armed:    s.armed,
-    always:   true,
-  };
+/** All gate names, in a stable order. */
+export const GATE_NAMES = [
+  "idle", "jog", "override", "ready", "pause", "resume", "step",
+  "abort", "probe", "zero", "safety", "setup", "armed", "always",
+] as const;
+
+/**
+ * Gates that carried a top-level `!busy` term in the original policy.
+ * `step` is intentionally excluded: its busy term was nested inside an OR
+ * (only the idle-start branch, not the paused-resume branch), and `fire()`'s
+ * 200 ms cooldown already guards double-fire — a uniform overlay would be
+ * wrong. `jog` never had a busy term (hold-to-move).
+ */
+const BUSY_GATES: ReadonlySet<keyof Permissions> = new Set([
+  "idle", "override", "ready", "probe", "zero", "setup",
+]);
+
+/** The backend's machine-state permission dict (computed with `armed=true`). */
+export type MachinePermissions = Partial<Record<keyof Permissions, boolean>>;
+
+/**
+ * Apply the client-local overlay to the backend-broadcast machine permissions.
+ * `always` is unconditional; every other gate requires `armed`; busy-subset
+ * gates also require `!busy`. Absent backend perms (before the first status)
+ * yield all-false except `always` — the safe default.
+ */
+export function applyClientOverlay(
+  machine: MachinePermissions | null | undefined,
+  armed: boolean,
+  busy: boolean,
+): Permissions {
+  const out = {} as Permissions;
+  for (const g of GATE_NAMES) {
+    if (g === "always") { out[g] = true; continue; }
+    out[g] = !!machine?.[g] && armed && (BUSY_GATES.has(g) ? !busy : true);
+  }
+  return out;
 }
 
-/** Valid gate names — derived from evaluatePermissions, cannot drift */
-const _dummy: MachineState = {
-  armed: false, isEstop: false, isEnabled: false, isHomed: false,
-  isIdle: false, isRunning: false, isPaused: false, busy: false,
-  hasFile: false, eoffsetEnabled: false,
-};
+/** Valid gate names (excludes `always`) — used by main.ts data-gate guard. */
 export const VALID_GATES: ReadonlySet<string> =
-  new Set(Object.keys(evaluatePermissions(_dummy)).filter(k => k !== 'always'));
+  new Set(GATE_NAMES.filter((k) => k !== "always"));
 
 /** Injection key for provide/inject */
 export const PERMISSIONS_KEY = Symbol("permissions") as InjectionKey<ComputedRef<Permissions>>;
-
-import type { InjectionKey } from "vue";
 
 /** Composable: inject permissions from ancestor provider */
 export function usePermissions(): ComputedRef<Permissions> {

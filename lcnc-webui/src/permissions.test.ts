@@ -1,25 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { evaluatePermissions, type MachineState } from "./permissions";
+import { applyClientOverlay, type MachinePermissions } from "./permissions";
 
-// A fully-ready machine: armed, estop cleared, enabled, homed, idle, no eoffset.
-const READY: MachineState = {
-  armed: true,
-  isEstop: false,
-  isEnabled: true,
-  isHomed: true,
-  isIdle: true,
-  isRunning: false,
-  isPaused: false,
-  busy: false,
-  hasFile: true,
-  eoffsetEnabled: false,
+// The policy itself (which machine state opens which gate) now lives on the
+// backend and is tested in lcnc-gateway/test_command_policy.py. These tests
+// cover only the FRONTEND's job: the client-local armed + busy overlay.
+
+// What the backend broadcasts for a fully-ready machine (computed armed=true):
+// every machine-state gate open except pause/resume (need running/paused).
+const MACHINE_READY: MachinePermissions = {
+  idle: true, jog: true, override: true, ready: true,
+  pause: false, resume: false, step: true, abort: true,
+  probe: true, zero: true, safety: true, setup: true,
+  armed: true, always: true,
 };
 
-const state = (over: Partial<MachineState>): MachineState => ({ ...READY, ...over });
-
-describe("evaluatePermissions", () => {
-  it("a fully-ready machine opens ready/probe/jog/zero", () => {
-    const p = evaluatePermissions(READY);
+describe("applyClientOverlay", () => {
+  it("armed + not busy passes the backend gates through", () => {
+    const p = applyClientOverlay(MACHINE_READY, true, false);
     expect(p.ready).toBe(true);
     expect(p.probe).toBe(true);
     expect(p.jog).toBe(true);
@@ -28,49 +25,39 @@ describe("evaluatePermissions", () => {
   });
 
   it("disarmed closes everything except always", () => {
-    const p = evaluatePermissions(state({ armed: false }));
+    const p = applyClientOverlay(MACHINE_READY, false, false);
     expect(p.ready).toBe(false);
     expect(p.safety).toBe(false);
     expect(p.armed).toBe(false);
+    expect(p.abort).toBe(false);
     expect(p.always).toBe(true);
   });
 
-  it("estop keeps armed but closes safety and base gates", () => {
-    const p = evaluatePermissions(state({ isEstop: true }));
-    expect(p.armed).toBe(true);
-    expect(p.safety).toBe(false);
+  it("busy closes the busy-subset but not jog/abort", () => {
+    const p = applyClientOverlay(MACHINE_READY, true, true);
+    // busy-subset gates close
+    expect(p.idle).toBe(false);
+    expect(p.override).toBe(false);
     expect(p.ready).toBe(false);
-    expect(p.abort).toBe(false);
-  });
-
-  it("not homed closes ready/jog/probe but keeps idle/zero", () => {
-    const p = evaluatePermissions(state({ isHomed: false }));
-    expect(p.ready).toBe(false);
-    expect(p.jog).toBe(false);
-    expect(p.probe).toBe(false);
-    expect(p.idle).toBe(true);
-    expect(p.zero).toBe(true);
-  });
-
-  it("active eoffset blocks probe and zero (contamination guard)", () => {
-    const p = evaluatePermissions(state({ eoffsetEnabled: true }));
     expect(p.probe).toBe(false);
     expect(p.zero).toBe(false);
-    expect(p.ready).toBe(true); // ready does not depend on eoffset
+    expect(p.setup).toBe(false);
+    // gates without a busy term stay open
+    expect(p.jog).toBe(true);
+    expect(p.abort).toBe(true);
   });
 
-  it("running allows pause/override but not ready/jog", () => {
-    const p = evaluatePermissions(state({ isIdle: false, isRunning: true, busy: true }));
-    expect(p.pause).toBe(true);
-    expect(p.override).toBe(false); // override has a !busy gate
+  it("absent backend permissions yield all-false except always (safe default)", () => {
+    const p = applyClientOverlay(null, true, false);
     expect(p.ready).toBe(false);
     expect(p.jog).toBe(false);
+    expect(p.safety).toBe(false);
+    expect(p.always).toBe(true);
   });
 
-  it("paused allows resume and step", () => {
-    const p = evaluatePermissions(state({ isIdle: false, isRunning: true, isPaused: true }));
-    expect(p.resume).toBe(true);
-    expect(p.step).toBe(true);
-    expect(p.pause).toBe(false);
+  it("a backend-closed gate stays closed even when armed and idle", () => {
+    const p = applyClientOverlay({ ...MACHINE_READY, ready: false }, true, false);
+    expect(p.ready).toBe(false);
+    expect(p.jog).toBe(true);
   });
 });

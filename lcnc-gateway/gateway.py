@@ -40,6 +40,10 @@ from gateway_util import (
     finite_float,
     finite_int,
 )
+from command_policy import (
+    MachineState as _PolicyMachineState,
+    evaluate_permissions,
+)
 
 
 # === TEMP LIFECYCLE PROBE (remove after debugging) ===
@@ -2628,7 +2632,42 @@ class StatusPayload:
     flood: Optional[bool]
     mist: Optional[bool]
 
+    # backend-authoritative permission classes (issue #19) — mirror of
+    # permissions.ts evaluatePermissions(). The frontend CONSUMES this instead
+    # of recomputing. Computed with armed=True (the status payload is a single
+    # shared broadcast, so per-client `armed`/`busy` are overlaid client-side).
+    # Trailing default so the (unreachable) bare constructor stays valid.
+    permissions: Optional[Dict[str, bool]] = None
 
+
+
+
+def _policy_state_from_payload(p: "StatusPayload", armed: bool) -> _PolicyMachineState:
+    """Build the command-policy MachineState from a status snapshot.
+
+    This is where the estop/enabled HAL-merge now lives (issues #14 + #19). The
+    frontend used to compute isEstop/isEnabled at its own computeds by merging
+    STAT.estop/enabled with the safety chain (emc_enable_in); with the backend
+    as the single policy authority that merge moves here, so the broadcast
+    permissions are authoritative. `armed` is supplied by the caller — True for
+    the shared broadcast, the real per-client value for command enforcement.
+
+    `busy` is intentionally absent (see command_policy module docstring): it is a
+    per-tab client debounce the gateway can't observe, overlaid client-side."""
+    emc = p.emc_enable_in
+    interp = p.interp_state if p.interp_state is not None else linuxcnc.INTERP_IDLE
+    is_paused = bool(p.paused)
+    return _PolicyMachineState(
+        armed=armed,
+        is_estop=bool(p.estop) or (emc is False),
+        is_enabled=bool(p.enabled) and (emc is not False),
+        is_homed=bool(p.homed),
+        is_idle=(interp == linuxcnc.INTERP_IDLE),
+        is_running=(not is_paused)
+        and interp in (linuxcnc.INTERP_READING, linuxcnc.INTERP_WAITING),
+        is_paused=is_paused,
+        eoffset_enabled=bool(p.eoffset_enabled),
+    )
 
 
 def safe_get(attr: str, default=None):
@@ -3125,7 +3164,7 @@ def poll_status() -> StatusPayload:
         bool(safe_get("paused", False)),
     )
 
-    return StatusPayload(
+    payload = StatusPayload(
         ts=time.time(),
         estop=estop,
         enabled=enabled,
@@ -3189,6 +3228,12 @@ def poll_status() -> StatusPayload:
         comp_method=_reader_get("comp_method"),
         comp_grid_version=_reader_get("comp_grid_version"),
     )
+    # Backend-authoritative permissions from this very snapshot (issue #19).
+    # armed=True; the per-client armed/busy overlay happens client-side.
+    payload.permissions = evaluate_permissions(
+        _policy_state_from_payload(payload, armed=True)
+    )
+    return payload
 
 
 
