@@ -40,6 +40,27 @@ POLICY_DENIALS = {
 }
 
 
+class _RecordingCmd:
+    """A CMD spy: records every call so a happy-path test can assert the handler
+    reached LinuxCNC with the parsed arguments. wait_complete() returns 0
+    (success), matching the real binding."""
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        def record(*args, **kwargs):
+            self.calls.append((name, args, kwargs))
+            return 0
+        return record
+
+    def args_of(self, name):
+        """Positional args of the first recorded call to `name`, or None."""
+        for n, a, _k in self.calls:
+            if n == name:
+                return a
+        return None
+
+
 class TestPolicyStateMerge(unittest.TestCase):
     """_policy_state_from_payload — the estop/enabled merge that moved
     server-side from the frontend isEstop/isEnabled computeds (issue #14)."""
@@ -133,6 +154,50 @@ class TestNotOverBlocked(unittest.TestCase):
         st = gateway._policy_state_from_payload(
             _payload(estop=True), armed=False)
         self.assertIsNone(gateway.check_command("jog_stop", st))
+
+
+class TestHandlerExecution(unittest.TestCase):
+    """Happy path: a valid command on a ready machine runs the REAL handler body
+    to completion and reaches CMD.* with the parsed arguments — not just the
+    policy seam. set_mode/_cmd_blocking are fire-and-forget here (no wait loop),
+    so a recording CMD spy + fake STAT suffice; no stateful linkage needed."""
+
+    def setUp(self):
+        gateway.lcnc_connected = True
+        gateway.STAT = linuxcnc.stat()
+        self.cmd = _RecordingCmd()
+        gateway.CMD = self.cmd
+
+    def _send(self, msg):
+        gateway._shared_status = _payload()   # ready -> passes policy
+        return _run(gateway.handle_command(msg, True))
+
+    def test_jog_cont_reaches_cmd_jog_with_parsed_args(self):
+        r = self._send({"cmd": "jog_cont", "axis": 2, "vel": 3.5})
+        self.assertTrue(r["ok"])
+        args = self.cmd.args_of("jog")
+        self.assertIsNotNone(args, "CMD.jog was never called")
+        self.assertEqual(args[0], linuxcnc.JOG_CONTINUOUS)
+        self.assertEqual(args[2], 2)      # axis (jf is args[1])
+        self.assertEqual(args[3], 3.5)    # velocity
+
+    def test_mdi_reaches_cmd_mdi_with_text(self):
+        r = self._send({"cmd": "mdi", "text": "G0 X1"})
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.cmd.args_of("mdi"), ("G0 X1",))
+
+    def test_home_reaches_cmd_home_with_joint(self):
+        r = self._send({"cmd": "home", "joint": 2})
+        self.assertTrue(r["ok"])
+        self.assertEqual(self.cmd.args_of("home"), (2,))
+
+    def test_mode_switched_before_motion(self):
+        # set_mode runs first: CMD.mode(MODE_MANUAL) is recorded before CMD.jog.
+        self._send({"cmd": "jog_cont", "axis": 0, "vel": 1.0})
+        names = [n for n, _a, _k in self.cmd.calls]
+        self.assertIn("mode", names)
+        self.assertIn("jog", names)
+        self.assertLess(names.index("mode"), names.index("jog"))
 
 
 class TestPayloadValidation(unittest.TestCase):
