@@ -17,6 +17,7 @@ from gateway_util import (
     origin_allowed,
     token_ok,
     finite_float,
+    finite_int,
 )
 
 
@@ -152,6 +153,64 @@ class TestFiniteFloat(unittest.TestCase):
     def test_rejects_garbage(self):
         with self.assertRaises((ValueError, TypeError)):
             finite_float("abc")
+
+    def test_range_below_lo_rejected(self):
+        with self.assertRaises(ValueError):
+            finite_float(-0.1, lo=0)
+
+    def test_range_above_hi_rejected(self):
+        with self.assertRaises(ValueError):
+            finite_float(2.5, hi=2.0)
+
+    def test_within_range_ok(self):
+        self.assertEqual(finite_float(1.5, lo=0, hi=2), 1.5)
+
+
+class TestFiniteInt(unittest.TestCase):
+    def test_parses_int_str_float(self):
+        self.assertEqual(finite_int(5), 5)
+        self.assertEqual(finite_int("5"), 5)
+        self.assertEqual(finite_int(5.0), 5)
+
+    def test_truncates_toward_zero(self):
+        self.assertEqual(finite_int(2.9), 2)
+        self.assertEqual(finite_int(-2.9), -2)
+
+    def test_missing_without_default_rejected(self):
+        # None with no explicit default is a missing required field, NOT 0 —
+        # so an absent axis/joint can't silently become index 0.
+        with self.assertRaises(ValueError):
+            finite_int(None)
+
+    def test_missing_uses_explicit_default(self):
+        self.assertEqual(finite_int(None, -1), -1)
+
+    def test_rejects_inf_via_json_overflow(self):
+        # json.loads("1e999") -> inf; int(inf) would raise OverflowError, which
+        # the dispatch boundary does not catch. finite_int turns it into a
+        # ValueError the boundary DOES catch.
+        with self.assertRaises(ValueError):
+            finite_int(float("inf"))
+
+    def test_rejects_nan(self):
+        with self.assertRaises(ValueError):
+            finite_int(math.nan)
+
+    def test_rejects_garbage(self):
+        with self.assertRaises((ValueError, TypeError)):
+            finite_int("abc")
+
+    def test_lo_rejects_negative(self):
+        with self.assertRaises(ValueError):
+            finite_int(-1, lo=0)
+
+    def test_hi_rejects_above(self):
+        with self.assertRaises(ValueError):
+            finite_int(9, hi=8)
+
+    def test_within_range_ok(self):
+        self.assertEqual(finite_int(0, lo=0), 0)
+        self.assertEqual(finite_int(8, lo=0, hi=8), 8)
 
 
 if __name__ == "__main__":

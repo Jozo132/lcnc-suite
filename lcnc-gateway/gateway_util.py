@@ -102,16 +102,52 @@ def origin_allowed(
     return False
 
 
-def finite_float(x, default=0.0) -> float:
-    """float() that rejects NaN/Infinity.
+def finite_float(x, default=0.0, lo=None, hi=None) -> float:
+    """float() that rejects NaN/Infinity and (optionally) out-of-range values.
 
-    Used for machine-motion values (velocity, distance, override scale) where a
-    non-finite number is dangerous. Raises ValueError/TypeError on bad input so
-    the dispatch-boundary handler can turn it into a structured error reply.
+    Used for machine-motion values (velocity, distance, override scale, tool
+    offsets) where a non-finite number is dangerous — and silently dangerous,
+    since ``float("inf")`` does NOT raise and would otherwise flow straight into
+    the tool table or a motion command. Raises ValueError/TypeError on bad input
+    so the dispatch-boundary handler can turn it into a structured error reply.
     """
     if x is None:
         x = default
     v = float(x)
     if not math.isfinite(v):
         raise ValueError(f"non-finite numeric value: {x!r}")
+    if lo is not None and v < lo:
+        raise ValueError(f"value {v} below minimum {lo}")
+    if hi is not None and v > hi:
+        raise ValueError(f"value {v} above maximum {hi}")
+    return v
+
+
+def finite_int(x, default=None, lo=None, hi=None) -> int:
+    """int() that rejects NaN/Infinity, missing values, and out-of-range values.
+
+    A bare ``int()`` on a websocket field is unsafe in two ways the dispatch
+    boundary does not cover: JSON can deliver ``inf`` (``json.loads("1e999")``)
+    and ``int(inf)`` raises OverflowError (NOT caught by the boundary, so it
+    tears the socket down); and ``int(None)`` on a missing field silently
+    becomes a default elsewhere. This coerces safely and raises ValueError on
+    anything non-finite, missing, non-numeric, or outside ``[lo, hi]``.
+
+    Unlike :func:`finite_float`, a ``None`` value with no explicit ``default``
+    is an error (missing required field) rather than ``0`` — so callers cannot
+    accidentally turn an absent axis/joint into index 0. Floats are truncated
+    toward zero (``int(1.9) == 1``), matching prior bare-``int()`` behaviour.
+    """
+    if x is None:
+        if default is None:
+            raise ValueError("missing required integer value")
+        x = default
+    f = float(x)
+    if not math.isfinite(f):
+        raise ValueError(f"non-finite integer value: {x!r}")
+    v = int(f)
+    if lo is not None and v < lo:
+        raise ValueError(f"integer {v} below minimum {lo}")
+    if hi is not None and v > hi:
+        raise ValueError(f"integer {v} above maximum {hi}")
     return v

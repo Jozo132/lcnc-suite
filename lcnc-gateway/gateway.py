@@ -38,6 +38,7 @@ from gateway_util import (
     origin_allowed,
     token_ok,
     finite_float,
+    finite_int,
 )
 
 
@@ -3632,7 +3633,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             blocked = reject_if_auto_running()
             if blocked:
                 return blocked
-            mode = int(msg.get("mode", 0))
+            mode = finite_int(msg.get("mode", 0))
             if mode not in (linuxcnc.MODE_MANUAL, linuxcnc.MODE_AUTO, linuxcnc.MODE_MDI):
                 return {"ok": False, "error": f"Invalid mode: {mode}"}
             await set_mode(mode)
@@ -3682,7 +3683,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "save_tool":
             require_armed(armed)
-            tool_num = int(msg["tool_number"])
+            tool_num = finite_int(msg["tool_number"], lo=0)
             tbl_path = get_tool_tbl_path()
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
@@ -3693,11 +3694,11 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             for t in tbl_tools:
                 if t["T"] == tool_num:
                     if "pocket" in msg:
-                        t["P"] = int(msg["pocket"])
+                        t["P"] = finite_int(msg["pocket"], lo=0)
                     if "z_offset" in msg:
-                        t["Z"] = float(msg["z_offset"])
+                        t["Z"] = finite_float(msg["z_offset"])
                     if "diameter" in msg:
-                        t["D"] = float(msg["diameter"])
+                        t["D"] = finite_float(msg["diameter"], lo=0)
                     if "remark" in msg:
                         t["remark"] = str(msg["remark"])
                     found = True
@@ -3723,7 +3724,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "add_tool":
             require_armed(armed)
-            tool_num = int(msg["tool_number"])
+            tool_num = finite_int(msg["tool_number"], lo=0)
             tbl_path = get_tool_tbl_path()
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
@@ -3735,9 +3736,9 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
             tbl_tools.append({
                 "T": tool_num,
-                "P": int(msg.get("pocket", tool_num)),
-                "Z": float(msg.get("z_offset", 0.0)),
-                "D": float(msg.get("diameter", 0.0)),
+                "P": finite_int(msg.get("pocket", tool_num), lo=0),
+                "Z": finite_float(msg.get("z_offset", 0.0)),
+                "D": finite_float(msg.get("diameter", 0.0), lo=0),
                 "remark": str(msg.get("remark", "")),
             })
             write_tool_table(tbl_path, tbl_tools)
@@ -3755,7 +3756,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "delete_tool":
             require_armed(armed)
-            tool_num = int(msg["tool_number"])
+            tool_num = finite_int(msg["tool_number"], lo=0)
 
             # Don't delete the currently loaded tool
             STAT.poll()
@@ -3791,8 +3792,8 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             # _cmd_lock. Replaces the old add_tool+delete_tool client sequence,
             # which could leave a duplicate / lost tool if the second send failed.
             require_armed(armed)
-            old_num = int(msg["old_tool_number"])
-            new_num = int(msg["tool_number"])
+            old_num = finite_int(msg["old_tool_number"], lo=0)
+            new_num = finite_int(msg["tool_number"], lo=0)
             tbl_path = get_tool_tbl_path()
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
@@ -3816,9 +3817,9 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 return {"ok": False, "error": f"Cannot renumber T{old_num} — currently in spindle"}
 
             src["T"] = new_num
-            src["P"] = int(msg.get("pocket", new_num))
+            src["P"] = finite_int(msg.get("pocket", new_num), lo=0)
             src["Z"] = finite_float(msg.get("z_offset", src.get("Z", 0.0)))
-            src["D"] = finite_float(msg.get("diameter", src.get("D", 0.0)))
+            src["D"] = finite_float(msg.get("diameter", src.get("D", 0.0)), lo=0)
             src["remark"] = str(msg.get("remark", src.get("remark", "")))
             write_tool_table(tbl_path, tbl_tools)
             await _reload_tool_table_and_bump()
@@ -3837,7 +3838,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             blocked = reject_if_auto_running()
             if blocked:
                 return blocked
-            tool_num = int(msg["tool_number"])
+            tool_num = finite_int(msg["tool_number"], lo=0)
             await set_mode(linuxcnc.MODE_MDI)
             await _cmd_blocking(CMD.mdi, f"T{tool_num} M6 G43", wait=None)
             return {"ok": True}
@@ -3864,7 +3865,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
         if cmd == "auto_run":
             require_armed(armed)
             spindle_dir = msg.get("spindle_dir")
-            spindle_speed = int(msg.get("spindle_speed", 0))
+            spindle_speed = finite_int(msg.get("spindle_speed", 0), lo=0)
             if spindle_dir and spindle_speed > 0:
                 await set_mode(linuxcnc.MODE_MANUAL)
                 if spindle_dir == "forward":
@@ -3872,7 +3873,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 elif spindle_dir == "reverse":
                     await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_REVERSE, spindle_speed, wait=None)
             await set_mode(linuxcnc.MODE_AUTO)
-            start_line = int(msg.get("line", 0))
+            start_line = finite_int(msg.get("line", 0), lo=0)
             await _cmd_blocking(CMD.auto, linuxcnc.AUTO_RUN, start_line, wait=None)
             return {"ok": True}
 
@@ -3884,7 +3885,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if blocked:
                 return blocked
 
-            axis = int(msg.get("axis"))
+            axis = finite_int(msg.get("axis"), lo=0)
             vel = finite_float(msg.get("vel", 0.0))
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
@@ -3904,7 +3905,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             interp = safe_get("interp_state", None)
             if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
                 return {"ok": True}
-            axis = int(msg.get("axis"))
+            axis = finite_int(msg.get("axis"), lo=0)
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, axis, wait=None)
@@ -3921,7 +3922,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
-                await _cmd_blocking(CMD.jog, linuxcnc.JOG_CONTINUOUS, jf, int(entry["axis"]), finite_float(entry["vel"]), wait=None)
+                await _cmd_blocking(CMD.jog, linuxcnc.JOG_CONTINUOUS, jf, finite_int(entry["axis"], lo=0), finite_float(entry["vel"]), wait=None)
             return {"ok": True}
 
         if cmd == "jog_stop_multi":
@@ -3936,7 +3937,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for a in axes:
-                await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, int(a), wait=None)
+                await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, finite_int(a, lo=0), wait=None)
             return {"ok": True}
 
         if cmd == "jog_incr":
@@ -3946,7 +3947,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if blocked:
                 return blocked
 
-            axis = int(msg.get("axis"))
+            axis = finite_int(msg.get("axis"), lo=0)
             vel = abs(finite_float(msg.get("vel", 0.0)))  # speed only; distance carries direction
             dist = finite_float(msg.get("distance", 0.0))
             await set_mode(linuxcnc.MODE_MANUAL)
@@ -3965,7 +3966,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
-                await _cmd_blocking(CMD.jog, linuxcnc.JOG_INCREMENT, jf, int(entry["axis"]), abs(finite_float(entry["vel"])), finite_float(entry["distance"]), wait=None)
+                await _cmd_blocking(CMD.jog, linuxcnc.JOG_INCREMENT, jf, finite_int(entry["axis"], lo=0), abs(finite_float(entry["vel"])), finite_float(entry["distance"]), wait=None)
             return {"ok": True}
 
         if cmd == "home_all":
@@ -3983,14 +3984,14 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "home":
             require_armed(armed)
-            joint = int(msg.get("joint", -1))
+            joint = finite_int(msg.get("joint", -1))
             await set_mode(linuxcnc.MODE_MANUAL)
             await _cmd_blocking(CMD.home, joint, wait=None)
             return {"ok": True}
 
         if cmd == "unhome":
             require_armed(armed)
-            joint = int(msg.get("joint", -1))
+            joint = finite_int(msg.get("joint", -1))
             await set_mode(linuxcnc.MODE_MANUAL)
             await _cmd_blocking(CMD.teleop_enable, 0)  # unhome requires joint mode
             await _cmd_blocking(CMD.unhome, joint, wait=None)
@@ -6574,7 +6575,15 @@ async def ws_endpoint(ws: WebSocket):
                 if not armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
-                method = int(msg.get("method", 2))
+                # Validated inline: this handler runs BEFORE the handle_command
+                # dispatch boundary, so a bad cast here would escape to the
+                # WebSocketDisconnect/RuntimeError catch and tear the socket
+                # down instead of returning a bounded error (issue #27).
+                try:
+                    method = finite_int(msg.get("method", 2))
+                except (ValueError, TypeError) as _e:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": f"Invalid method: {_e}"})
+                    continue
                 _loop = asyncio.get_event_loop()
                 await _loop.run_in_executor(None, _hal_send, {"compensation_method": method})
                 await ws_send_json(ws, {"type": "reply", "ok": True})
@@ -6583,7 +6592,7 @@ async def ws_endpoint(ws: WebSocket):
             _set_phase(f"handle_command cmd={msg.get('cmd', '?')} client#{client_id}")
             try:
                 reply = await handle_command(msg, armed)
-            except (ValueError, TypeError, KeyError, PermissionError) as _val_e:
+            except (ValueError, TypeError, KeyError, PermissionError, OverflowError) as _val_e:
                 # Malformed payload or failed precondition (bad numeric cast,
                 # missing field, not-armed). Return a bounded structured error
                 # rather than letting it bubble out of the receive loop — an
