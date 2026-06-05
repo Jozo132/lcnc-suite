@@ -48,6 +48,12 @@ const editingMacroParams = computed<MacroParam[]>(() => {
   const names = extractParams(editingMacro.value.command);
   const existing = new Map(editingMacro.value.params.map(p => [p.name, p]));
   const result = names.map(name => existing.get(name) || { name, label: name, default: "" });
+  // KNOWN SMELL (#26 follow-up): writing back here keeps editingMacro.params in
+  // sync while editing, so editing a param THEN changing the command preserves
+  // the edit. The clean fix is a watch() + binding the template to
+  // editingMacro.params directly (side effects belong in a watcher, not a
+  // computed). Deferred to a tested change since it alters macro-editing flow.
+  // eslint-disable-next-line vue/no-side-effects-in-computed-properties
   editingMacro.value.params = result;
   return result;
 });
