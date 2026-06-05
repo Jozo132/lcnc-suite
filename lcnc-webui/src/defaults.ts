@@ -377,16 +377,10 @@ export function saveMacrosDefaults(data: MacrosDefaults): void {
   saveSection("macros", data);
 }
 
-/** Extract unique placeholder names from a macro command string. */
-export function extractParams(command: string): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const match of command.matchAll(/\{(\w+)\}/g)) {
-    const name = match[1]!;
-    if (!seen.has(name)) { seen.add(name); result.push(name); }
-  }
-  return result;
-}
+// Pure macro-param helpers live in a side-effect-free module so they're
+// unit-testable without importing this file's page-lifecycle listeners.
+// Re-exported here for back-compat with existing `from "./defaults"` imports.
+export { extractParams, syncMacroParams } from "./macroParams";
 
 // ─── Camera section ─────────────────────────────────────────────
 

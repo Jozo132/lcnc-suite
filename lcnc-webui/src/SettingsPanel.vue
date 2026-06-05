@@ -11,12 +11,12 @@ import MachineColor from "./MachineColor.vue";
 import {
   loadViewerDefaults, saveViewerDefaults,
   loadMachineDefaults, saveMachineDefaults,
-  loadMacrosDefaults, saveMacrosDefaults, extractParams,
+  loadMacrosDefaults, saveMacrosDefaults, syncMacroParams,
   loadDisplayDefaults, saveDisplayDefaults, settingsVersion, serverSettingsReady,
   loadCameraDefaults, saveCameraDefaults,
   type Layer, type ColorDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir, type SpindleFeedbackUnit,
-  type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
+  type ThemeMode, type MacroDef, type GamepadDefaults,
   GAMEPAD_FALLBACK,
   STEP_RPM,
   loadKeyboardDefaults, type KeyboardDefaults, DEFAULT_KB_MAPPING,
@@ -43,20 +43,18 @@ const updateMacros = inject<(macros: MacroDef[]) => void>("updateMacros", () => 
 const macros = ref<MacroDef[]>(loadMacrosDefaults().macros);
 const editingMacro = ref<MacroDef | null>(null);
 
-const editingMacroParams = computed<MacroParam[]>(() => {
-  if (!editingMacro.value) return [];
-  const names = extractParams(editingMacro.value.command);
-  const existing = new Map(editingMacro.value.params.map(p => [p.name, p]));
-  const result = names.map(name => existing.get(name) || { name, label: name, default: "" });
-  // KNOWN SMELL (#26 follow-up): writing back here keeps editingMacro.params in
-  // sync while editing, so editing a param THEN changing the command preserves
-  // the edit. The clean fix is a watch() + binding the template to
-  // editingMacro.params directly (side effects belong in a watcher, not a
-  // computed). Deferred to a tested change since it alters macro-editing flow.
-  // eslint-disable-next-line vue/no-side-effects-in-computed-properties
-  editingMacro.value.params = result;
-  return result;
-});
+// Keep the macro's params in sync with the {placeholders} in its command as the
+// user types. A watcher (not a computed) owns this mutation; the template binds
+// to editingMacro.params directly. syncMacroParams preserves edits to params
+// that remain, so editing a param then changing the command keeps the edit
+// (issue #26).
+watch(
+  () => editingMacro.value?.command,
+  () => {
+    const m = editingMacro.value;
+    if (m) m.params = syncMacroParams(m.command, m.params);
+  },
+);
 
 function addMacro() {
   editingMacro.value = {
@@ -75,10 +73,9 @@ function saveMacro() {
   if (!editingMacro.value) return;
   const m = editingMacro.value;
   if (!m.name.trim() || !m.command.trim()) return;
-  // Sync params from command placeholders
-  const paramNames = extractParams(m.command);
-  const existingMap = new Map(m.params.map(p => [p.name, p]));
-  m.params = paramNames.map(name => existingMap.get(name) || { name, label: name, default: "" });
+  // The editor watcher already keeps params in sync with the command; re-run
+  // here to cover a save fired right after a command edit (idempotent).
+  m.params = syncMacroParams(m.command, m.params);
   const idx = macros.value.findIndex(x => x.id === m.id);
   if (idx >= 0) macros.value[idx] = m;
   else macros.value.push(m);
@@ -683,9 +680,9 @@ function resetMachineColor(id: string) {
                   Use <code>{"{name}"}</code> for parameters. Users will be prompted for values.
                 </div>
 
-                <div v-if="editingMacroParams.length > 0" class="macroParamEditor">
+                <div v-if="editingMacro.params.length > 0" class="macroParamEditor">
                   <div class="sub">Parameters</div>
-                  <div v-for="p in editingMacroParams" :key="p.name" class="macroParamEditRow">
+                  <div v-for="p in editingMacro.params" :key="p.name" class="macroParamEditRow">
                     <code class="macroParamBadge">{{"{"}}{{ p.name }}{{"}"}}</code>
                     <MachineInput gate="macroEdit" type="text" v-model="p.label" placeholder="Display label" />
                     <MachineInput gate="macroEdit" type="text" v-model="p.default" placeholder="Default value" />
