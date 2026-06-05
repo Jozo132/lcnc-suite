@@ -1,0 +1,48 @@
+name: CI
+
+# Off-machine checks (issue #26). Runs the non-LinuxCNC subset: frontend lint /
+# build / unit / e2e, and the backend pure + dispatch tests under a fake
+# linuxcnc. The on-machine suite (test_viewer_init.py, hardware behaviour) is
+# out of scope here.
+on:
+  push:
+    branches: [main, development, "refactor/**", "harden/**"]
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lcnc-webui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: lcnc-webui/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+      - run: npm run test          # vitest
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e      # Playwright (serves the built dist)
+
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: lcnc-gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # gateway.py's module-level third-party imports are only fastapi + msgspec
+      # + click; the fake linuxcnc (conftest.py) stands in for the real binding,
+      # and machine/ is committed so the StaticFiles mount resolves. Heavy deps
+      # (numpy/cv2/PIL) are lazily imported by camera/viewer code the tests don't
+      # exercise.
+      - run: pip install fastapi msgspec click pytest
+      - run: python -m pytest
