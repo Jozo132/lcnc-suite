@@ -44,5 +44,7 @@ jobs:
       # and machine/ is committed so the StaticFiles mount resolves. Heavy deps
       # (numpy/cv2/PIL) are lazily imported by camera/viewer code the tests don't
       # exercise.
-      - run: pip install fastapi msgspec click pytest
+      # python-multipart is required by FastAPI to analyze the upload route at
+      # import time (UploadFile/Form), even though no test posts a file.
+      - run: pip install fastapi msgspec click python-multipart pytest
       - run: python -m pytest
