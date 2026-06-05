@@ -17,10 +17,20 @@ export default defineConfig({
     headless: true,
   },
   projects: [{ name: "chromium", use: { browserName: "chromium" } }],
-  webServer: {
-    command: "vite preview --port 4173 --strictPort",
-    url: "http://localhost:4173",
-    reuseExistingServer: !process.env.CI,
-    timeout: 60_000,
-  },
+  webServer: [
+    {
+      // Disconnected smoke tests (smoke.spec.ts) — plain built app, no gateway.
+      command: "vite preview --port 4173 --strictPort",
+      url: "http://localhost:4173",
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+    {
+      // Armed-state tests (armed.spec.ts) — built app + a mock gateway WS.
+      command: "node e2e/mock-gateway.mjs",
+      url: "http://localhost:4174",
+      reuseExistingServer: !process.env.CI,
+      timeout: 60_000,
+    },
+  ],
 });

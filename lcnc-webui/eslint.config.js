@@ -48,4 +48,11 @@ export default tseslint.config(
       "no-empty": ["warn", { allowEmptyCatch: true }],
     },
   },
+  {
+    // The E2E mock gateway is a Node script (not browser code).
+    files: ["e2e/**/*.mjs"],
+    languageOptions: {
+      globals: { ...globals.node },
+    },
+  },
 );
