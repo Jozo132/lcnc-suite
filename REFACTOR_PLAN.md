@@ -173,9 +173,14 @@ changes silently. **Effort:** ~1 week for a useful baseline.
 
 ## Workstream 3 — Stores with real transaction locks  *(contained win)*
 
-> **Status (2026-06-03): PARTIAL — #30 (renumber transaction) done; #24 REOPENED.**
-> Settings lock shipped, but the tool-write paths (`write_tool_table`, `save_tool_library`)
-> have no lock, and the `threading.Lock`-in-asyncio decision (Task 3 below) is unresolved.
+> **Status (2026-06-05): RESOLVED (code).** The unlocked REST tool import
+> (`apply_tool_library_import`) now persists via `_persist_imported_tools` under `_cmd_lock`
+> + `run_in_executor` (`50718e1`) — so every tool-mutation path shares one lock and the NML
+> reload is no longer driven unlocked. Settings were already correct (`_settings_lock` +
+> `run_in_executor` on both WS and REST paths, so the threading lock never blocks the loop).
+> **Lock-model decision (task 3):** asyncio `_cmd_lock` for the tool transaction (the reload
+> needs it), threading lock for settings — both keep blocking I/O off the event loop.
+> Dedicated `SettingsStore`/`ToolStore` classes deferred to #33 (modularization). #30 done.
 
 **Goal:** kill lost-update / multi-tab races on settings and tool table; resolve the
 threading-vs-asyncio lock question.
