@@ -2334,6 +2334,24 @@ async def _reload_tool_table_and_bump():
     _tool_table_version += 1
 
 
+async def _persist_imported_tools(tbl_path: str, tbl_tools: list, library: dict) -> None:
+    """Persist a full tool-table replacement (the REST Fusion import) atomically
+    w.r.t. every other tool / NML operation (issue #24).
+
+    Serialized under `_cmd_lock` — not a separate lock — for two reasons: the WS
+    tool handlers (save/add/delete/renumber) already serialize on it via
+    `handle_command`, and the reload touches the NML command channel, whose
+    thread-safety contract requires that lock. The REST import previously
+    bypassed `_cmd_lock`, so it could both race those handlers on tool.tbl /
+    tool_library.json (lost update) AND call `_cmd_blocking` without the lock.
+    The blocking file writes run off the event loop via `run_in_executor`."""
+    loop = asyncio.get_event_loop()
+    async with _get_cmd_lock():
+        await loop.run_in_executor(None, write_tool_table, tbl_path, tbl_tools)
+        await _reload_tool_table_and_bump()
+        await loop.run_in_executor(None, save_tool_library, library)
+
+
 def _current_ini_path() -> str:
     """Return the current INI file path, or 'default' if unavailable."""
     if STAT and getattr(STAT, "ini_filename", None):
@@ -5336,9 +5354,9 @@ async def apply_tool_library_import(
         if tool.get("presets"):
             library[key]["presets"] = tool["presets"]
 
-    write_tool_table(tbl_path, tbl_tools)
-    await _reload_tool_table_and_bump()
-    save_tool_library(library)
+    # Serialize the whole replacement under _cmd_lock + off the event loop, so
+    # it can't race the WS tool handlers or call into NML unlocked (issue #24).
+    await _persist_imported_tools(tbl_path, tbl_tools, library)
 
     return {"ok": True, "added": len(parsed), "skipped": len(_skipped)}
 

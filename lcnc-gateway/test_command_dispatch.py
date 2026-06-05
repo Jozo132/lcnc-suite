@@ -247,5 +247,25 @@ class TestPayloadValidation(unittest.TestCase):
         self._assert_validation_rejection(r, "minimum")
 
 
+class TestToolPersistenceLock(unittest.TestCase):
+    """#24: the REST tool-import path persists tool.tbl + tool_library.json under
+    _cmd_lock (serialized with the WS tool handlers, which hold it via
+    handle_command) and off the event loop — closing the prior race + unlocked
+    NML reload."""
+
+    def test_import_persist_holds_cmd_lock_for_both_writes(self):
+        seen = {}
+        orig_w, orig_s = gateway.write_tool_table, gateway.save_tool_library
+        # Spy: record whether _cmd_lock is held at the moment each file is written.
+        gateway.write_tool_table = lambda p, t: seen.__setitem__("table", gateway._cmd_lock.locked())
+        gateway.save_tool_library = lambda lib: seen.__setitem__("lib", gateway._cmd_lock.locked())
+        try:
+            _run(gateway._persist_imported_tools("/tmp/ignored.tbl", [], {}))
+        finally:
+            gateway.write_tool_table, gateway.save_tool_library = orig_w, orig_s
+        self.assertTrue(seen.get("table"), "_cmd_lock not held during tool-table write")
+        self.assertTrue(seen.get("lib"), "_cmd_lock not held during tool-library write")
+
+
 if __name__ == "__main__":
     unittest.main()
