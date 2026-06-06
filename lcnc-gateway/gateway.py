@@ -2664,12 +2664,13 @@ class StatusPayload:
 def _policy_state_from_payload(p: "StatusPayload", armed: bool) -> _PolicyMachineState:
     """Build the command-policy MachineState from a status snapshot.
 
-    This is where the estop/enabled HAL-merge now lives (issues #14 + #19). The
-    frontend used to compute isEstop/isEnabled at its own computeds by merging
-    STAT.estop/enabled with the safety chain (emc_enable_in); with the backend
-    as the single policy authority that merge moves here, so the broadcast
-    permissions are authoritative. `armed` is supplied by the caller — True for
-    the shared broadcast, the real per-client value for command enforcement.
+    The estop/enabled HAL-merge for command POLICY lives here (issues #14 + #19):
+    STAT.estop/enabled merged with the safety chain (emc_enable_in). NOTE (review
+    #5): App.vue still computes the SAME merge (isEstop/isEnabled) for the status
+    banner/DRO display, so this rule is duplicated across Python and TS — keep
+    them in sync, or unify by broadcasting is_estop/is_enabled. `armed` is
+    supplied by the caller — True for the shared broadcast, the real per-client
+    value for command enforcement.
 
     `busy` is intentionally absent (see command_policy module docstring): it is a
     per-tab client debounce the gateway can't observe, overlaid client-side."""
@@ -3939,7 +3940,12 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 # Already paused → advance one block (no mode change)
                 await _cmd_blocking(CMD.auto, linuxcnc.AUTO_STEP, wait=None)
             elif mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-                # Running (not paused) → pause first, next click will step
+                # Running (not paused) → pause first, next click will step.
+                # NOTE (review #3): unreachable via the backend 'step' gate
+                # ((idle & homed) OR paused) — kept as a defensive fall-through.
+                # Stepping a running program is done by pausing (cycle_pause)
+                # then stepping; matches the frontend, which hides step while
+                # running.
                 await _cmd_blocking(CMD.auto, linuxcnc.AUTO_PAUSE, wait=None)
             else:
                 # Idle → start program and step

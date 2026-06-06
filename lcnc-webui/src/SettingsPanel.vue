@@ -66,7 +66,12 @@ function addMacro() {
 }
 
 function editMacro(m: MacroDef) {
-  editingMacro.value = { ...m, params: m.params.map(p => ({ ...p })) };
+  const copy = { ...m, params: m.params.map(p => ({ ...p })) };
+  // Reconcile params with the command on open: the watch fires only when the
+  // command STRING changes, so switching between macros with identical commands
+  // (but drifted stored params) wouldn't otherwise sync the editor (review #4).
+  copy.params = syncMacroParams(copy.command, copy.params);
+  editingMacro.value = copy;
 }
 
 function saveMacro() {
