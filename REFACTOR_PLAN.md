@@ -201,6 +201,15 @@ no lost update and a consistent final file. **Effort:** settings 1–2 days; too
 
 ## Workstream 4 — Extract 3–4 gateway seams  *(after WS2 is green)*
 
+> **Status (2026-06-06): DONE — 4 modules extracted, CI green.**
+> `command_policy.py` (WS1) + `tool_table.py` (`d6f84e5`) + `settings_store.py` (`c845fc3`) +
+> `tool_store.py` (`5373fc5`), plus `atomic_write_bytes` → `gateway_util`. Each used dependency
+> injection (paths, INI-key, trace callbacks) to stay linuxcnc-free + unit-testable, and added
+> tests for logic that had none (tool_table 7, settings_store 6, tool_store 6). 113 backend tests.
+> **`command_dispatch` intentionally NOT extracted** — `handle_command` is woven through
+> CMD/STAT/globals; high risk for modest gain (the plan's own caution). Stopped at the
+> persistence trio + policy, meeting the issue's "3–4 modules" scope.
+
 **Goal:** shrink the monolith along the seams the earlier workstreams already created — **not**
 the speculative 15-file layout.
 
