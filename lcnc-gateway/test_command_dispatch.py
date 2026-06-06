@@ -92,6 +92,15 @@ class TestPolicyStateMerge(unittest.TestCase):
         self.assertTrue(paused.is_paused)
         self.assertFalse(paused.is_running)
 
+    def test_interp_paused_counts_as_paused_even_if_flag_lags(self):
+        # review #1: INTERP_PAUSED with STAT.paused momentarily False must still
+        # read as paused, so the resume gate stays open during that transient.
+        s = gateway._policy_state_from_payload(
+            _payload(interp_state=linuxcnc.INTERP_PAUSED, paused=False), armed=True)
+        self.assertTrue(s.is_paused)
+        self.assertFalse(s.is_running)
+        self.assertFalse(s.is_idle)
+
     def test_armed_passthrough(self):
         self.assertTrue(gateway._policy_state_from_payload(_payload(), armed=True).armed)
         self.assertFalse(gateway._policy_state_from_payload(_payload(), armed=False).armed)

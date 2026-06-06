@@ -2,7 +2,9 @@
 (issue #19). Run via ``python3 -m unittest test_command_policy`` or pytest.
 """
 
+import re
 import unittest
+from pathlib import Path
 
 from command_policy import (
     MachineState,
@@ -13,24 +15,20 @@ from command_policy import (
 )
 
 
-# Every command the gateway's handle_command dispatches (kept in sync with
-# gateway.py). The coverage test asserts each is either gated or read-only, so a
-# new command cannot land without a deliberate policy decision.
-ALL_HANDLED_COMMANDS = {
-    "abort", "add_tool", "arm", "auto_run", "auto_step", "clear_wcs",
-    "cycle_pause", "cycle_resume", "cycle_start", "delete_tool", "estop",
-    "estop_reset", "flood_off", "flood_on", "get_comp_grid",
-    "get_probe_results", "get_probe_vars", "get_tool_table", "get_wcs_table",
-    "home", "home_all", "jog_cont", "jog_cont_multi", "jog_incr",
-    "jog_incr_multi", "jog_stop", "jog_stop_multi", "list_probe_macros",
-    "load_file", "machine_off", "machine_on", "mdi", "mist_off", "mist_on",
-    "renumber_tool", "save_tool", "set_block_delete", "set_feed_override",
-    "set_max_velocity", "set_mode", "set_optional_stop", "set_probe_vars",
-    "set_rapid_override", "set_spindle_override", "set_wcs", "shutdown",
-    "spindle_decrease", "spindle_forward", "spindle_increase",
-    "spindle_reverse", "spindle_stop", "tool_change", "unhome", "unhome_all",
-    "unload_file",
-}
+def _dispatched_commands() -> set:
+    """Command names the gateway ACTUALLY dispatches, parsed from the
+    ``_handle_command_impl`` source (its ``cmd == "..."`` ladder) rather than a
+    hand-maintained copy — so a newly added handler that wasn't gated fails the
+    coverage test below (review #2). Reads the source as text; no linuxcnc import."""
+    src = (Path(__file__).resolve().parent / "gateway.py").read_text(encoding="utf-8")
+    start = src.index("async def _handle_command_impl")
+    rest = src[start + 1:]
+    m = re.search(r"\n(?:async def|def) \w", rest)
+    body = rest[: m.start()] if m else rest
+    return set(re.findall(r'cmd == "([^"]+)"', body))
+
+
+ALL_HANDLED_COMMANDS = _dispatched_commands()
 
 
 def state(**over) -> MachineState:
@@ -44,6 +42,11 @@ def state(**over) -> MachineState:
 
 
 class TestCoverage(unittest.TestCase):
+    def test_command_set_was_actually_parsed(self):
+        # Guard: a broken source parse must not let the coverage checks pass
+        # vacuously on an empty set.
+        self.assertGreater(len(ALL_HANDLED_COMMANDS), 40)
+
     def test_every_command_is_gated_or_read_only(self):
         for cmd in ALL_HANDLED_COMMANDS:
             self.assertTrue(

@@ -2675,7 +2675,10 @@ def _policy_state_from_payload(p: "StatusPayload", armed: bool) -> _PolicyMachin
     per-tab client debounce the gateway can't observe, overlaid client-side."""
     emc = p.emc_enable_in
     interp = p.interp_state if p.interp_state is not None else linuxcnc.INTERP_IDLE
-    is_paused = bool(p.paused)
+    # Treat INTERP_PAUSED as paused even if the STAT.paused flag lags — matching
+    # _update_program_timer. Otherwise, in that transient both pause and resume
+    # gates close and the operator can't resume a paused program (review #1).
+    is_paused = bool(p.paused) or interp == linuxcnc.INTERP_PAUSED
     return _PolicyMachineState(
         armed=armed,
         is_estop=bool(p.estop) or (emc is False),
