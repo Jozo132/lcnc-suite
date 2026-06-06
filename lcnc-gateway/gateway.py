@@ -2043,6 +2043,7 @@ else:
 # ALLOWED_EXTENSIONS now lives in gateway_util (imported at top).
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
 _nc_files_dir: Optional[str] = None
+_nc_files_ini: Optional[str] = None   # INI identity the _nc_files_dir cache is keyed to
 _ini_config: Optional[dict] = None
 
 
@@ -2169,33 +2170,39 @@ def get_probe_macros() -> list:
 
 
 def get_nc_files_dir() -> str:
-    """Return NC files directory from LinuxCNC INI, fallback ~/linuxcnc/nc_files."""
-    global _nc_files_dir
-    if _nc_files_dir is not None:
+    """Return NC files directory from the LinuxCNC INI, fallback ~/linuxcnc/nc_files.
+
+    Reads PROGRAM_PREFIX from LCNC_INI_FILE (exported by the launcher) — the same
+    boot-independent source get_tool_tbl_path() uses — instead of STAT.ini_filename,
+    so it never polls the NML status channel on the event loop and works before
+    try_connect_lcnc succeeds (B4). Cached and keyed to the active INI so an INI
+    change re-resolves; only a tiny INI parse on first use / INI change.
+    """
+    global _nc_files_dir, _nc_files_ini
+    ini_path = os.environ.get("LCNC_INI_FILE")
+    if _nc_files_dir is not None and ini_path == _nc_files_ini:
         return _nc_files_dir
 
-    fallback = os.path.expanduser("~/linuxcnc/nc_files")
-
-    if STAT is not None:
-        ini_path = None
+    resolved = None
+    if ini_path:
         try:
-            STAT.poll()
-            ini_path = getattr(STAT, "ini_filename", None)
-            if ini_path:
-                ini = linuxcnc.ini(ini_path)
-                prefix = ini.find("DISPLAY", "PROGRAM_PREFIX")
-                if prefix:
-                    if not os.path.isabs(prefix):
-                        prefix = os.path.join(os.path.dirname(ini_path), prefix)
-                    prefix = os.path.realpath(prefix)
-                    if os.path.isdir(prefix):
-                        _nc_files_dir = prefix
-                        return _nc_files_dir
+            ini = linuxcnc.ini(ini_path)
+            prefix = ini.find("DISPLAY", "PROGRAM_PREFIX")
+            if prefix:
+                if not os.path.isabs(prefix):
+                    prefix = os.path.join(os.path.dirname(ini_path), prefix)
+                prefix = os.path.realpath(prefix)
+                if os.path.isdir(prefix):
+                    resolved = prefix
         except Exception as e:
             _trace.emit_exc("ini.nc_files_parse_failed", e, ini_path=ini_path)
 
-    _nc_files_dir = fallback
-    os.makedirs(_nc_files_dir, exist_ok=True)
+    if resolved is None:
+        resolved = os.path.expanduser("~/linuxcnc/nc_files")
+        os.makedirs(resolved, exist_ok=True)
+
+    _nc_files_dir = resolved
+    _nc_files_ini = ini_path
     return _nc_files_dir
 
 
@@ -4613,6 +4620,14 @@ async def lifespan(app: "FastAPI"):
     # during the pre-first-client window. The poller's `if not _clients`
     # branch sleeps cheaply, so running from boot is harmless.
     _start_status_poller()
+    # Warm the machine-path caches now (both resolve from LCNC_INI_FILE, which the
+    # launcher exports before uvicorn, and neither touches NML) so the first
+    # /upload or tool op doesn't pay an INI parse / makedirs on the event loop (B4).
+    try:
+        get_nc_files_dir()
+        get_tool_tbl_path()
+    except Exception as e:
+        _trace.emit_exc("boot.path_warmup_failed", e)
     yield
     # ---- Shutdown ----
     # Order matters. Each step is bounded so a stuck client/socket can't block
