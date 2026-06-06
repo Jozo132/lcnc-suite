@@ -51,6 +51,7 @@ from tool_table import (
     _merge_tool_data,
     _TOOL_META_FIELDS,
 )
+from settings_store import SettingsStore, VALID_SECTIONS as _VALID_SETTINGS_SECTIONS
 
 
 # === TEMP LIFECYCLE PROBE (remove after debugging) ===
@@ -2373,89 +2374,35 @@ def save_tool_library(library: dict):
 
 # ---- Server-Side Settings ----
 SETTINGS_PATH = BASE_DIR / "settings.json"
-_settings_version = 0
-# Serializes the settings read-modify-write sequences (issue #24). These run in
-# executor threads from BOTH the WS save path and the REST save/reset routes —
-# the latter is not under _cmd_lock — so without this two concurrent saves
-# (e.g. multi-tab sendBeacon on page exit) could lose an update. threading.Lock
-# (not asyncio) because the guarded functions run in executor threads.
-_settings_lock = threading.Lock()
-_settings_cache: Optional[dict] = None
-_settings_load_failed = False  # True if the on-disk settings.json failed to parse
 _fb_scale = 60  # spindle feedback scale: 60 (RPS→RPM) or 1 (already RPM)
 _spindle_load_pin = ""  # HAL pin for spindle load %, empty = disabled
 _tc_info_cache: dict = {}  # {(tool_num, tbl_mtime): merged_list} — one entry max
 _HAL_PIN_RE = re.compile(r'^[a-zA-Z0-9_][a-zA-Z0-9_.:-]*$')
-_VALID_SETTINGS_SECTIONS = {"macros", "machine", "viewer", "camera", "mdi", "gamepad", "probe", "toolsetter", "keyboard", "display", "panels"}
 
 
-def _load_settings_all() -> dict:
-    """Load the full settings.json (all configs)."""
-    global _settings_cache, _settings_load_failed
-    if _settings_cache is not None:
-        return _settings_cache
-    if SETTINGS_PATH.exists():
-        try:
-            with open(SETTINGS_PATH, "r") as f:
-                _settings_cache = json.load(f)
-                _settings_load_failed = False
-                return _settings_cache
-        except Exception as e:
-            # Parse failure: cache {} so reads degrade gracefully, but flag it
-            # so WRITES are blocked (see _save_settings_all). Overwriting a
-            # corrupt file with one section would wipe every other INI config's
-            # settings — and the file may be hand-recoverable. Mirrors the
-            # refuse-to-clobber guard in save_tool_library.
-            _settings_load_failed = True
-            _trace.emit("settings.load_failed", level="warn",
-                        path=str(SETTINGS_PATH), exc=type(e).__name__, msg=str(e))
-    _settings_cache = {}
-    return _settings_cache
+def _settings_load_error(e: Exception) -> None:
+    _trace.emit("settings.load_failed", level="warn",
+                path=str(SETTINGS_PATH), exc=type(e).__name__, msg=str(e))
 
 
-def _save_settings_all(all_data: dict):
-    """Write settings.json atomically."""
-    global _settings_cache
-    if _settings_load_failed and SETTINGS_PATH.exists():
-        # Don't clobber a settings.json we couldn't parse — surface to the
-        # client instead so the operator can recover or remove the file.
-        raise RuntimeError(
-            "settings.json failed to parse and was not overwritten; "
-            "fix or remove the file and restart the gateway"
-        )
-    atomic_write_bytes(str(SETTINGS_PATH), json.dumps(all_data, indent=2).encode("utf-8"))
-    _settings_cache = all_data
+# settings.json persistence lives in settings_store.py (issue #33). The store
+# owns the cache, RMW lock, refuse-to-clobber guard and version counter; the
+# current-INI key (_current_ini_path → STAT) is injected. Thin wrappers below
+# keep the existing call sites stable.
+_settings_store = SettingsStore(SETTINGS_PATH, _current_ini_path,
+                                on_load_error=_settings_load_error)
 
 
 def load_settings() -> dict:
-    """Load settings for the current INI config."""
-    all_data = _load_settings_all()
-    return all_data.get(_current_ini_path(), {})
+    return _settings_store.load()
 
 
 def save_settings_section(section: str, data):
-    """Save a single settings section for the current INI config."""
-    global _settings_version
-    with _settings_lock:
-        all_data = _load_settings_all()
-        ini = _current_ini_path()
-        if ini not in all_data:
-            all_data[ini] = {}
-        all_data[ini][section] = data
-        _save_settings_all(all_data)
-        _settings_version += 1
+    _settings_store.save_section(section, data)
 
 
 def reset_settings():
-    """Reset all settings for the current INI config."""
-    global _settings_version
-    with _settings_lock:
-        all_data = _load_settings_all()
-        ini = _current_ini_path()
-        if ini in all_data:
-            del all_data[ini]
-            _save_settings_all(all_data)
-        _settings_version += 1
+    _settings_store.reset()
 
 
 # _merge_tool_data now lives in tool_table.py (imported at top, #33).
@@ -5876,7 +5823,7 @@ async def ws_endpoint(ws: WebSocket):
             nonlocal armed, viewer_init_sent, _probe_results, _prev_tc_req, _prev_tool_num
             global _tool_meta_dirty, _fb_scale, _spindle_load_pin
             loop = asyncio.get_event_loop()
-            _last_settings_ver = _settings_version
+            _last_settings_ver = _settings_store.version
             _last_gen = 0  # tracks which _status_gen we last processed
             _consec_fails = 0  # consecutive status_loop exceptions — bail after 10
             # Spindle feedback scale: 60 if pin outputs RPS (default), 1 if RPM
@@ -6116,8 +6063,8 @@ async def ws_endpoint(ws: WebSocket):
                         _log_timing({**status_msg["timing"], "send_ms": _prev_send_ms})
 
                     # Settings broadcast: send full settings when version changes
-                    if _last_settings_ver != _settings_version:
-                        _last_settings_ver = _settings_version
+                    if _last_settings_ver != _settings_store.version:
+                        _last_settings_ver = _settings_store.version
                         try:
                             _ss = await loop.run_in_executor(None, load_settings)
                             _machine_s = _ss.get("machine", {})
