@@ -52,6 +52,7 @@ from tool_table import (
     _TOOL_META_FIELDS,
 )
 from settings_store import SettingsStore, VALID_SECTIONS as _VALID_SETTINGS_SECTIONS
+from tool_store import ToolLibraryStore
 
 
 # === TEMP LIFECYCLE PROBE (remove after debugging) ===
@@ -2211,10 +2212,6 @@ TOOL_LIBRARY_PATH = BASE_DIR / "tool_library.json"
 _tool_tbl_path: Optional[str] = None
 _tool_tbl_ini: Optional[str] = None
 _tool_meta_dirty = False
-# mtime-keyed cache for tool_library.json — status_loop reads this on every
-# tool-number change × every connected client, so the uncached disk-read +
-# JSON-parse was the single largest event-loop stall in the status path.
-_tool_lib_cache: Optional[Tuple[float, dict]] = None  # (mtime, data)
 
 
 def get_tool_tbl_path() -> Optional[str]:
@@ -2294,79 +2291,25 @@ def _current_ini_path() -> str:
     return "default"
 
 
-def _load_tool_library_all() -> dict:
-    """Load the full tool_library.json (all configs), mtime-cached.
-
-    Hot path: status_loop calls load_tool_library() on every tool-number
-    change for every connected client. mtime-keying catches both UI edits
-    (via _save_tool_library_all) and external edits to the file.
-    """
-    global _tool_lib_cache
-    if not TOOL_LIBRARY_PATH.exists():
-        _tool_lib_cache = None
-        return {}
-    try:
-        mtime = TOOL_LIBRARY_PATH.stat().st_mtime
-    except OSError as e:
-        _trace.emit("tool_lib.stat_failed", level="warn",
-                    path=str(TOOL_LIBRARY_PATH), exc=type(e).__name__, msg=str(e))
-        return _tool_lib_cache[1] if _tool_lib_cache else {}
-    if _tool_lib_cache is not None and _tool_lib_cache[0] == mtime:
-        return _tool_lib_cache[1]
-    try:
-        with open(TOOL_LIBRARY_PATH, "r") as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        _trace.emit("tool_lib.corrupt", level="error",
-                    path=str(TOOL_LIBRARY_PATH), exc=type(e).__name__, msg=str(e))
-        return _tool_lib_cache[1] if _tool_lib_cache else {}
-    except OSError as e:
-        _trace.emit("tool_lib.read_failed", level="warn",
-                    path=str(TOOL_LIBRARY_PATH), exc=type(e).__name__, msg=str(e))
-        return _tool_lib_cache[1] if _tool_lib_cache else {}
-    _tool_lib_cache = (mtime, data)
-    return data
+def _tool_lib_error(event: str, level: str, e: Exception) -> None:
+    _trace.emit(event, level=level, path=str(TOOL_LIBRARY_PATH),
+                exc=type(e).__name__, msg=str(e))
 
 
-def _save_tool_library_all(all_data: dict):
-    """Write tool_library.json atomically."""
-    global _tool_lib_cache
-    atomic_write_bytes(str(TOOL_LIBRARY_PATH), json.dumps(all_data, indent=2).encode("utf-8"))
-    _tool_lib_cache = None  # invalidate; next read re-loads with fresh mtime
+# tool_library.json persistence lives in tool_store.py (issue #33). The store
+# owns the mtime cache + the strict refuse-to-clobber write; the current-INI key
+# (_current_ini_path → STAT) and trace are injected. Thin wrappers below keep the
+# existing call sites stable.
+_tool_lib_store = ToolLibraryStore(TOOL_LIBRARY_PATH, _current_ini_path,
+                                   on_error=_tool_lib_error)
 
 
 def load_tool_library() -> dict:
-    """Load extended tool metadata for the current INI config."""
-    all_data = _load_tool_library_all()
-    ini = _current_ini_path()
-    # Migration: if top-level keys look like tool numbers (old format), wrap them
-    if all_data and not any(k.startswith("/") for k in all_data) and any(k.isdigit() for k in all_data):
-        all_data = {ini: all_data}
-        _save_tool_library_all(all_data)
-    return all_data.get(ini, {})
+    return _tool_lib_store.load()
 
 
 def save_tool_library(library: dict):
-    """Write tool metadata for the current INI config.
-
-    The cached read in _load_tool_library_all() returns {} on transient stat
-    or read failures — fine for read paths but catastrophic for the write
-    path: a stale {} would overwrite tool_library.json and wipe entries for
-    every other INI config. Do a strict re-read here that raises on any I/O
-    or parse failure; let the save fail loudly instead of silently corrupting.
-    """
-    if TOOL_LIBRARY_PATH.exists():
-        with open(TOOL_LIBRARY_PATH, "r") as f:
-            all_data = json.load(f)
-        if not isinstance(all_data, dict):
-            raise RuntimeError(
-                f"{TOOL_LIBRARY_PATH} top-level is {type(all_data).__name__}, "
-                "expected dict — refusing to overwrite"
-            )
-    else:
-        all_data = {}
-    all_data[_current_ini_path()] = library
-    _save_tool_library_all(all_data)
+    _tool_lib_store.save(library)
 
 
 # _TOOL_META_FIELDS now lives in tool_table.py (imported at top, #33).
