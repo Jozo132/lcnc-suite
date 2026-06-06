@@ -178,5 +178,19 @@ class TestSingleSource(unittest.TestCase):
         self.assertIn(denied, msgs)
 
 
+class TestNoBarePayloadCasts(unittest.TestCase):
+    """#9: every numeric coercion of a websocket command field must go through
+    finite_int/finite_float (which reject NaN/Inf/missing/out-of-range and feed
+    the bounded-error dispatch boundary). A bare int(msg...)/float(msg...)
+    reintroduces the OverflowError + silent-Inf hazards this branch closed —
+    fail if one slips back in. finite_int/finite_float are NOT matched (no word
+    boundary before 'int'/'float' in 'finite_int'/'finite_float')."""
+
+    def test_no_bare_int_or_float_on_command_payload(self):
+        src = (Path(__file__).resolve().parent / "gateway.py").read_text(encoding="utf-8")
+        bad = re.findall(r"\b(?:int|float)\((?:msg|entry)\b", src)
+        self.assertEqual(bad, [], f"bare payload casts — use finite_int/finite_float: {bad}")
+
+
 if __name__ == "__main__":
     unittest.main()

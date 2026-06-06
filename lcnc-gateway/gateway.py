@@ -3948,13 +3948,13 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 # Already paused → advance one block (no mode change)
                 await _cmd_blocking(CMD.auto, linuxcnc.AUTO_STEP, wait=None)
             elif mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-                # Running (not paused) → pause first, next click will step.
-                # NOTE (review #3): unreachable via the backend 'step' gate
-                # ((idle & homed) OR paused) — kept as a defensive fall-through.
-                # Stepping a running program is done by pausing (cycle_pause)
-                # then stepping; matches the frontend, which hides step while
-                # running.
-                await _cmd_blocking(CMD.auto, linuxcnc.AUTO_PAUSE, wait=None)
+                # Running (not paused). The 'step' gate forbids stepping while
+                # running, but it checks a status SNAPSHOT while this handler
+                # re-polls fresh — so this guards the race where the program
+                # started in between. Reject (consistent with the gate) rather
+                # than fall through to the 'idle' branch and re-start a running
+                # program (review #3).
+                return {"ok": False, "error": "Cannot step while running — pause first"}
             else:
                 # Idle → start program and step
                 await set_mode(linuxcnc.MODE_AUTO)

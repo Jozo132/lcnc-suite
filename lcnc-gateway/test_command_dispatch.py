@@ -144,6 +144,25 @@ class TestDispatchEnforcement(unittest.TestCase):
         r = self._send({"cmd": "machine_on"}, estop=True)
         self.assertFalse(r["ok"])
 
+    def test_auto_step_rejects_when_fresh_poll_shows_running(self):
+        # review #3: the gate sees a snapshot (idle -> step allowed) but the
+        # handler re-polls and finds the program running -> it must REJECT, not
+        # fall through and re-start the program.
+        gateway._shared_status = _payload()        # idle snapshot -> gate allows
+        class _RunningStat:
+            task_mode = linuxcnc.MODE_AUTO
+            interp_state = linuxcnc.INTERP_READING
+            paused = False
+            def poll(self):
+                pass
+        gateway.STAT = _RunningStat()
+        spy = _RecordingCmd()
+        gateway.CMD = spy
+        r = _run(gateway.handle_command({"cmd": "auto_step"}, True))
+        self.assertFalse(r["ok"])
+        self.assertIn("running", r["error"].lower())
+        self.assertIsNone(spy.args_of("auto"), "must not start/step a running program")
+
 
 class TestNotOverBlocked(unittest.TestCase):
     """The enforcement must not reject a conforming command on a ready machine.
