@@ -210,18 +210,28 @@ def evaluate_trip_latch(fault_latched, last_latched, baseline_seen) -> dict:
     return out
 
 
-def atomic_write_bytes(path: str, data: bytes) -> None:
+def atomic_write_bytes(path: str, data: bytes, fsync: bool = False) -> None:
     """Atomically write ``data`` to ``path`` via tempfile + os.replace.
 
     Cleans up the temp file if anything fails. Used everywhere we persist user
     data (settings, tool table, var file, uploads); the atomic primitive stays
     single-purpose, with caller-side text/JSON encoding done before the call.
+
+    ``fsync=True`` flushes the data to stable storage before the rename, so a
+    crash/power-loss can't leave the renamed file pointing at unflushed (zeroed)
+    blocks — required for durable atomic publication of machine-control files.
+    fsync blocks on the disk, so on-event-loop callers must run this via an
+    executor (``run_in_executor``/``to_thread``); the default stays ``False`` so
+    small/offloaded callers don't pay for it unasked.
     """
     dir_name = os.path.dirname(path) or "."
     fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
+            if fsync:
+                f.flush()
+                os.fsync(f.fileno())
         os.replace(tmp, path)
     except Exception:
         try:

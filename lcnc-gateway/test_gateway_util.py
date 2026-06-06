@@ -214,6 +214,30 @@ class TestFiniteInt(unittest.TestCase):
         self.assertEqual(finite_int(8, lo=0, hi=8), 8)
 
 
+class TestAtomicWriteFsync(unittest.TestCase):
+    """atomic_write_bytes durable-publish path (B1)."""
+
+    def setUp(self):
+        from gateway_util import atomic_write_bytes
+        self.atomic_write_bytes = atomic_write_bytes
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_fsync_writes_correct_content(self):
+        p = os.path.join(self.tmp, "out.txt")
+        self.atomic_write_bytes(p, b"hello-durable", fsync=True)
+        with open(p, "rb") as f:
+            self.assertEqual(f.read(), b"hello-durable")
+
+    def test_no_tmp_leftover(self):
+        p = os.path.join(self.tmp, "out.txt")
+        self.atomic_write_bytes(p, b"x", fsync=True)
+        self.assertEqual([n for n in os.listdir(self.tmp) if n.endswith(".tmp")], [])
+
+
 class TestEvaluateTripLatch(unittest.TestCase):
     """The HAL-latch banner state machine (issue #34). The gateway reads the
     servo-thread estop_latch level (webui-hb-latch.fault-out); this pure helper

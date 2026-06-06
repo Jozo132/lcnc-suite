@@ -295,5 +295,51 @@ class TestToolPersistenceLock(unittest.TestCase):
         self.assertTrue(seen.get("lib"), "_cmd_lock not held during tool-library write")
 
 
+class _FakeUpload:
+    """Minimal stand-in for Starlette UploadFile: async chunked read."""
+    def __init__(self, data: bytes):
+        import io
+        self._buf = io.BytesIO(data)
+
+    async def read(self, n: int = -1) -> bytes:
+        return self._buf.read(n)
+
+
+class TestStreamUpload(unittest.TestCase):
+    """B1: bounded, atomic, off-loop streaming upload (#35)."""
+
+    def setUp(self):
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _parts(self):
+        import os
+        return [n for n in os.listdir(self.tmp) if n.endswith(".part")]
+
+    def test_writes_atomically(self):
+        import os
+        dest = os.path.join(self.tmp, "prog.ngc")
+        data = b"G1 X1\n" * 5000
+        n = _run(gateway._atomic_stream_upload(_FakeUpload(data), dest, 10 << 20, chunk_size=1024))
+        self.assertEqual(n, len(data))
+        with open(dest, "rb") as f:
+            self.assertEqual(f.read(), data)
+        self.assertEqual(self._parts(), [], "left a .part temp behind")
+
+    def test_rejects_oversized_no_partial_file(self):
+        import os
+        from fastapi import HTTPException
+        dest = os.path.join(self.tmp, "big.ngc")
+        with self.assertRaises(HTTPException) as cm:
+            _run(gateway._atomic_stream_upload(_FakeUpload(b"x" * 5000), dest, 1000, chunk_size=256))
+        self.assertEqual(cm.exception.status_code, 413)
+        self.assertFalse(os.path.exists(dest), "published a partial/oversized file")
+        self.assertEqual(self._parts(), [], "left a .part temp behind after rejection")
+
+
 if __name__ == "__main__":
     unittest.main()

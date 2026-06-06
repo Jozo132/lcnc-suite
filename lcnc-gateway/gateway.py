@@ -6,6 +6,7 @@ import math
 import time
 import os
 import subprocess
+import tempfile
 import threading
 from pathlib import Path
 import linuxcnc
@@ -4866,6 +4867,58 @@ async def telemetry(request: Request):
     return {"ok": True, "events": accepted, "rejected": rejected}
 
 
+def _safe_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass  # safe-silent: best-effort temp cleanup, already-gone is fine
+
+
+async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
+                                max_bytes: int, chunk_size: int = 1 << 20) -> int:
+    """Stream an upload to ``dest_path`` atomically and bounded, keeping the
+    event loop free.
+
+    Reads are async (Starlette's threadpool — yields to the loop between chunks);
+    every blocking disk op (write/flush/fsync/replace/unlink) is offloaded via
+    run_in_executor, so a slow disk, an fsync, or a large file can't stall the
+    HAL heartbeat (#35). The body is never materialized whole — that also avoids
+    the multi-MB allocation burst that feeds gen-2 GC (mmw#4).
+
+    Bounded: rejects with 413 the instant the running byte count exceeds
+    ``max_bytes`` (no oversized buffering). Atomic + durable: writes to a
+    ``.part`` temp in the destination dir, fsyncs, then ``os.replace`` — and
+    removes the temp on ANY failure, so LinuxCNC never sees a partial file.
+    Returns the number of bytes written.
+    """
+    loop = asyncio.get_event_loop()
+    dest_dir = os.path.dirname(dest_path) or "."
+    fd, tmp = await loop.run_in_executor(
+        None, lambda: tempfile.mkstemp(dir=dest_dir, suffix=".part")
+    )
+    written = 0
+    try:
+        f = os.fdopen(fd, "wb")
+        try:
+            while True:
+                chunk = await file.read(chunk_size)
+                if not chunk:
+                    break
+                written += len(chunk)
+                if written > max_bytes:
+                    raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+                await loop.run_in_executor(None, f.write, chunk)
+            await loop.run_in_executor(None, lambda: (f.flush(), os.fsync(f.fileno())))
+        finally:
+            await loop.run_in_executor(None, f.close)
+        await loop.run_in_executor(None, os.replace, tmp, dest_path)
+        tmp = None  # published — don't unlink in finally
+        return written
+    finally:
+        if tmp is not None:
+            await loop.run_in_executor(None, _safe_unlink, tmp)
+
+
 @app.post("/upload", dependencies=[Depends(require_token)])
 async def upload_gcode(file: UploadFile = File(...)):
     """Upload a G-code file to the NC files directory."""
@@ -4885,16 +4938,14 @@ async def upload_gcode(file: UploadFile = File(...)):
     if not validate_path_within(dest_path, nc_dir):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
-
     try:
-        atomic_write_bytes(dest_path, content)
+        size = await _atomic_stream_upload(file, dest_path, MAX_UPLOAD_SIZE)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    return {"ok": True, "path": dest_path, "filename": safe_name, "size": len(content)}
+    return {"ok": True, "path": dest_path, "filename": safe_name, "size": size}
 
 
 @app.put("/save", dependencies=[Depends(require_token)])
@@ -4919,8 +4970,14 @@ async def save_gcode(path: str = Body(...), content: str = Body(...)):
     if len(encoded) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
 
+    # Offload encode-already-done + the atomic write+fsync off the event loop so a
+    # large editor save / slow disk can't stall the HAL heartbeat (#35). fsync for
+    # durable atomic publication — LinuxCNC must never read a half-written file.
     try:
-        atomic_write_bytes(abs_path, encoded)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, lambda: atomic_write_bytes(abs_path, encoded, fsync=True)
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
