@@ -11,6 +11,7 @@ Keep this file pure: stdlib only, no side effects at import time.
 
 import math
 import os
+import tempfile
 import hmac
 from urllib.parse import urlsplit
 from typing import Iterable, Optional
@@ -151,3 +152,24 @@ def finite_int(x, default=None, lo=None, hi=None) -> int:
     if hi is not None and v > hi:
         raise ValueError(f"integer {v} above maximum {hi}")
     return v
+
+
+def atomic_write_bytes(path: str, data: bytes) -> None:
+    """Atomically write ``data`` to ``path`` via tempfile + os.replace.
+
+    Cleans up the temp file if anything fails. Used everywhere we persist user
+    data (settings, tool table, var file, uploads); the atomic primitive stays
+    single-purpose, with caller-side text/JSON encoding done before the call.
+    """
+    dir_name = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass  # safe-silent: best-effort temp cleanup, already-gone is fine
+        raise

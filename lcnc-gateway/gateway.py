@@ -15,7 +15,6 @@ from typing import Any, Dict, Optional, List, Tuple
 from fastapi.staticfiles import StaticFiles
 import re
 import shutil
-import tempfile
 from urllib.parse import urlsplit
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,11 +38,18 @@ from gateway_util import (
     token_ok,
     finite_float,
     finite_int,
+    atomic_write_bytes,
 )
 from command_policy import (
     MachineState as _PolicyMachineState,
     evaluate_permissions,
     check_command,
+)
+from tool_table import (
+    parse_tool_table,
+    write_tool_table,
+    _merge_tool_data,
+    _TOOL_META_FIELDS,
 )
 
 
@@ -2209,9 +2215,6 @@ _tool_meta_dirty = False
 # JSON-parse was the single largest event-loop stall in the status path.
 _tool_lib_cache: Optional[Tuple[float, dict]] = None  # (mtime, data)
 
-_TOOL_TP_RE = re.compile(r"T(\d+)\s+P(\d+)")
-_TOOL_FIELD_RE = re.compile(r"([XYZD])([+-]?[\d.]+)")
-
 
 def get_tool_tbl_path() -> Optional[str]:
     """Resolve the tool table file path from the LinuxCNC INI.
@@ -2247,78 +2250,9 @@ def get_tool_tbl_path() -> Optional[str]:
     return None
 
 
-def parse_tool_table(path: str) -> list:
-    """Parse a LinuxCNC tool.tbl file → list of dicts.
-
-    Handles both column orders: Z before D and D before Z,
-    since LinuxCNC may rewrite the file in either order.
-    """
-    tools = []
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith(";") or line.startswith("#"):
-                continue
-            tp = _TOOL_TP_RE.match(line)
-            if not tp:
-                continue
-            # Split off remark (everything after ';')
-            remark = ""
-            if ";" in line:
-                data_part, remark = line.split(";", 1)
-                remark = remark.strip()
-            else:
-                data_part = line
-            # Extract X/Y/Z/D fields in any order
-            fields = {m.group(1): float(m.group(2)) for m in _TOOL_FIELD_RE.finditer(data_part)}
-            tools.append({
-                "T": int(tp.group(1)),
-                "P": int(tp.group(2)),
-                "X": fields.get("X", 0.0),
-                "Y": fields.get("Y", 0.0),
-                "Z": fields.get("Z", 0.0),
-                "D": fields.get("D", 0.0),
-                "remark": remark,
-            })
-    return tools
-
-
-def atomic_write_bytes(path: str, data: bytes) -> None:
-    """Atomically write `data` to `path` via tempfile + os.replace.
-
-    Cleans up the temp file if anything fails. Used everywhere we persist
-    user data — six near-identical copies were extracted into this helper.
-    Caller-side text/JSON encoding goes through this so the atomic primitive
-    stays single-purpose.
-    """
-    dir_name = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass  # safe-silent: best-effort temp cleanup, already-gone is fine
-        raise
-
-
-def write_tool_table(path: str, tools: list):
-    """Write tools to a LinuxCNC tool.tbl file atomically."""
-    lines = [";Tool  Pocket Z Offset     Diameter     Remark\n"]
-    for t in sorted(tools, key=lambda x: x["T"]):
-        tn = t["T"]
-        pn = t.get("P", tn)
-        z = t.get("Z", 0.0)
-        d = t.get("D", 0.0)
-        remark = t.get("remark", "")
-        line = f"T{tn:<5d} P{pn:<5d} Z{z:+013.6f}  D{d:+012.6f}"
-        if remark:
-            line += f"   ; {remark}"
-        lines.append(line + "\n")
-    atomic_write_bytes(path, "".join(lines).encode("utf-8"))
+# parse_tool_table / write_tool_table / _merge_tool_data now live in
+# tool_table.py, and atomic_write_bytes in gateway_util — both imported at top
+# (gateway modularization, issue #33).
 
 
 async def _reload_tool_table_and_bump():
@@ -2434,12 +2368,7 @@ def save_tool_library(library: dict):
     _save_tool_library_all(all_data)
 
 
-_TOOL_META_FIELDS = (
-    "type", "description", "flutes", "oal", "flute_length", "shoulder_length",
-    "shoulder_diameter", "corner_radius", "body_length", "shaft_diameter",
-    "taper_angle", "point_angle", "tip_diameter", "material", "holder", "holder_segments",
-    "assembly_gauge_length", "profile",
-)
+# _TOOL_META_FIELDS now lives in tool_table.py (imported at top, #33).
 
 
 # ---- Server-Side Settings ----
@@ -2529,28 +2458,7 @@ def reset_settings():
         _settings_version += 1
 
 
-def _merge_tool_data(tbl_tools: list, library: dict) -> list:
-    """Merge tool.tbl entries with metadata from tool_library.json."""
-    merged = []
-    for t in tbl_tools:
-        key = str(t["T"])
-        meta = library.get(key, {})
-        entry = {
-            "T": t["T"],
-            "P": t["P"],
-            "Z": t["Z"],
-            "D": t["D"],
-            "remark": t.get("remark", ""),
-        }
-        for field in _TOOL_META_FIELDS:
-            if field == "description":
-                entry[field] = meta.get("description", t.get("remark", ""))
-            elif field == "type":
-                entry[field] = meta.get("type", "")
-            else:
-                entry[field] = meta.get(field)
-        merged.append(entry)
-    return merged
+# _merge_tool_data now lives in tool_table.py (imported at top, #33).
 
 
 
