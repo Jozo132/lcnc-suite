@@ -340,14 +340,13 @@ const lcncLabel = computed(() => {
 // triggered NML pump and can lie when the chain was already LOW at command
 // time (issue #14). `=== false` (not falsy) so reader-stale (null/undefined)
 // is treated as "unknown" and falls back to STAT, matching backend semantics.
-// estop/enabled "merged truth" (issue #14): STAT flags merged with the HAL
-// safety chain. These drive the status banner / DRO display (NOT permission
-// gating — that consumes backend permissions). The backend computes the SAME
-// merge in _policy_state_from_payload for policy; keep the two in sync, or
-// unify by broadcasting is_estop/is_enabled (review #5 follow-up).
+// estop/enabled "merged truth" (issue #14) is computed ONCE on the backend
+// (_policy_state_from_payload) and broadcast as is_estop/is_enabled; the banner
+// and DRO consume it here (review #5). safetyChainOpen stays local — it's the
+// raw chain pin, used only for the "safety chain open" banner text.
 const safetyChainOpen = computed(() => st.value.emc_enable_in === false);
-const isEstop = computed(() => !!st.value.estop || safetyChainOpen.value);
-const isEnabled = computed(() => !!st.value.enabled && st.value.emc_enable_in !== false);
+const isEstop = computed(() => !!st.value.is_estop);
+const isEnabled = computed(() => !!st.value.is_enabled);
 
 
 

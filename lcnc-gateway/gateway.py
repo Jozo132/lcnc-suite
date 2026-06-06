@@ -2657,6 +2657,12 @@ class StatusPayload:
     # shared broadcast, so per-client `armed`/`busy` are overlaid client-side).
     # Trailing default so the (unreachable) bare constructor stays valid.
     permissions: Optional[Dict[str, bool]] = None
+    # estop/enabled merged with the HAL safety chain (issue #14). Computed ONCE
+    # in _policy_state_from_payload and broadcast here so the frontend banner/DRO
+    # consume the same merged truth the command policy uses — no duplicated merge
+    # (review #5). None until the first poll.
+    is_estop: Optional[bool] = None
+    is_enabled: Optional[bool] = None
 
 
 
@@ -2664,13 +2670,11 @@ class StatusPayload:
 def _policy_state_from_payload(p: "StatusPayload", armed: bool) -> _PolicyMachineState:
     """Build the command-policy MachineState from a status snapshot.
 
-    The estop/enabled HAL-merge for command POLICY lives here (issues #14 + #19):
-    STAT.estop/enabled merged with the safety chain (emc_enable_in). NOTE (review
-    #5): App.vue still computes the SAME merge (isEstop/isEnabled) for the status
-    banner/DRO display, so this rule is duplicated across Python and TS — keep
-    them in sync, or unify by broadcasting is_estop/is_enabled. `armed` is
-    supplied by the caller — True for the shared broadcast, the real per-client
-    value for command enforcement.
+    The estop/enabled HAL-merge lives here (issues #14 + #19): STAT.estop/enabled
+    merged with the safety chain (emc_enable_in). poll_status broadcasts the
+    result as is_estop/is_enabled, which the frontend banner/DRO consume — so the
+    merge rule exists in ONE place (review #5). `armed` is supplied by the caller
+    — True for the shared broadcast, the real per-client value for enforcement.
 
     `busy` is intentionally absent (see command_policy module docstring): it is a
     per-tab client debounce the gateway can't observe, overlaid client-side."""
@@ -3253,9 +3257,13 @@ def poll_status() -> StatusPayload:
     )
     # Backend-authoritative permissions from this very snapshot (issue #19).
     # armed=True; the per-client armed/busy overlay happens client-side.
-    payload.permissions = evaluate_permissions(
-        _policy_state_from_payload(payload, armed=True)
-    )
+    # One safety-merge: build the policy state once, broadcast its merged
+    # is_estop/is_enabled for the frontend banner, and reuse it for permissions
+    # (review #5 — removes the duplicate merge that lived in App.vue).
+    _pstate = _policy_state_from_payload(payload, armed=True)
+    payload.is_estop = _pstate.is_estop
+    payload.is_enabled = _pstate.is_enabled
+    payload.permissions = evaluate_permissions(_pstate)
     return payload
 
 

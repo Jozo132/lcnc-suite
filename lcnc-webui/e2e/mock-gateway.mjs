@@ -46,6 +46,7 @@ const READY = JSON.stringify({
   armed: true, // lcncWs.ts: any frame with `armed` sets the client's armed state
   data: {
     estop: false, enabled: true, emc_enable_in: true, homed: true,
+    is_estop: false, is_enabled: true,  // backend-merged truth (review #5)
     interp_state: 1, paused: false, eoffset_enabled: false,
     permissions: {
       idle: true, jog: true, override: true, ready: true, pause: false,

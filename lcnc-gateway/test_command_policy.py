@@ -12,6 +12,7 @@ from command_policy import (
     check_command,
     COMMAND_GATES,
     READ_ONLY_COMMANDS,
+    GATE_REQUIREMENTS,
 )
 
 
@@ -143,6 +144,38 @@ class TestCheckCommand(unittest.TestCase):
 
     def test_machine_on_blocked_in_estop(self):
         self.assertIsNotNone(check_command("machine_on", state(is_estop=True)))
+
+
+class TestSingleSource(unittest.TestCase):
+    """#6: the decision (evaluate_permissions) and the deny message
+    (check_command) both derive from GATE_REQUIREMENTS — no parallel chain."""
+
+    def test_every_command_gate_has_requirements(self):
+        # check_command indexes GATE_REQUIREMENTS[gate]; a missing entry would
+        # KeyError at runtime.
+        for cmd, gate in COMMAND_GATES.items():
+            self.assertIn(gate, GATE_REQUIREMENTS, f"{cmd!r} -> {gate!r} missing")
+
+    def test_evaluate_permissions_keys_match_requirements(self):
+        self.assertEqual(set(evaluate_permissions(state()).keys()),
+                         set(GATE_REQUIREMENTS.keys()))
+
+    def test_disarmed_denies_with_first_requirement_message(self):
+        # Every gated command denies when disarmed, reporting the table's first
+        # requirement message; 'always' commands are never denied.
+        for cmd, gate in COMMAND_GATES.items():
+            r = check_command(cmd, state(armed=False))
+            if gate == "always":
+                self.assertIsNone(r, f"{cmd!r} should be unconditional")
+            else:
+                self.assertEqual(r, "Not armed", f"{cmd!r}")
+
+    def test_deny_message_names_a_genuinely_unmet_requirement(self):
+        # For a denied command, the returned message must be one of that gate's
+        # requirement messages (so the message can't drift from the decision).
+        denied = check_command("set_wcs", state(eoffset_enabled=True))  # probe gate
+        msgs = [m for _ok, m in GATE_REQUIREMENTS["probe"]]
+        self.assertIn(denied, msgs)
 
 
 if __name__ == "__main__":

@@ -44,28 +44,54 @@ class MachineState:
     eoffset_enabled: bool
 
 
+# Single source of truth for gate semantics (review #6): each gate is an ordered
+# list of (requirement predicate, deny message). A gate is PERMITTED iff every
+# requirement holds; a DENIAL reports the first unmet requirement's message — so
+# the decision and the message read the same table and can never drift.
+#
+# MUST stay in lockstep with lcnc-webui/src/permissions.ts applyClientOverlay.
+# The frontend `!busy` term is intentionally absent here (see module docstring),
+# which only ever makes these gates more permissive than the UI, never less.
+_R_ARMED = (lambda s: s.armed, "Not armed")
+_R_NOT_ESTOP = (lambda s: not s.is_estop, "E-stop active")
+_R_ENABLED = (lambda s: s.is_enabled, "Machine not on")
+_R_IDLE = (lambda s: s.is_idle, "Machine not idle")
+_R_HOMED = (lambda s: s.is_homed, "Machine not homed")
+_R_NO_EOFFSET = (lambda s: not s.eoffset_enabled,
+                 "Surface compensation active — clear the eoffset first")
+_R_RUNNING = (lambda s: s.is_running, "No program running to pause")
+_R_NOT_PAUSED = (lambda s: not s.is_paused, "Program already paused")
+_R_PAUSED = (lambda s: s.is_paused, "No program paused to resume")
+_R_READY_OR_PAUSED = (lambda s: (s.is_idle and s.is_homed) or s.is_paused,
+                      "Must be homed and idle, or paused, to step")
+
+_BASE = (_R_ARMED, _R_NOT_ESTOP, _R_ENABLED)
+
+# gate -> ordered requirements (armed/estop/enabled first → sensible messages).
+GATE_REQUIREMENTS: Dict[str, tuple] = {
+    "idle":     _BASE + (_R_IDLE,),
+    "jog":      _BASE + (_R_IDLE, _R_HOMED),
+    "override": _BASE,
+    "ready":    _BASE + (_R_IDLE, _R_HOMED),
+    "pause":    _BASE + (_R_RUNNING, _R_NOT_PAUSED),
+    "resume":   _BASE + (_R_PAUSED,),
+    "step":     _BASE + (_R_READY_OR_PAUSED,),
+    "abort":    _BASE,
+    "probe":    _BASE + (_R_IDLE, _R_HOMED, _R_NO_EOFFSET),
+    "zero":     _BASE + (_R_IDLE, _R_NO_EOFFSET),
+    "safety":   (_R_ARMED, _R_NOT_ESTOP),            # no `enabled` — Machine On/Off
+    "setup":    (_R_ARMED, _R_NOT_ESTOP, _R_IDLE),   # no `enabled` — admin/idle ops
+    "armed":    (_R_ARMED,),
+    "always":   (),
+}
+
+
 def evaluate_permissions(s: MachineState) -> Dict[str, bool]:
-    """Python port of ``evaluatePermissions()`` — MUST stay in lockstep with
-    ``lcnc-webui/src/permissions.ts``. The ``!busy`` term present in the
-    frontend is dropped on purpose (see module docstring), which only ever
-    makes these gates more permissive than the UI, never less."""
-    base = s.armed and not s.is_estop and s.is_enabled
-    return {
-        "idle":     base and s.is_idle,
-        "jog":      base and s.is_idle and s.is_homed,
-        "override": base,
-        "ready":    base and s.is_idle and s.is_homed,
-        "pause":    base and s.is_running and not s.is_paused,
-        "resume":   base and s.is_paused,
-        "step":     base and ((s.is_idle and s.is_homed) or s.is_paused),
-        "abort":    base,
-        "probe":    base and s.is_idle and s.is_homed and not s.eoffset_enabled,
-        "zero":     base and s.is_idle and not s.eoffset_enabled,
-        "safety":   s.armed and not s.is_estop,
-        "setup":    s.armed and not s.is_estop and s.is_idle,
-        "armed":    s.armed,
-        "always":   True,
-    }
+    """The 14 permission classes for `s`, derived from GATE_REQUIREMENTS — the
+    same table check_command() reports denials from, so a gate's decision and its
+    deny message can't drift (review #6)."""
+    return {gate: all(ok(s) for ok, _ in reqs)
+            for gate, reqs in GATE_REQUIREMENTS.items()}
 
 
 # Each mutating command -> the permission gate it requires. ``always`` means the
@@ -154,29 +180,9 @@ def check_command(cmd: str, state: MachineState) -> Optional[str]:
     gate = COMMAND_GATES.get(cmd)
     if gate is None:
         return None
-    if evaluate_permissions(state).get(gate, False):
-        return None
-    return _deny_reason(gate, state)
-
-
-def _deny_reason(gate: str, s: MachineState) -> str:
-    """Best-effort explanation for a denied command — most specific unmet
-    precondition first. The authoritative decision is the gate evaluation
-    above; this only produces the message."""
-    if not s.armed:
-        return "Not armed"
-    if s.is_estop:
-        return "E-stop active"
-    if not s.is_enabled and gate not in ("safety", "setup"):
-        return "Machine not on"
-    if gate in ("probe", "zero") and s.eoffset_enabled:
-        return "Surface compensation active — clear the eoffset first"
-    if gate in ("ready", "jog", "probe", "step") and not s.is_homed:
-        return "Machine not homed"
-    if gate in ("idle", "ready", "zero", "setup", "probe") and not s.is_idle:
-        return "Machine not idle"
-    if gate == "pause":
-        return "No program running to pause"
-    if gate == "resume":
-        return "No program paused to resume"
-    return f"Not permitted in current state (requires '{gate}')"
+    # Decision AND message from the one GATE_REQUIREMENTS table: deny on the
+    # first unmet requirement (review #6 — no separate reason chain to drift).
+    for ok, message in GATE_REQUIREMENTS[gate]:
+        if not ok(state):
+            return message
+    return None
