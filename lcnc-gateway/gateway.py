@@ -704,7 +704,8 @@ async def _reader_configure_extra_pins() -> None:
         return
     pins: Dict[str, str] = {}
     try:
-        slp = load_settings().get("machine", {}).get("spindleLoadPin", "")
+        _settings = await asyncio.to_thread(load_settings)  # file read off the loop (B3)
+        slp = _settings.get("machine", {}).get("spindleLoadPin", "")
     except Exception:
         slp = ""
     if isinstance(slp, str) and _HAL_PIN_RE.match(slp):
@@ -3395,8 +3396,8 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             tbl_path = get_tool_tbl_path()
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
-            tbl_tools = parse_tool_table(tbl_path)
-            library = load_tool_library()
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)  # file reads off the loop (B3)
+            library = await asyncio.to_thread(load_tool_library)
             merged = _merge_tool_data(tbl_tools, library)
             current_tool = None
             try:
@@ -3573,8 +3574,10 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
 
-            # Update tool.tbl
-            tbl_tools = parse_tool_table(tbl_path)
+            # Update tool.tbl — all file I/O off the loop; _cmd_lock stays held
+            # so the read-modify-write is still serialized (B3). ToolLibraryStore
+            # is lock-guarded, so an offloaded status-loop read can't race it.
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)
             found = False
             for t in tbl_tools:
                 if t["T"] == tool_num:
@@ -3591,18 +3594,18 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if not found:
                 return {"ok": False, "error": f"Tool T{tool_num} not found"}
 
-            write_tool_table(tbl_path, tbl_tools)
+            await asyncio.to_thread(write_tool_table, tbl_path, tbl_tools)
             await _reload_tool_table_and_bump()
 
             # Update metadata
-            library = load_tool_library()
+            library = await asyncio.to_thread(load_tool_library)
             key = str(tool_num)
             if key not in library:
                 library[key] = {}
             for field in _TOOL_META_FIELDS:
                 if field in msg:
                     library[key][field] = msg[field]
-            save_tool_library(library)
+            await asyncio.to_thread(save_tool_library, library)
             global _tool_meta_dirty
             _tool_meta_dirty = True
             return {"ok": True}
@@ -3614,7 +3617,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
 
-            tbl_tools = parse_tool_table(tbl_path)
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)
             for t in tbl_tools:
                 if t["T"] == tool_num:
                     return {"ok": False, "error": f"Tool T{tool_num} already exists"}
@@ -3626,17 +3629,17 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 "D": finite_float(msg.get("diameter", 0.0), lo=0),
                 "remark": str(msg.get("remark", "")),
             })
-            write_tool_table(tbl_path, tbl_tools)
+            await asyncio.to_thread(write_tool_table, tbl_path, tbl_tools)
             await _reload_tool_table_and_bump()
 
             # Save metadata if provided
-            library = load_tool_library()
+            library = await asyncio.to_thread(load_tool_library)
             key = str(tool_num)
             library[key] = {}
             for field in _TOOL_META_FIELDS:
                 if field in msg:
                     library[key][field] = msg[field]
-            save_tool_library(library)
+            await asyncio.to_thread(save_tool_library, library)
             return {"ok": True}
 
         if cmd == "delete_tool":
@@ -3657,17 +3660,17 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
 
-            tbl_tools = parse_tool_table(tbl_path)
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)
             new_tools = [t for t in tbl_tools if t["T"] != tool_num]
             if len(new_tools) == len(tbl_tools):
                 return {"ok": False, "error": f"Tool T{tool_num} not found"}
 
-            write_tool_table(tbl_path, new_tools)
+            await asyncio.to_thread(write_tool_table, tbl_path, new_tools)
             await _reload_tool_table_and_bump()
 
-            library = load_tool_library()
+            library = await asyncio.to_thread(load_tool_library)
             library.pop(str(tool_num), None)
-            save_tool_library(library)
+            await asyncio.to_thread(save_tool_library, library)
 
             return {"ok": True}
 
@@ -3683,7 +3686,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
 
-            tbl_tools = parse_tool_table(tbl_path)
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)
             src = next((t for t in tbl_tools if t["T"] == old_num), None)
             if src is None:
                 return {"ok": False, "error": f"Tool T{old_num} not found"}
@@ -3706,16 +3709,16 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             src["Z"] = finite_float(msg.get("z_offset", src.get("Z", 0.0)))
             src["D"] = finite_float(msg.get("diameter", src.get("D", 0.0)), lo=0)
             src["remark"] = str(msg.get("remark", src.get("remark", "")))
-            write_tool_table(tbl_path, tbl_tools)
+            await asyncio.to_thread(write_tool_table, tbl_path, tbl_tools)
             await _reload_tool_table_and_bump()
 
-            library = load_tool_library()
+            library = await asyncio.to_thread(load_tool_library)
             meta = library.pop(str(old_num), {}) or {}
             for field in _TOOL_META_FIELDS:
                 if field in msg:
                     meta[field] = msg[field]
             library[str(new_num)] = meta
-            save_tool_library(library)
+            await asyncio.to_thread(save_tool_library, library)
             return {"ok": True, "tool_number": new_num}
 
         if cmd == "tool_change":
@@ -5835,7 +5838,7 @@ async def ws_endpoint(ws: WebSocket):
             _last_gen = 0  # tracks which _status_gen we last processed
             _consec_fails = 0  # consecutive status_loop exceptions — bail after 10
             # Spindle feedback scale: 60 if pin outputs RPS (default), 1 if RPM
-            _ss_init = load_settings()
+            _ss_init = await asyncio.to_thread(load_settings)  # file read off the loop (B3)
             _machine_s = _ss_init.get("machine", {})
             _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
             _slp = _machine_s.get("spindleLoadPin", "")
@@ -5974,7 +5977,11 @@ async def ws_endpoint(ws: WebSocket):
                         _tool_meta_dirty = False
                         if st.tool_number is not None:
                             try:
-                                _lib = load_tool_library()
+                                # Hot path (per tool-number change × client): read
+                                # off the loop. ToolLibraryStore is mtime-cached and
+                                # now lock-guarded (B3), so this is safe against a
+                                # concurrent WS tool-command write on another thread.
+                                _lib = await asyncio.to_thread(load_tool_library)
                                 _meta = _lib.get(str(st.tool_number), {})
                                 if _meta:
                                     _tm = {k: _meta[k] for k in (
