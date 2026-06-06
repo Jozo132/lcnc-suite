@@ -305,6 +305,34 @@ class _FakeUpload:
         return self._buf.read(n)
 
 
+class TestFusionDecode(unittest.TestCase):
+    """B2: the off-loop Fusion blob decode (machine_unit passed in, no NML)."""
+
+    def test_parses_minimal_library(self):
+        lib = ('{"data":[{"type":"flat end mill","unit":"millimeters",'
+               '"post-process":{"number":3},"geometry":{"DC":6.0},'
+               '"description":"6mm endmill"}]}')
+        parsed, skipped = gateway._decode_fusion_blob(lib.encode(), "mm")
+        self.assertEqual(parsed[0]["T"], 3)
+        self.assertEqual(parsed[0]["D"], 6.0)
+        self.assertEqual(parsed[0]["type"], "endmill")
+
+    def test_unit_conversion_uses_passed_machine_unit(self):
+        # inch tool on an mm machine → DC scaled ×25.4 (no get_ini_config call)
+        lib = ('{"data":[{"type":"drill","unit":"inches",'
+               '"post-process":{"number":1},"geometry":{"DC":1.0}}]}')
+        parsed, _ = gateway._decode_fusion_blob(lib.encode(), "mm")
+        self.assertAlmostEqual(parsed[0]["D"], 25.4, places=3)
+
+    def test_bad_json_raises_valueerror(self):
+        with self.assertRaises(ValueError):
+            gateway._decode_fusion_blob(b"{ not json", "mm")
+
+    def test_missing_data_array_raises_valueerror(self):
+        with self.assertRaises(ValueError):
+            gateway._decode_fusion_blob(b'{"nope":1}', "mm")
+
+
 class TestStreamUpload(unittest.TestCase):
     """B1: bounded, atomic, off-loop streaming upload (#35)."""
 

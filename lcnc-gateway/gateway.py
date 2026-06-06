@@ -5028,7 +5028,7 @@ def _opt_scale(v, scale: float):
     return None if v is None else v * scale
 
 
-def _parse_fusion_library(data: dict) -> tuple[list, list]:
+def _parse_fusion_library(data: dict, machine_unit: str) -> tuple[list, list]:
     """Parse a Fusion 360 Library.json → (tools, skipped_duplicates).
 
     Tools with duplicate numbers are excluded from the main list and returned
@@ -5036,9 +5036,10 @@ def _parse_fusion_library(data: dict) -> tuple[list, list]:
     each number is kept; later duplicates are skipped.
 
     Linear dimensions are converted from each entry's `unit` (and each
-    holder's `unit`) into the machine's native linear unit.
+    holder's `unit`) into the machine's native linear unit. ``machine_unit`` is
+    passed in (resolved on the event loop, since get_ini_config() may STAT.poll)
+    so this stays NML-free and safe to run in an executor thread (B2).
     """
-    machine_unit = get_ini_config().get("linear_units", "mm")
     tools: list[dict] = []
     skipped: list[dict] = []
     seen_nums: dict[int, int] = {}          # tool_num → index in tools[]
@@ -5128,6 +5129,22 @@ def _parse_fusion_library(data: dict) -> tuple[list, list]:
     return tools, skipped
 
 
+def _decode_fusion_blob(raw: bytes, machine_unit: str) -> tuple[list, list]:
+    """Decode + parse a Fusion library blob → (parsed, skipped). CPU/GIL-bound,
+    so callers run it via an executor (B2): json.loads is one C call that holds
+    the GIL for its duration (fine for realistic KB–MB libraries — the 50 MB cap
+    is only a DoS bound), while the per-tool transform is a Python loop that
+    releases the GIL every few ms so the heartbeat keeps running. Raises
+    ValueError on malformed input (the caller maps it to HTTP 400)."""
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError) as e:
+        raise ValueError(f"Invalid JSON: {e}")
+    if not isinstance(data, dict) or "data" not in data or not isinstance(data["data"], list):
+        raise ValueError("Not a Fusion 360 tool library (missing 'data' array)")
+    return _parse_fusion_library(data, machine_unit)
+
+
 @app.post("/import-tool-library", dependencies=[Depends(require_token)])
 async def import_tool_library(file: UploadFile = File(...)):
     """Preview or apply a Fusion 360 tool library import.
@@ -5136,30 +5153,26 @@ async def import_tool_library(file: UploadFile = File(...)):
       ?apply=true  — actually write to tool table + library (default: preview only)
       ?overwrite=true — overwrite existing tools (default: skip)
     """
-    from starlette.requests import Request
-
-    raw = await file.read()
+    raw = await file.read(MAX_UPLOAD_SIZE + 1)
     if len(raw) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large")
 
+    loop = asyncio.get_event_loop()
+    machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
     try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-
-    if "data" not in data or not isinstance(data["data"], list):
-        raise HTTPException(status_code=400, detail="Not a Fusion 360 tool library (missing 'data' array)")
-
-    parsed, skipped = _parse_fusion_library(data)
+        parsed, skipped = await loop.run_in_executor(
+            None, _decode_fusion_blob, raw, machine_unit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not parsed and not skipped:
         raise HTTPException(status_code=400, detail="No tools found in library")
 
-    # Count existing tools for warning
+    # Count existing tools for warning (file read off the loop)
     tbl_path = get_tool_tbl_path()
     existing_count = 0
     if tbl_path:
         try:
-            existing_count = len(parse_tool_table(tbl_path))
+            existing_count = len(await loop.run_in_executor(None, parse_tool_table, tbl_path))
         except Exception as e:
             _trace.emit_exc("tool_tbl.recount_failed", e, tbl_path=tbl_path)
 
@@ -5178,15 +5191,17 @@ async def apply_tool_library_import(
     file: UploadFile = File(...),
 ):
     """Apply a Fusion 360 tool library import — replaces tool.tbl and tool_library.json."""
-    raw = await file.read()
+    raw = await file.read(MAX_UPLOAD_SIZE + 1)
     if len(raw) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large")
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
 
-    parsed, _skipped = _parse_fusion_library(data)
+    loop = asyncio.get_event_loop()
+    machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
+    try:
+        parsed, _skipped = await loop.run_in_executor(
+            None, _decode_fusion_blob, raw, machine_unit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not parsed:
         raise HTTPException(status_code=400, detail="No tools found")
 
