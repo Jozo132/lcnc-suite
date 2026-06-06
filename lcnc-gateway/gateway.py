@@ -4628,6 +4628,20 @@ async def lifespan(app: "FastAPI"):
         get_tool_tbl_path()
     except Exception as e:
         _trace.emit_exc("boot.path_warmup_failed", e)
+    # Opt-in event-loop attribution (issue #35): with WEBUI_ASYNCIO_DEBUG=1 asyncio
+    # logs "Executing <coro …> took N seconds" for any callback holding the loop
+    # >50 ms (half the [HB-WAKE] threshold), naming the exact culprit behind a
+    # stall. Off by default — asyncio debug mode adds per-callback overhead, an
+    # observer effect on the hot path, so it's a diagnostic toggle, not always-on.
+    if os.environ.get("WEBUI_ASYNCIO_DEBUG") == "1":
+        try:
+            _dbg_loop = asyncio.get_running_loop()
+            _dbg_loop.slow_callback_duration = 0.05
+            _dbg_loop.set_debug(True)
+            _trace.emit("boot.asyncio_debug_enabled", level="warn", slow_callback_ms=50)
+            print("[ASYNCIO-DEBUG] slow-callback logging enabled (>50ms)", flush=True)
+        except Exception as e:
+            _trace.emit_exc("boot.asyncio_debug_failed", e)
     yield
     # ---- Shutdown ----
     # Order matters. Each step is bounded so a stuck client/socket can't block
