@@ -332,12 +332,25 @@ esac
 step 5 "Installing sample sim config"
 
 if [[ -d "$SIM_CONFIG_DIR" ]]; then
-  ok "Sim config already present at $SIM_CONFIG_DIR — skipping (delete to reinstall)"
+  ok "Sim config already present at $SIM_CONFIG_DIR — keeping it (delete to reinstall from template)"
 else
   info "Copying sample sim config → $SIM_CONFIG_DIR"
   mkdir -p "$(dirname "$SIM_CONFIG_DIR")"
   cp -r "$TARGET_DIR/examples/sim_config" "$SIM_CONFIG_DIR"
   ok "Sim config installed (INI, HAL files, seeded sim.var)"
+fi
+
+# Symlink the shared suite/safety HAL glue back to the repo template. Unlike the
+# per-machine .ini, lcnc_webui.hal is identical across installs and carries the
+# safety chain, so it MUST track the repo: the scripts it loads (hal_watchdog.py,
+# hal_reader.py) are themselves symlinked and live, so a stale config copy that
+# nets to a pin those scripts renamed fails the HAL load (this exact drift bit the
+# #34 trip-latch rollout — `Pin 'webui-safety.trip-latch' does not exist`).
+# Re-linked on every run so existing installs pick up template changes too.
+if [[ -d "$SIM_CONFIG_DIR/hallib" ]]; then
+  ln -sf "$TARGET_DIR/examples/sim_config/hallib/lcnc_webui.hal" \
+         "$SIM_CONFIG_DIR/hallib/lcnc_webui.hal"
+  ok "Linked lcnc_webui.hal → repo template (safety glue stays in sync)"
 fi
 
 # ============================================================
@@ -363,6 +376,9 @@ echo -e "
        - Copy $SIM_CONFIG_DIR/ to a new dir under ~/linuxcnc/configs/
        - Edit lcnc_suite_sim.ini (axis limits, kinematics, HAL files)
        - Keep the [DISPLAY] WEBUI_* lines and the lcnc_webui.hal include
+       - hallib/lcnc_webui.hal is a symlink to the repo (shared safety glue);
+         to customize it per-machine, replace the symlink with a real copy:
+         cp --remove-destination \"\$(readlink hallib/lcnc_webui.hal)\" hallib/lcnc_webui.hal
 
   ${BOLD}See README.md for full configuration details.${NC}
 "
