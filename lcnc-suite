@@ -46,6 +46,7 @@ if [[ -n "$INI_FILE" ]]; then
   ADAPTIVE_POLL="${WEBUI_ADAPTIVE_POLL:-$(ini_get WEBUI_ADAPTIVE_POLL)}"
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-$(ini_get WEBUI_IDLE_POLL_HZ)}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-$(ini_get WEBUI_WS_INIT_CONCURRENCY)}"
+  ASYNCIO_DEBUG="${WEBUI_ASYNCIO_DEBUG:-$(ini_get WEBUI_ASYNCIO_DEBUG)}"
   TOKEN="${LCNC_WEBUI_TOKEN:-$(ini_get WEBUI_TOKEN)}"
   ALLOWED_ORIGINS="${LCNC_WEBUI_ALLOWED_ORIGINS:-$(ini_get WEBUI_ALLOWED_ORIGINS)}"
 else
@@ -62,6 +63,7 @@ else
   ADAPTIVE_POLL="${WEBUI_ADAPTIVE_POLL:-}"
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-}"
+  ASYNCIO_DEBUG="${WEBUI_ASYNCIO_DEBUG:-}"
   TOKEN="${LCNC_WEBUI_TOKEN:-}"
   ALLOWED_ORIGINS="${LCNC_WEBUI_ALLOWED_ORIGINS:-}"
 fi
@@ -112,6 +114,10 @@ esac
 # loop and trip the HAL safety chain. Higher values = lower per-tab
 # connect latency but bigger CPU peaks.
 [[ -n "$WS_INIT_CONC"  ]] && export WEBUI_WS_INIT_CONCURRENCY="$WS_INIT_CONC"
+# Diagnostic (issue #35): 1 = asyncio slow-callback logging (>50ms) to name what
+# stalls the event loop. Adds per-callback overhead (observer effect) — leave OFF
+# in normal operation; enable only for a profiling session.
+[[ -n "$ASYNCIO_DEBUG" ]] && export WEBUI_ASYNCIO_DEBUG="$ASYNCIO_DEBUG"
 
 # ── Auth / origin controls (issue #17) ──
 # Pre-shared token (required to connect + arm when bound non-loopback) and the
