@@ -57,18 +57,20 @@ try:
     # if the gateway itself is frozen during the FALSE window.
     comp.newpin("hb-ok-in", hal.HAL_BIT, hal.HAL_IN)
     comp.newpin("trip-count", hal.HAL_U32, hal.HAL_OUT)
-    # trip-latch gates the safety chain independently of the oneshot. Drops
-    # FALSE on every falling edge of hb-ok-in and stays FALSE until the
-    # operator's E-Stop Reset reaches us as {"trip_reset": true} on the IPC
-    # socket. Starts TRUE so the chain isn't blocked before the first trip.
-    comp.newpin("trip-latch", hal.HAL_BIT, hal.HAL_OUT)
+    # The sticky trip latch now lives in HAL (webui-hb-latch / estop_latch in the
+    # servo thread) so it catches the oneshot falling edge in-cycle instead of
+    # this 100 ms poll, which lost the race against a ~1 ms re-arm (issue #34).
+    # We no longer own the latch; we only pulse its reset on operator E-Stop
+    # Reset. trip-reset-out is held TRUE for one IPC-loop slice then dropped so
+    # the next reset produces a fresh rising edge for estop_latch.reset.
+    comp.newpin("trip-reset-out", hal.HAL_BIT, hal.HAL_OUT)
     comp.ready()
 except Exception as e:
     print(f"HAL component '{COMP_NAME}' failed: {e}", file=sys.stderr, flush=True)
     sys.exit(1)
 
 comp["compensation-method"] = 2  # default: cubic
-comp["trip-latch"] = True
+comp["trip-reset-out"] = False
 print("OK", flush=True)  # signal to loadusr -W
 
 # ---- Unix socket server ----
@@ -90,6 +92,10 @@ buf = ""
 # falling edge (oneshot.0.out is FALSE before the first heartbeat).
 _last_hb_ok = None
 _trip_count = 0
+# Operator-reset pulse: trip-reset-out is driven TRUE on a trip_reset IPC msg and
+# dropped after one slice so estop_latch.reset sees a clean rising edge each time.
+_RESET_PULSE_S = 0.05
+_reset_pulse_off_at = None
 
 # === TEMP HB-RECV PROBE === track time of last received heartbeat
 # message from the gateway. The gateway sends heartbeats at ~30 Hz
@@ -141,7 +147,7 @@ signal.signal(signal.SIGTERM, _stop)
 signal.signal(signal.SIGINT, _stop)
 
 # wd.tick_summary is emitted once per N ticks (~1 s at 10 Hz select
-# cadence) by the shared Aggregator. `msgs`/`client_inq`/`trip_latch`/
+# cadence) by the shared Aggregator. `msgs`/`client_inq`/`reset_out`/
 # `hb_ok` are point-in-time at emit (extras callback resets msgs).
 _wd_msgs_processed = 0
 
@@ -151,7 +157,7 @@ def _wd_extras() -> dict:
     out = {
         "msgs": _wd_msgs_processed,
         "client_inq": _client_inq(client),
-        "trip_latch": bool(comp["trip-latch"]),
+        "reset_out": bool(comp["trip-reset-out"]),
         "hb_ok": bool(comp["hb-ok-in"]),
     }
     _wd_msgs_processed = 0
@@ -175,15 +181,14 @@ try:
         _select_dt = (time.monotonic() - _select_t0) * 1000
         _wd_tick_agg.record(select_ms=_select_dt)
 
-        # Falling-edge detection on hb-ok-in. Increment trip-count so the
-        # gateway can read it via webui-monitor and register a new trip.
-        # Also drop trip-latch FALSE to keep the safety chain broken after
-        # oneshot auto-heals — operator must send trip_reset to re-arm.
+        # Best-effort FALSE-edge forensic on hb-ok-in. The SAFETY latch is now
+        # the servo-thread estop_latch (webui-hb-latch); this 100 ms poll only
+        # records trip-count + an hb-edge trace for diagnostics and may miss a
+        # sub-100 ms blip — which the HAL latch still catches in-cycle (#34).
         hb_ok = bool(comp["hb-ok-in"])
         if _last_hb_ok is True and not hb_ok:
             _trip_count += 1
             comp["trip-count"] = _trip_count
-            comp["trip-latch"] = False
             _trace.emit(
                 "wd.hb_edge", level="warn",
                 edge="falling", trip_count=_trip_count,
@@ -193,6 +198,12 @@ try:
                 "wd.hb_edge", edge="rising", trip_count=_trip_count,
             )
         _last_hb_ok = hb_ok
+
+        # Drop the reset pulse after one slice so the next operator reset
+        # produces a fresh rising edge on webui-hb-latch.reset.
+        if _reset_pulse_off_at is not None and time.monotonic() >= _reset_pulse_off_at:
+            comp["trip-reset-out"] = False
+            _reset_pulse_off_at = None
 
         for sock in readable:
             if sock is server:
@@ -284,8 +295,12 @@ try:
                         if "compensation_method" in msg:
                             comp["compensation-method"] = int(msg["compensation_method"])
                         if msg.get("trip_reset"):
-                            comp["trip-latch"] = True
-                            print("[SAFETY] trip-latch released by operator reset", flush=True)
+                            # Pulse the HAL latch reset (rising edge). Held TRUE
+                            # until the pulse-off check above drops it next slice,
+                            # so the servo-thread estop_latch sees one clean edge.
+                            comp["trip-reset-out"] = True
+                            _reset_pulse_off_at = time.monotonic() + _RESET_PULSE_S
+                            print("[SAFETY] trip latch reset pulsed by operator", flush=True)
                             _trace.emit("wd.trip_reset")
                         _wd_msgs_processed += 1
                 except Exception:

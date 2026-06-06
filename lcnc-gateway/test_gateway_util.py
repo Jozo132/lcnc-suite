@@ -18,6 +18,7 @@ from gateway_util import (
     token_ok,
     finite_float,
     finite_int,
+    evaluate_trip_latch,
 )
 
 
@@ -211,6 +212,68 @@ class TestFiniteInt(unittest.TestCase):
     def test_within_range_ok(self):
         self.assertEqual(finite_int(0, lo=0), 0)
         self.assertEqual(finite_int(8, lo=0, hi=8), 8)
+
+
+class TestEvaluateTripLatch(unittest.TestCase):
+    """The HAL-latch banner state machine (issue #34). The gateway reads the
+    servo-thread estop_latch level (webui-hb-latch.fault-out); this pure helper
+    decides when that level becomes an operator banner."""
+
+    def _run(self, levels, last=None, baseline=False):
+        """Feed a sequence of fault-out levels; return list of per-step results
+        with carried state, mimicking the poller loop."""
+        steps = []
+        for lvl in levels:
+            r = evaluate_trip_latch(lvl, last, baseline)
+            last, baseline = r["last_latched"], r["baseline_seen"]
+            steps.append(r)
+        return steps
+
+    def test_no_reader_snapshot_makes_no_decision(self):
+        r = evaluate_trip_latch(None, None, False)
+        self.assertFalse(r["tripped"])
+        self.assertFalse(r["faulted_on_connect"])
+        self.assertIsNone(r["last_latched"])
+        self.assertFalse(r["baseline_seen"])
+
+    def test_boot_faulted_does_not_banner(self):
+        # Latch boots faulted (LinuxCNC starts in ESTOP): first-sight TRUE is
+        # ambiguous → audit, never banner.
+        r = evaluate_trip_latch(True, None, False)
+        self.assertFalse(r["tripped"])
+        self.assertTrue(r["faulted_on_connect"])
+        self.assertTrue(r["last_latched"])
+
+    def test_clean_baseline_then_trip_banners(self):
+        # FALSE (operator cleared estop → baseline) → TRUE (a real trip).
+        steps = self._run([False, True])
+        self.assertTrue(steps[0]["baseline_seen"])
+        self.assertFalse(steps[0]["tripped"])
+        self.assertTrue(steps[1]["tripped"])
+
+    def test_sustained_latch_banners_only_once(self):
+        steps = self._run([False, True, True, True])
+        self.assertEqual([s["tripped"] for s in steps], [False, True, False, False])
+
+    def test_frozen_poller_sees_sticky_true_after_baseline(self):
+        # Baseline seen, then the poller misses the FALSE→TRUE moment and only
+        # resumes to find the sticky level already TRUE — still a trip.
+        steps = self._run([False, True])  # last observed False, baseline True
+        self.assertTrue(steps[-1]["tripped"])
+
+    def test_ack_then_reset_then_retrip(self):
+        # baseline → trip (banner) → still latched (no re-banner, models the
+        # post-ack ticks) → reset clears (FALSE) → trips again on next TRUE.
+        steps = self._run([False, True, True, False, True])
+        self.assertEqual([s["tripped"] for s in steps], [False, True, False, False, True])
+
+    def test_faulted_on_connect_then_clear_then_trip(self):
+        # Connect while latched (no banner) → operator resets (FALSE baseline)
+        # → genuine later trip banners.
+        steps = self._run([True, False, True])
+        self.assertTrue(steps[0]["faulted_on_connect"])
+        self.assertFalse(steps[0]["tripped"])
+        self.assertTrue(steps[2]["tripped"])
 
 
 if __name__ == "__main__":

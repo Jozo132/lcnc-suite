@@ -39,6 +39,7 @@ from gateway_util import (
     finite_float,
     finite_int,
     atomic_write_bytes,
+    evaluate_trip_latch,
 )
 from command_policy import (
     MachineState as _PolicyMachineState,
@@ -1258,12 +1259,14 @@ _comp_grid_bytes: Optional[bytes] = None
 # Path to the subprocess parse worker (spawned via asyncio.create_subprocess_exec).
 _GCODE_WORKER_PATH = str(BASE_DIR / "gcode_parse_worker.py")
 
-# Safety-trip sticky notification: populated when _status_poller() detects a
-# TRUE→FALSE edge on oneshot.0.out (HAL heartbeat watchdog). Broadcast to all
-# clients in every status message until a client sends {cmd:"safety_trip_ack"}.
-# Lives server-side (not per-client) so reload / multi-tab all see the same trip.
-_unacked_trip: Optional[dict] = None  # {"ts": unix_ms, "reason": str}
-_last_trip_count: Optional[int] = None  # webui-safety.trip-count at last poll
+# Safety-trip sticky notification: populated when _status_poller() observes the
+# servo-thread HAL latch (webui-hb-latch.fault-out) go FALSE→TRUE after a known-
+# good baseline (issue #34). Broadcast to all clients in every status message
+# until a client sends {cmd:"safety_trip_ack"}. Lives server-side (not per-client)
+# so reload / multi-tab all see the same trip.
+_unacked_trip: Optional[dict] = None  # {"reason": str}
+_last_fault_latched: Optional[bool] = None  # webui-hb-latch.fault-out at last poll
+_trip_baseline_seen: bool = False  # have we ever seen the latch clear (FALSE)?
 
 # Warn-once flags for STAT field absence — the cascade itself is correct (different
 # LinuxCNC versions expose different fields), but exhausting all candidates without
@@ -1696,53 +1699,40 @@ async def _status_poller():
                 _gcode_last_file = None
                 _gcode_last_mtime = None
 
-            # Safety-trip detection via webui-safety.trip-count. The counter is
-            # incremented by the independent hal_watchdog.py process on every
-            # oneshot.0.out TRUE→FALSE edge. Reading it here survives gateway
-            # stalls: even if the poller was frozen during the FALSE window,
-            # the counter records the trip for us to observe on resume.
-            global _last_trip_count, _unacked_trip
-            trip_count = _reader_get("trip_count")
-            if trip_count is None:
-                pass  # reader hasn't pushed a snapshot yet — skip this tick
-            elif _last_trip_count is None:
-                _last_trip_count = trip_count  # sync on first reader snapshot
-            elif trip_count > _last_trip_count:
-                if _unacked_trip is None:
-                    # No timestamp: trip-count is only read inside the
-                    # status loop, which doesn't run when no clients are
-                    # connected. The ts we could record here is "when the
-                    # gateway noticed" — not "when the trip happened" —
-                    # so it would mislead operators (see audit Phase 3).
-                    # Drop it. The trace event below has its own log ts.
-                    _unacked_trip = {"reason": "hal_heartbeat_timeout"}
-                    _trace.emit(
-                        "safety.tripped", level="error",
-                        trip_count=trip_count,
-                    )
-                    # Auto-snapshot the trace bus into a forensic bundle so
-                    # the trip is reconstructable end-to-end without operator
-                    # action. Run in to_thread so the bundler subprocess can't
-                    # block the asyncio loop or the safety-trip status update.
-                    _trip_ts_ns = int(time.time_ns())
-                    asyncio.create_task(
-                        asyncio.to_thread(_snapshot_trip, _trip_ts_ns)
-                    )
-                _last_trip_count = trip_count
-            elif trip_count < _last_trip_count:
-                # Watchdog restarted: its trip-count is in-process and resets
-                # to 0 on restart (SIGKILL / halrun reload). Without resyncing,
-                # _last_trip_count would stay at the stale pre-restart value and
-                # the next genuine trip (counting up from 0) would NOT register
-                # _unacked_trip until the count climbed back past the old
-                # high-water mark — silently skipping the operator banner/ack.
-                # The HAL trip-latch pin still gates motion regardless; this
-                # only restores the audit/ack path. Resync to the new baseline.
-                _trace.emit(
-                    "safety.watchdog_restart", level="warn",
-                    prev_count=_last_trip_count, new_count=trip_count,
+            # Safety-trip detection via the servo-thread HAL latch level
+            # (webui-hb-latch.fault-out, issue #34). The latch is sticky and
+            # owned by HAL — independent of both this poller and the watchdog
+            # process — so reading it here survives gateway stalls AND watchdog
+            # restarts: the level still reads TRUE on resume. evaluate_trip_latch
+            # is a pure state machine (unit-tested in gateway_util) that edge-
+            # detects a clean FALSE→TRUE only after a known-good baseline, so a
+            # boot-faulted latch doesn't spuriously banner.
+            global _last_fault_latched, _trip_baseline_seen, _unacked_trip
+            _tl = evaluate_trip_latch(
+                _reader_get("trip_latched"), _last_fault_latched, _trip_baseline_seen
+            )
+            _last_fault_latched = _tl["last_latched"]
+            _trip_baseline_seen = _tl["baseline_seen"]
+            if _tl["faulted_on_connect"]:
+                # First-sight TRUE: boot-in-ESTOP or a trip while the gateway was
+                # absent — ambiguous, so audit it but don't raise the banner (the
+                # real ESTOP state is already shown via STAT).
+                _trace.emit("safety.latch_faulted_on_connect", level="warn")
+            if _tl["tripped"] and _unacked_trip is None:
+                # No timestamp: the level is only read inside the status loop,
+                # which doesn't run when no clients are connected, so "when the
+                # gateway noticed" != "when the trip happened" and would mislead
+                # operators. Drop it; the trace event below carries its own ts.
+                _unacked_trip = {"reason": "hal_heartbeat_timeout"}
+                _trace.emit("safety.tripped", level="error")
+                # Auto-snapshot the trace bus into a forensic bundle so the trip
+                # is reconstructable end-to-end without operator action. Run in
+                # to_thread so the bundler subprocess can't block the asyncio
+                # loop or the safety-trip status update.
+                _trip_ts_ns = int(time.time_ns())
+                asyncio.create_task(
+                    asyncio.to_thread(_snapshot_trip, _trip_ts_ns)
                 )
-                _last_trip_count = trip_count
 
             # Cache results for per-client loops
             _shared_status = st
@@ -3492,10 +3482,12 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             # UI's safetyChainOpen still keeps the estop indicator visible
             # if the chain is hardware-open post-reset, so the operator is
             # not misled. Issues #14 (problem) and #15 (this regression).
-            # Release hal_watchdog's trip-latch first so the safety chain
-            # can come back up when LinuxCNC transitions out of ESTOP.
-            # 20ms sleep ≈ 2× hal_watchdog select slice, enough for the
-            # pin write to land before STATE_ESTOP_RESET is evaluated.
+            # Pulse the HAL latch reset first so the safety chain can come back
+            # up when LinuxCNC transitions out of ESTOP. The gateway sends the
+            # IPC; hal_watchdog drives webui-safety.trip-reset-out, and the
+            # servo-thread estop_latch clears within a cycle. 20ms sleep ≈ 2×
+            # hal_watchdog select slice, enough for the reset edge to propagate
+            # and ok-out to land before STATE_ESTOP_RESET is evaluated.
             _hal_send({"trip_reset": True})
             await asyncio.sleep(0.02)
             await _cmd_blocking(CMD.state, linuxcnc.STATE_ESTOP_RESET, wait=None)
@@ -5615,7 +5607,8 @@ async def ws_endpoint(ws: WebSocket):
             return
         armed = False  # connection-local arming
 
-        global _next_client_id, _estop_hold, _unacked_trip, _last_trip_count
+        global _next_client_id, _estop_hold, _unacked_trip
+        global _last_fault_latched, _trip_baseline_seen
         global _gcode_preview_pending, _gcode_preview_version
         global _gcode_last_file, _gcode_last_mtime
         global _gcode_preview_bytes, _gcode_preview_bytes_gz, _gcode_refresh_running
@@ -6309,17 +6302,13 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "safety_trip_ack":
+                # Clearing the banner is independent of clearing the latch: the
+                # HAL latch stays set (fault-out TRUE) until the operator's
+                # E-Stop Reset. Because evaluate_trip_latch only re-banners on a
+                # clean FALSE→TRUE transition, the still-TRUE level after this ack
+                # produces no edge and the ack sticks; a genuinely new trip
+                # (latch reset → FALSE, then TRUE again) still fires.
                 _unacked_trip = None
-                # If trip-count advanced between the original trip and this
-                # ack (additional trips fired while the banner was up), the
-                # next status_poller tick would see trip_count > _last_trip_count
-                # and re-set _unacked_trip immediately. Sync _last_trip_count
-                # to the reader's current value so the ack actually clears.
-                # A genuinely-new trip after this ack will still fire because
-                # the reader counter will increment past this value.
-                _current_trip_count = _reader_get("trip_count")
-                if _current_trip_count is not None:
-                    _last_trip_count = _current_trip_count
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 

@@ -9,15 +9,17 @@ Two responsibilities, both over a single Unix socket:
 
 1. Push a snapshot of the pins the gateway needs to render the UI (tool
    change request, spindle RPM, eoffset, probe input, comp method/version,
-   safety trip-count) at 30 Hz to the connected gateway.
+   safety trip-latch state) at 30 Hz to the connected gateway.
 
 2. Serve on-demand requests from the gateway:
      - "set_p"          → hal.set_p(pin, value)   (compensation reload bumps)
      - "halshow_dump"   → hal.get_info_pins/signals/params for the diag tab
 
 Why split this from hal_watchdog.py?  hal_watchdog is the safety-supervisor
-process — it owns trip detection and the trip-latch.  Keeping it small and
-single-purpose makes it easier to audit.  hal_reader is pure observation
+process — it generates the gateway heartbeat and pulses the HAL trip-latch's
+reset (the latch itself is a servo-thread estop_latch, webui-hb-latch, #34).
+Keeping it small and single-purpose makes it easier to audit.  hal_reader is
+pure observation
 (plus a couple of writes); its failure mode is "display values stale, comp
 reload skipped" — never a safety regression.
 
@@ -52,7 +54,10 @@ SNAPSHOT_PINS = [
     ("motion.probe-input",           "probe_input",       bool),
     ("compensation.method",          "comp_method",       int),
     ("compensation.grid-version",    "comp_grid_version", int),
-    ("webui-safety.trip-count",      "trip_count",        int),
+    # Servo-thread heartbeat trip latch (issue #34): fault-out is TRUE while the
+    # chain is latched open. Read the latch LEVEL — sticky, so it survives a
+    # frozen poller and is the authoritative source for the operator trip banner.
+    ("webui-hb-latch.fault-out",     "trip_latched",      bool),
     # Safety-chain truth — STAT.estop / STAT.enabled go through iocontrol's
     # edge-triggered NML pump and can silently disagree with the actual pin
     # level (issue #14). Sole HAL input that gates task_state transitions.

@@ -154,6 +154,62 @@ def finite_int(x, default=None, lo=None, hi=None) -> int:
     return v
 
 
+def evaluate_trip_latch(fault_latched, last_latched, baseline_seen) -> dict:
+    """Pure state machine deriving the operator trip banner from the HAL latch.
+
+    Issue #34: the heartbeat trip latch now lives in HAL (``estop_latch`` in the
+    servo thread) so it latches in the same ~1 ms cycle as the trip, instead of
+    a 100 ms Python poller that loses the race against a ~1 ms oneshot re-arm and
+    can silently auto-recover from ESTOP. The gateway therefore reads the latch
+    *level* (``webui-hb-latch.fault-out``, TRUE while latched) rather than a
+    poller-incremented counter.
+
+    Because the level is sticky and read by a poller that can itself be frozen,
+    we edge-detect it, with one wrinkle: the latch boots faulted (LinuxCNC starts
+    in ESTOP), so a first-seen TRUE is ambiguous (fresh boot vs. a trip that
+    occurred while the gateway was absent). We surface that honestly as a
+    ``faulted_on_connect`` audit signal but do NOT raise the operator banner for
+    it — the real ESTOP state is already visible via STAT. Only a clean
+    FALSE→TRUE transition *after* a known-good baseline is a bannered trip.
+
+    Args:
+        fault_latched: current latch level — ``True``/``False``, or ``None`` when
+            the reader has pushed no snapshot yet (no data → no decision).
+        last_latched: previously observed level (``None`` if none yet).
+        baseline_seen: have we ever observed the latch *clear* (level ``False``)?
+
+    Returns a dict the caller applies verbatim:
+        ``tripped``            — a fresh trip just occurred → set the banner.
+        ``faulted_on_connect`` — first-sight TRUE (boot/absent ambiguity) → emit
+                                 an audit trace, no banner.
+        ``last_latched`` / ``baseline_seen`` — carry forward to the next call.
+    """
+    out = {
+        "tripped": False,
+        "faulted_on_connect": False,
+        "last_latched": last_latched,
+        "baseline_seen": baseline_seen,
+    }
+    if fault_latched is None:
+        return out  # reader has no snapshot yet — make no decision
+    if not fault_latched:
+        # Latch clear — establish/refresh the known-good baseline.
+        out["last_latched"] = False
+        out["baseline_seen"] = True
+        return out
+    # fault_latched is True from here.
+    out["last_latched"] = True
+    if not baseline_seen and not last_latched:
+        # First time we see the latch, and we never saw it clear: ambiguous
+        # boot-faulted vs. tripped-while-absent. Audit it; do not banner.
+        out["faulted_on_connect"] = True
+    elif baseline_seen and not last_latched:
+        # Clean FALSE→TRUE after a known-good baseline = a genuine trip.
+        out["tripped"] = True
+    # else: already latched (no change) — no banner.
+    return out
+
+
 def atomic_write_bytes(path: str, data: bytes) -> None:
     """Atomically write ``data`` to ``path`` via tempfile + os.replace.
 
