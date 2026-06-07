@@ -5945,6 +5945,13 @@ async def ws_endpoint(ws: WebSocket):
                         continue
                     _last_gen = _status_gen
                     pickup_ts = time.monotonic()
+                    # Phase-mark the per-client build (#35 fanout): with delta on,
+                    # _use_shared is False so each client copies the shared dict
+                    # (6005) + runs _diff_status_data (6066) + encodes its own
+                    # frame — the suspected steady-state stall. If this phase
+                    # dominates a lag.window, the fix is delta-off (shared-encode)
+                    # or a cheaper diff. ws_send_measured re-phases for encode/send.
+                    _set_phase("status_loop.build")
 
                     # Slow-consumer / hidden-tab skip: if a previous tick's
                     # send to this client is still in flight, OR the client's
