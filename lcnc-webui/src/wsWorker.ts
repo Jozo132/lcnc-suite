@@ -57,12 +57,49 @@ function stopHeartbeat() {
   if (hbTimer !== null) { clearInterval(hbTimer); hbTimer = null; }
 }
 
+// Send-buffer pressure is reported as a STATE TRANSITION, not a per-second
+// sample (P0). The old code posted every second whenever bufferedAmount > 0 —
+// even a normal 19-byte in-flight write — producing ~1 telemetry POST/sec/tab
+// (tens of thousands of events + gateway POSTs that themselves loaded the event
+// loop). Now: emit once when buffered crosses the 64 KiB threshold (real
+// backpressure), once when it drains, plus a periodic summary while sustained.
+const BUFFER_PRESSURE_THRESHOLD = 64 * 1024;
+const BUFFER_PRESSURE_SUMMARY_MS = 10_000;
+let bufferPressureActive = false;
+let bufferPressurePeak = 0;
+let bufferPressureSince = 0;
+let bufferPressureLastSummary = 0;
+
 function startBufferSampler() {
   stopBufferSampler();
+  bufferPressureActive = false;
+  bufferPressurePeak = 0;
   bufferTimer = setInterval(() => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const buffered = ws.bufferedAmount;
-    if (buffered > 0) post({ type: "bufferpressure", buffered });
+    const now = performance.now();
+    if (!bufferPressureActive) {
+      if (buffered >= BUFFER_PRESSURE_THRESHOLD) {
+        bufferPressureActive = true;
+        bufferPressurePeak = buffered;
+        bufferPressureSince = now;
+        bufferPressureLastSummary = now;
+        post({ type: "bufferpressure", phase: "start", buffered });
+      }
+    } else {
+      if (buffered > bufferPressurePeak) bufferPressurePeak = buffered;
+      if (buffered === 0) {
+        bufferPressureActive = false;
+        post({ type: "bufferpressure", phase: "recover", buffered: 0,
+               peak: bufferPressurePeak,
+               durationMs: Math.round(now - bufferPressureSince) });
+      } else if (now - bufferPressureLastSummary >= BUFFER_PRESSURE_SUMMARY_MS) {
+        bufferPressureLastSummary = now;
+        post({ type: "bufferpressure", phase: "sustained", buffered,
+               peak: bufferPressurePeak,
+               durationMs: Math.round(now - bufferPressureSince) });
+      }
+    }
   }, 1000);
 }
 function stopBufferSampler() {

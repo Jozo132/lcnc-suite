@@ -107,7 +107,12 @@ export const previewLoadError = computed<string | null>(
 // pressure, JS errors. Batched to keep request rate low.
 const _telemetryQueue: Array<Record<string, any>> = [];
 const _TELEMETRY_MAX_QUEUE = 200;
-const _TELEMETRY_FLUSH_MS = 250;
+// 2 s flush window (was 250 ms): telemetry is best-effort diagnostics, so batch
+// it into ~one POST every couple seconds instead of several per second (P0).
+// A burst still flushes early on the _TELEMETRY_BATCH_MAX size trigger, and
+// unload still flushes immediately via sendBeacon — only the steady trickle is
+// coalesced, cutting /telemetry request rate (and its event-loop cost) sharply.
+const _TELEMETRY_FLUSH_MS = 2000;
 const _TELEMETRY_BATCH_MAX = 32;
 let _telemetryFlushScheduled = false;
 
@@ -654,7 +659,12 @@ function onWorkerMessage(m: any) {
       break;
 
     case "bufferpressure":
-      emitTelemetry("ws.send_buffer_pressure", { buffered_bytes: m.buffered });
+      // State-transition event (start | sustained | recover), not a per-second
+      // sample — see wsWorker startBufferSampler (P0).
+      emitTelemetry("ws.send_buffer_pressure", {
+        phase: m.phase, buffered_bytes: m.buffered,
+        peak_bytes: m.peak, duration_ms: m.durationMs,
+      });
       break;
 
     case "error":
