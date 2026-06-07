@@ -4832,7 +4832,13 @@ async def trace_http(request: Request, call_next):
     if path.startswith("/assets/") or path.startswith("/static/"):
         return await call_next(request)
     _set_phase(f"http.{method}.{path}")
-    _trace.emit("http.start", path=path, method=method, peer=peer)
+    # /telemetry is high-frequency, low-value diagnostics (best-effort browser
+    # event batches). Emitting http.start + http.end for each one floods the
+    # trace bus and was itself measurable event-loop load (P0.3). Skip the
+    # routine pair for it; still surface slow (>50 ms) or error completions.
+    is_telemetry = path == "/telemetry"
+    if not is_telemetry:
+        _trace.emit("http.start", path=path, method=method, peer=peer)
     status = 0
     try:
         resp = await call_next(request)
@@ -4847,9 +4853,10 @@ async def trace_http(request: Request, call_next):
         raise
     finally:
         dur = (time.monotonic() - t0) * 1000
-        level = "warn" if dur > 50 else "info"
-        _trace.emit("http.end", level=level, path=path, method=method,
-                    peer=peer, duration_ms=round(dur, 1), status=status)
+        if not is_telemetry or dur > 50 or status >= 400 or status == 0:
+            level = "warn" if dur > 50 else "info"
+            _trace.emit("http.end", level=level, path=path, method=method,
+                        peer=peer, duration_ms=round(dur, 1), status=status)
 
 
 # Serve static machine assets (STLs etc.)

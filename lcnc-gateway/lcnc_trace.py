@@ -111,15 +111,18 @@ _logger_failed: bool = False  # one-shot guard for self-swallow at write time
 class _CrashFilter(logging.Filter):
     """Admit only `crash.*` and `browser.error.*` events.
 
-    Parses the already-encoded NDJSON line (the record `msg` is the
-    JSON string we built in emit()) so we don't pay a second encode.
-    Worst case ~5 us per emit on the reject path."""
+    Reads the tag from the record attribute emit() attaches (`_trace_tag`),
+    so the reject path — the vast majority of emits — costs a string check,
+    not a json.loads of the whole line on every event (P0.3). Falls back to
+    decoding only for the rare record that didn't come through emit()."""
 
     def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            tag = json.loads(record.msg).get("tag", "")
-        except Exception:
-            return False
+        tag = getattr(record, "_trace_tag", None)
+        if tag is None:
+            try:
+                tag = json.loads(record.msg).get("tag", "")
+            except Exception:
+                return False
         return tag.startswith("crash.") or tag.startswith("browser.error.")
 
 
@@ -245,7 +248,9 @@ def emit(tag: str, level: str = "info", msg: str = "", **fields: Any) -> None:
         except Exception:
             return
     try:
-        _logger.info(line)
+        # Attach the tag as a record attribute so _CrashFilter can match without
+        # re-decoding the JSON line on every emit (P0.3).
+        _logger.info(line, extra={"_trace_tag": tag})
     except Exception as e:
         # One-shot self-report. We cannot recursively call emit() to log
         # the logger failure (would infinite-loop), so the only honest
