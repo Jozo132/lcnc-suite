@@ -47,6 +47,7 @@ if [[ -n "$INI_FILE" ]]; then
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-$(ini_get WEBUI_IDLE_POLL_HZ)}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-$(ini_get WEBUI_WS_INIT_CONCURRENCY)}"
   ASYNCIO_DEBUG="${WEBUI_ASYNCIO_DEBUG:-$(ini_get WEBUI_ASYNCIO_DEBUG)}"
+  GC_FREEZE="${WEBUI_GC_FREEZE:-$(ini_get WEBUI_GC_FREEZE)}"
   TOKEN="${LCNC_WEBUI_TOKEN:-$(ini_get WEBUI_TOKEN)}"
   ALLOWED_ORIGINS="${LCNC_WEBUI_ALLOWED_ORIGINS:-$(ini_get WEBUI_ALLOWED_ORIGINS)}"
 else
@@ -64,6 +65,7 @@ else
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-}"
   ASYNCIO_DEBUG="${WEBUI_ASYNCIO_DEBUG:-}"
+  GC_FREEZE="${WEBUI_GC_FREEZE:-}"
   TOKEN="${LCNC_WEBUI_TOKEN:-}"
   ALLOWED_ORIGINS="${LCNC_WEBUI_ALLOWED_ORIGINS:-}"
 fi
@@ -118,6 +120,10 @@ esac
 # stalls the event loop. Adds per-callback overhead (observer effect) — leave OFF
 # in normal operation; enable only for a profiling session.
 [[ -n "$ASYNCIO_DEBUG" ]] && export WEBUI_ASYNCIO_DEBUG="$ASYNCIO_DEBUG"
+# Diagnostic/opt (mmw#4): 1 = gc.collect()+gc.freeze() after startup so gen-2
+# GC stops re-scanning the never-garbage startup heap. Default OFF — A/B on the
+# target (gen-2 duration drop + RSS stays flat) before trusting it.
+[[ -n "$GC_FREEZE" ]] && export WEBUI_GC_FREEZE="$GC_FREEZE"
 
 # ── Auth / origin controls (issue #17) ──
 # Pre-shared token (required to connect + arm when bound non-loopback) and the

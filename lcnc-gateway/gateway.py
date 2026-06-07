@@ -4642,6 +4642,28 @@ async def lifespan(app: "FastAPI"):
             print("[ASYNCIO-DEBUG] slow-callback logging enabled (>50ms)", flush=True)
         except Exception as e:
             _trace.emit_exc("boot.asyncio_debug_failed", e)
+    # Optional (mmw#4): move the long-lived startup heap out of GC's reach. gen-2
+    # (full-heap) collections scan every tracked object and freeze the loop while
+    # they run; the startup set (modules, app, caches, viewer init) is never
+    # garbage, so scanning it every gen-2 is pure waste (mmw#4 saw 3 of 4
+    # collections free 0 objects). collect() first so startup cyclic garbage is
+    # reclaimed (not frozen forever), then freeze() promotes the survivors to the
+    # permanent generation — later gen-2 collections scan only post-startup allocs.
+    # freeze() does NOT disable GC: refcounting is untouched and new objects still
+    # flow gen0→1→2, so runtime memory (incl. post-startup cycles) is still fully
+    # collected — the frozen set is a one-time snapshot, so this can't pile up over
+    # time. Default OFF: it's a narrow optimization with a small risk (a startup
+    # cycle that later dies is never reclaimed), so best practice is to A/B it on
+    # the target (WEBUI_GC_FREEZE=1) — confirm gen-2 durations drop AND RSS stays
+    # flat via the [GC] logs — then flip this default ON once proven.
+    if os.environ.get("WEBUI_GC_FREEZE") == "1":
+        try:
+            _gc.collect()
+            _gc.freeze()
+            _trace.emit("boot.gc_frozen")
+            print("[GC] froze startup heap — gen-2 now scans only new allocations", flush=True)
+        except Exception as e:
+            _trace.emit_exc("boot.gc_freeze_failed", e)
     yield
     # ---- Shutdown ----
     # Order matters. Each step is bounded so a stuck client/socket can't block
