@@ -876,12 +876,14 @@ function rebuildOverflowEdges(size: Vec3, offset: Vec3): THREE.LineSegments | nu
   return lines;
 }
 
-function makeLine(points: number[][], colorHex: number | string, dashed = false, opacity = 1.0) {
+function makeLine(points: number[][] | Float32Array, colorHex: number | string, dashed = false, opacity = 1.0) {
   const geom = new THREE.BufferGeometry();
   // Shared with overflow (and position-attr shared with highlight).
   // Disposal is owned by applyGcode; disposeObject() skips _shared geometries.
   geom.userData._shared = true;
-  const flat = new Float32Array(points.flat());
+  // Prefer the flat Float32Array produced off-thread by previewWorker (P4.1);
+  // fall back to flattening nested points (WS path / older payloads).
+  const flat = points instanceof Float32Array ? points : new Float32Array(points.flat());
   geom.setAttribute("position", new THREE.BufferAttribute(flat, 3));
 
   // Important: stable bounds so Three doesn't cull it incorrectly
@@ -1566,9 +1568,14 @@ function applyGcode(g: ViewerGcode) {
   feedSharedGeom = rapidSharedGeom = highlightGeom = null;
   feedLineMap = new Map();
 
-  const feedPts = g.feed ?? [];
+  // Prefer the flat Float32Array buffers from previewWorker (P4.1); fall back to
+  // the nested arrays (WS path / older payloads). feed_lines is index-aligned to
+  // the point index either way (number[] or Uint32Array — both index the same).
+  const feedData: number[][] | Float32Array = g.feedPos ?? g.feed ?? [];
+  const rapidData: number[][] | Float32Array = g.rapidPos ?? g.rapid ?? [];
   const feedLines = g.feed_lines ?? [];
-  const rapidPts = g.rapid ?? [];
+  const _pointCount = (d: number[][] | Float32Array) =>
+    d instanceof Float32Array ? d.length / 3 : d.length;
 
   // Build line-number → point-index range map
   for (let i = 0; i < feedLines.length; i++) {
@@ -1584,15 +1591,15 @@ function applyGcode(g: ViewerGcode) {
   // Feed + Rapid toolpath lines — geometry is shared with the overflow overlay.
   const feedColor = viewerDefaults.colors.feed ?? "#22b8cf";
   const rapidColor = viewerDefaults.colors.rapid ?? "#f5a623";
-  if (feedPts.length >= 2) {
-    feedLine = makeLine(feedPts, feedColor, false);
+  if (_pointCount(feedData) >= 2) {
+    feedLine = makeLine(feedData, feedColor, false);
     feedSharedGeom = feedLine.geometry as THREE.BufferGeometry;
     workRotGroup!.add(feedLine);
     feedOverflow = makeOverflowLine(feedSharedGeom);
     if (feedOverflow) workRotGroup!.add(feedOverflow);
   }
-  if (rapidPts.length >= 2) {
-    rapidLine = makeLine(rapidPts, rapidColor, true);
+  if (_pointCount(rapidData) >= 2) {
+    rapidLine = makeLine(rapidData, rapidColor, true);
     rapidSharedGeom = rapidLine.geometry as THREE.BufferGeometry;
     workRotGroup!.add(rapidLine);
     rapidOverflow = makeOverflowLine(rapidSharedGeom);
@@ -1617,19 +1624,35 @@ function applyGcode(g: ViewerGcode) {
     workRotGroup!.add(highlightLine);
   }
 
-  // Compute toolpath bounding box (work coordinates) for overflow detection
+  // Compute toolpath bounding box (work coordinates) for overflow detection.
+  // One O(n) arithmetic pass over feed+rapid, handling flat Float32Array (P4.1)
+  // or nested points. The heavy decode/flatten is already off-thread, so this
+  // single pass is cheap relative to what used to block here.
   toolpathBBox = null;
-  const allPts = [...feedPts, ...rapidPts];
-  if (allPts.length > 0) {
-    const mn: [number, number, number] = [Infinity, Infinity, Infinity];
-    const mx: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-    for (const p of allPts) {
-      if (p[0]! < mn[0]) mn[0] = p[0]!; if (p[0]! > mx[0]) mx[0] = p[0]!;
-      if (p[1]! < mn[1]) mn[1] = p[1]!; if (p[1]! > mx[1]) mx[1] = p[1]!;
-      if (p[2]! < mn[2]) mn[2] = p[2]!; if (p[2]! > mx[2]) mx[2] = p[2]!;
+  const mn: [number, number, number] = [Infinity, Infinity, Infinity];
+  const mx: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+  let _bboxAny = false;
+  const _scanBBox = (d: number[][] | Float32Array) => {
+    if (d instanceof Float32Array) {
+      for (let i = 0; i + 2 < d.length; i += 3) {
+        _bboxAny = true;
+        const x = d[i]!, y = d[i + 1]!, z = d[i + 2]!;
+        if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
+        if (y < mn[1]) mn[1] = y; if (y > mx[1]) mx[1] = y;
+        if (z < mn[2]) mn[2] = z; if (z > mx[2]) mx[2] = z;
+      }
+    } else {
+      for (const p of d) {
+        _bboxAny = true;
+        if (p[0]! < mn[0]) mn[0] = p[0]!; if (p[0]! > mx[0]) mx[0] = p[0]!;
+        if (p[1]! < mn[1]) mn[1] = p[1]!; if (p[1]! > mx[1]) mx[1] = p[1]!;
+        if (p[2]! < mn[2]) mn[2] = p[2]!; if (p[2]! > mx[2]) mx[2] = p[2]!;
+      }
     }
-    toolpathBBox = { min: mn, max: mx };
-  }
+  };
+  _scanBBox(feedData);
+  _scanBBox(rapidData);
+  if (_bboxAny) toolpathBBox = { min: mn, max: mx };
   updateOverflowCheck();
   rebuildToolpathBounds();
 

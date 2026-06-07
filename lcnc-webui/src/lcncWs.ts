@@ -1,4 +1,4 @@
-import { ref, shallowRef, computed } from "vue";
+import { ref, shallowRef, computed, markRaw } from "vue";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { type WsCommand, OPERATOR_ERROR, isQueueSafe } from "./lcnc";
 import { updateServerCache, loadDisplayDefaults, type Vec3 } from "./defaults";
@@ -423,9 +423,13 @@ export interface ViewerInit {
 }
 export interface ViewerGcode {
   file?: string | null;
-  feed?: number[][];
-  feed_lines?: number[];
+  feed?: number[][];               // legacy nested (WS path / fallback)
   rapid?: number[][];
+  feed_lines?: number[] | Uint32Array;
+  // P4.1: flat position buffers produced off-thread by previewWorker (preferred
+  // over the nested arrays — ThreeViewer builds BufferAttributes directly).
+  feedPos?: Float32Array;          // flat [x,y,z, ...]
+  rapidPos?: Float32Array;
   [key: string]: any;  // stats fields are folded in by GcodePanel watcher
 }
 
@@ -449,8 +453,8 @@ let _gcodeContentVersion = -1;
 let _gcodeFetchAbort: AbortController | null = null;
 
 // Fetched preview state (polylines, stats, line numbers) for the currently
-// loaded file. Fetched over HTTP on viewer_gcode_ready.
-let _previewFetchAbort: AbortController | null = null;
+// loaded file. Loaded off-thread by previewWorker on viewer_gcode_ready;
+// staleness handled by the _previewLastVersion guard on the worker reply.
 let _previewLastVersion = -1;
 
 // Surface-scan / comp-grid fetch guards. Same pattern as preview: per-channel
@@ -525,30 +529,45 @@ function _applyGcodeFile(nextFile: string | null, version = -1) {
     });
 }
 
+// Off-main-thread preview loader (P4.1). The fetch + multi-MB msgpack decode +
+// nested→flat conversion run in previewWorker so they don't block the UI thread
+// (which starved the heartbeat worker → disarm-on-load). Staleness is handled by
+// the version guard on the reply rather than an AbortController across the worker
+// boundary; a superseded decode still completes off-thread but its result is
+// dropped.
+let _previewWorker: Worker | null = null;
+
+function _ensurePreviewWorker(): Worker {
+  if (_previewWorker) return _previewWorker;
+  _previewWorker = new Worker(new URL("./previewWorker.ts", import.meta.url), { type: "module" });
+  _previewWorker.onmessage = (ev: MessageEvent) => {
+    const m = ev.data as { version: number; gcode?: ViewerGcode; error?: string };
+    if (m.version !== _previewLastVersion) return;  // stale — newer load in flight
+    if (m.error) {
+      console.error("preview load failed", m.error);
+      _previewErr.value = `/preview failed: ${m.error}`;
+      if (_previewLastVersion === m.version) _previewLastVersion = -1;  // allow retry
+      return;
+    }
+    // markRaw: the payload holds transferred Float32Array/Uint32Array buffers;
+    // letting Vue deep-proxy them would wrap the typed arrays in a Proxy, which
+    // breaks/​slows THREE.BufferAttribute's GPU upload. Consumers only react to
+    // the ref reassignment, not deep mutation, so raw is correct here.
+    viewerGcode.value = m.gcode ? markRaw(m.gcode) : null;
+    _previewErr.value = null;
+  };
+  _previewWorker.onerror = (ev) => {
+    console.error("previewWorker error", ev.message);
+    _previewErr.value = `preview worker error: ${ev.message}`;
+    _previewLastVersion = -1;
+  };
+  return _previewWorker;
+}
+
 function _fetchPreview(version: number) {
   if (version === _previewLastVersion) return;
   _previewLastVersion = version;
-  if (_previewFetchAbort) { _previewFetchAbort.abort(); _previewFetchAbort = null; }
-  const ac = new AbortController();
-  _previewFetchAbort = ac;
-  const url = `/preview?v=${version}`;
-  fetch(url, { signal: ac.signal })
-    .then(r => r.ok ? r.arrayBuffer() : Promise.reject(new Error(`HTTP ${r.status}`)))
-    .then(buf => {
-      if (_previewLastVersion !== version) return;
-      // msgpack decode returns `unknown`; we trust the gateway-side encoder
-      // to produce a ViewerGcode-shaped payload.
-      viewerGcode.value = msgpackDecode(new Uint8Array(buf)) as ViewerGcode;
-      _previewErr.value = null;
-    })
-    .catch(err => {
-      if (err?.name !== "AbortError") {
-        console.error("GET /preview failed", err);
-        _previewErr.value = `/preview failed: ${err?.message ?? err}`;
-        // Let next version_bump retry; clear sentinel so retry fires.
-        if (_previewLastVersion === version) _previewLastVersion = -1;
-      }
-    });
+  _ensurePreviewWorker().postMessage({ version, url: `/preview?v=${version}` });
 }
 
 let _nextMsgId = _stored.length > 0 ? Math.max(..._stored.map(m => m.id)) + 1 : 1;
