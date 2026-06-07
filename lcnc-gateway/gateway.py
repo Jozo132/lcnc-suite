@@ -1236,7 +1236,8 @@ _gcode_preview_bytes_gz: Optional[bytes] = None
 _surface_points_bytes: Optional[bytes] = None
 _comp_grid_bytes: Optional[bytes] = None
 
-# Path to the subprocess parse worker (spawned via asyncio.create_subprocess_exec).
+# Path to the subprocess parse worker (spawned via subprocess.Popen in a worker
+# thread — see _run_gcode_worker_blocking, B7).
 _GCODE_WORKER_PATH = str(BASE_DIR / "gcode_parse_worker.py")
 
 # Safety-trip sticky notification: populated when _status_poller() observes the
@@ -4439,7 +4440,38 @@ def _build_wcs_rotation_patches() -> Dict[str, str]:
     return patches
 
 
-_gcode_parse_proc: Optional[asyncio.subprocess.Process] = None  # tracked so lifespan can terminate it
+_gcode_parse_proc: Optional[subprocess.Popen] = None  # tracked so lifespan can terminate it
+
+
+def _run_gcode_worker_blocking(ctx_bytes: bytes, timeout: float):
+    """Spawn the parse worker and run it to completion. Runs in a worker thread
+    (via asyncio.to_thread) so the fork happens OFF the event loop — B7.
+
+    asyncio.create_subprocess_exec forks the (large) gateway process
+    synchronously on the loop; under load that copy-on-write fork + pipe
+    registration stalled the loop ~60 ms (#35 attribution: a 62 ms
+    _SelectorTransport._add_reader). stdlib subprocess.Popen here forks inside
+    the thread (the fork syscall releases the GIL, so the loop keeps running) and
+    uses posix_spawn where the platform allows, which is cheaper still. The Popen
+    handle is published to _gcode_parse_proc so lifespan shutdown can terminate an
+    in-flight parse. Returns (returncode, stdout, stderr); raises
+    subprocess.TimeoutExpired on timeout (child already killed + reaped)."""
+    global _gcode_parse_proc
+    proc = subprocess.Popen(
+        [sys.executable, _GCODE_WORKER_PATH],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _gcode_parse_proc = proc
+    try:
+        stdout, stderr = proc.communicate(input=ctx_bytes, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.communicate()  # reap the killed child so it doesn't zombie
+        raise
+    return proc.returncode, stdout, stderr
+
 
 async def _refresh_gcode_preview(filepath: str):
     """Parse filepath in an isolated subprocess and publish the result.
@@ -4479,32 +4511,20 @@ async def _refresh_gcode_preview(filepath: str):
                     file=os.path.basename(filepath), active_idx=active_idx)
 
         t_spawn = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, _GCODE_WORKER_PATH,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _gcode_parse_proc = proc
-        t_spawned = time.monotonic()
-        _trace.emit("gcode.spawn_ok",
-                    pid=proc.pid, fork_ms=round((t_spawned - t_spawn) * 1000, 1))
-
+        # Spawn + run the worker entirely off the event loop (B7): the fork no
+        # longer stalls the loop. communicate() (write ctx, read stdout/stderr,
+        # wait) and the 60 s timeout all run in the thread.
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=ctx_bytes),
-                timeout=60.0,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
+            returncode, stdout, stderr = await asyncio.to_thread(
+                _run_gcode_worker_blocking, ctx_bytes, 60.0)
+        except subprocess.TimeoutExpired:
             _trace.emit("gcode.parse_timeout", level="warn", file=filepath)
             return
         t_communicated = time.monotonic()
-        if proc.returncode != 0:
+        if returncode != 0:
             err_tail = stderr.decode(errors="replace")[:500] if stderr else ""
             _trace.emit("gcode.parse_worker_failed", level="warn",
-                        rc=proc.returncode, stderr_tail=err_tail)
+                        rc=returncode, stderr_tail=err_tail)
             return
         # Surface worker-side timing (printed to stderr by the worker).
         if stderr:
@@ -4512,7 +4532,7 @@ async def _refresh_gcode_preview(filepath: str):
                 if ln.strip():
                     _trace.emit("gcode.worker_log", line=ln)
         _trace.emit("gcode.worker_done",
-                    parse_ms=round((t_communicated - t_spawned) * 1000, 1),
+                    parse_ms=round((t_communicated - t_spawn) * 1000, 1),
                     stdout_bytes=len(stdout))
 
         t_dec = time.monotonic()
@@ -4720,16 +4740,18 @@ async def lifespan(app: "FastAPI"):
             print(f"[SHUTDOWN] {_elapsed()} reader writer close: {type(e).__name__}: {e}", flush=True)
     print(f"[SHUTDOWN] {_elapsed()} HAL sockets disconnected", flush=True)
 
-    # 6. Terminate gcode parse subprocess if alive.
+    # 6. Terminate gcode parse subprocess if alive. It's a stdlib Popen now (B7),
+    # so wait() is blocking — bound it via to_thread so a stuck child can't hang
+    # the deterministic shutdown.
     proc = _gcode_parse_proc
-    if proc is not None and proc.returncode is None:
+    if proc is not None and proc.poll() is None:
         try:
             proc.terminate()
             try:
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
+                await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=1.0)
             except asyncio.TimeoutError:
                 proc.kill()
-                await proc.wait()
+                await asyncio.to_thread(proc.wait)
             print(f"[SHUTDOWN] {_elapsed()} gcode parse subprocess terminated rc={proc.returncode}", flush=True)
         except Exception as e:
             print(f"[SHUTDOWN] {_elapsed()} gcode proc terminate failed: {e}", flush=True)
