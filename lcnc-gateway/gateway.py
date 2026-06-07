@@ -374,6 +374,12 @@ _next_client_id = 0
 # Ctrl-R    → same sessionId → resume granted
 _ARMED_RESUME_GRACE_SEC = 10.0
 _armed_resume_holds: Dict[str, float] = {}  # session_id → expiry monotonic ts
+# Armed-resume is for a CLEAN brief reconnect (Ctrl-R, wifi blip) — the client was
+# beating normally right up to the drop. If the heartbeat was already lagging at
+# disconnect (a struggling/overloaded client), it's NOT a clean reconnect: do not
+# auto-restore armed, require an explicit operator re-arm. 2.0 s = at most ~1
+# missed 1 Hz beat; the disarm timeout is 3 s.
+_RESUME_MAX_HB_AGE = 2.0
 
 
 def _register_armed_resume_hold(session_id: Optional[str], client_id: int) -> None:
@@ -6249,6 +6255,10 @@ async def ws_endpoint(ws: WebSocket):
                                         "safety.hb_stall_jog_stop_failed", level="error",
                                         client_id=client_id, exc=type(_e).__name__, err=str(_e),
                                     )
+                                # Unhealthy client \u2014 drop any armed-resume hold so a
+                                # reconnect can't silently restore armed; the
+                                # operator must explicitly re-arm (safety clarity).
+                                _consume_armed_resume_hold(_clients[client_id].session_id)
                                 _trace.emit(
                                     "safety.hb_stall_disarmed",
                                     client_id=client_id,
@@ -6677,11 +6687,19 @@ async def ws_endpoint(ws: WebSocket):
                     "safety.disconnect_jog_stop_failed", level="error",
                     client_id=client_id, exc=type(_e).__name__, err=str(_e),
                 )
-            _register_armed_resume_hold(_disc_session_id, client_id)
-            _trace.emit(
-                "safety.disconnect_disarmed",
-                client_id=client_id,
-            )
+            # Only arm-resume a client that was beating normally right up to the
+            # drop (clean Ctrl-R / wifi blip). A client whose heartbeat was already
+            # lagging was struggling/overloaded — don't silently auto-restore armed
+            # on reconnect; the operator must explicitly re-arm (safety clarity).
+            _hb_age = (time.time() - _clients[client_id].last_hb) if client_id in _clients else 1e9
+            if _hb_age <= _RESUME_MAX_HB_AGE:
+                _register_armed_resume_hold(_disc_session_id, client_id)
+                _trace.emit("safety.disconnect_disarmed", client_id=client_id)
+            else:
+                _trace.emit(
+                    "safety.disconnect_disarmed_no_resume", level="warn",
+                    client_id=client_id, hb_age_ms=round(_hb_age * 1000),
+                )
         _set_phase(f"ws_endpoint.finally.cancel_status_task client#{client_id}")
         status_task.cancel()
         # Clear estop hold if no clients remain
