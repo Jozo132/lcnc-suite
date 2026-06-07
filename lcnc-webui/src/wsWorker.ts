@@ -44,9 +44,29 @@ let lastAttemptAt = 0;
 let lastCloseAt = 0;
 let lastCloseCode = 0;
 
+// End-to-end stall visibility (#35): the heartbeat timer lives in this worker so
+// it's decoupled from the main thread — but the worker still shares CPU cores
+// with it. If the timer fires late, the worker thread itself was starved (CPU
+// contention from a busy main thread, or heavy frame-relay work). That is the
+// *browser* side of a gateway-observed client-heartbeat stall (safety.hb_stall_
+// disarmed). Report the slip + how many frames we relayed in the window so we can
+// tell "CPU-starved" from "busy relaying" — correlated with the gateway trace.
+const HB_SLIP_THRESHOLD_MS = 1500;   // 1 s cadence + 0.5 s slack
+let lastHbFireAt = 0;
+let framesRelayedSinceHb = 0;
+
 function startHeartbeat() {
   stopHeartbeat();
+  lastHbFireAt = performance.now();
+  framesRelayedSinceHb = 0;
   hbTimer = setInterval(() => {
+    const now = performance.now();
+    const gap = now - lastHbFireAt;
+    lastHbFireAt = now;
+    if (gap > HB_SLIP_THRESHOLD_MS) {
+      post({ type: "hbslip", gapMs: Math.round(gap), framesRelayed: framesRelayedSinceHb });
+    }
+    framesRelayedSinceHb = 0;
     if (ws && ws.readyState === WebSocket.OPEN) {
       try { ws.send('{"cmd":"heartbeat"}'); } catch { /* socket closing */ }
       post({ type: "hbsent" });
@@ -159,6 +179,7 @@ function openSocket() {
   };
 
   ws.onmessage = (ev: MessageEvent) => {
+    framesRelayedSinceHb++;   // for hb-slip attribution (busy-relaying vs starved)
     if (typeof ev.data === "string") {
       post({ type: "message", data: ev.data });
     } else {

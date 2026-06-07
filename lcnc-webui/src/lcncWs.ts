@@ -658,6 +658,15 @@ function onWorkerMessage(m: any) {
       _heartbeatSentAt = _rtSentAt = performance.now();
       break;
 
+    case "hbslip":
+      // The worker's own 1 Hz heartbeat timer fired late → the worker thread was
+      // starved. This is the browser side of a gateway client-heartbeat stall
+      // (safety.hb_stall_disarmed) — emit so stalls are visible end-to-end
+      // (browser → gateway → HAL). framesRelayed tells busy-relaying from
+      // CPU-starved (#35).
+      emitTelemetry("ws.hb_slip", { gap_ms: m.gapMs, frames_relayed: m.framesRelayed });
+      break;
+
     case "bufferpressure":
       // State-transition event (start | sustained | recover), not a per-second
       // sample — see wsWorker startBufferSampler (P0).
