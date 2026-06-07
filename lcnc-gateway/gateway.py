@@ -238,17 +238,10 @@ def _wire_enc_hook(obj):
 _json_encoder = _msgspec.json.Encoder(enc_hook=_wire_enc_hook)
 _msgpack_encoder = _msgspec.msgpack.Encoder(enc_hook=_wire_enc_hook)
 
-# Dedicated thread-pool for status-tick envelope encoding. The default
-# asyncio executor is shared with load_settings, gcode parse, HAL helpers,
-# and STL HTTP responses — under a 10+ client reconnect storm, per-client
-# encode_ms ballooned to hundreds of ms (executor queue wait time, not
-# actual encode work) and tripped the HAL heartbeat watchdog. msgspec
-# releases the GIL during encode, so 2 dedicated workers give parallel
-# throughput without GIL thrashing. Lifespan teardown shuts this down
-# with cancel_futures so a stuck encode can't delay the deterministic
-# HAL LOW. See ws_send_measured() for the consumer.
-from concurrent.futures import ThreadPoolExecutor
-_status_encode_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="status-encode")
+# NOTE: status-tick envelope encoding is done INLINE on the event loop (see
+# ws_send_measured). An earlier dedicated ThreadPoolExecutor for it was measured
+# and removed — encode_qsize stayed 0 while encode_ms still climbed, proving the
+# cost is GIL contention, not pool dispatch; a worker pool only added overhead.
 
 # Optional WS-init concurrency limiter. Default of 20 is a no-op for the
 # documented 10–13-tab scenario. If a real overload manifests (HAL trip
@@ -1060,20 +1053,6 @@ def _executor_qsize() -> int:
         return -1
 
 
-def _encode_pool_qsize() -> int:
-    """Pending items in the dedicated status-encode executor pool
-    (`_status_encode_executor`, 2 workers). When this number grows, fan-out
-    encodes are queueing — distinct from default-executor pressure which
-    `_executor_qsize` already measures. Same private-attr caveat applies."""
-    try:
-        wq = getattr(_status_encode_executor, "_work_queue", None)
-        if wq is None:
-            return -1
-        return wq.qsize()
-    except Exception:
-        return -1
-
-
 # /proc/stat aggregate CPU breakdown — first line is "cpu  user nice system
 # idle iowait irq softirq steal guest guest_nice". The `steal` field is what
 # we care about: time the VM was runnable but the hypervisor was running
@@ -1161,7 +1140,6 @@ async def _loop_tick():
                 "loop.tick",
                 pending_tasks=pending,
                 executor_qsize=_executor_qsize(),
-                encode_qsize=_encode_pool_qsize(),
                 gc_counts=list(gc.get_count()),
                 rss_kb=_read_rss_kb(),
                 clients=len(_clients) if "_clients" in globals() else 0,
@@ -3158,15 +3136,14 @@ async def ws_send_measured(ws: WebSocket, obj: Dict[str, Any]) -> Tuple[float, i
     """
     t0 = time.monotonic()
     _set_phase("ws_send_measured.encode")
-    # Inline encode. Earlier this went through `_status_encode_executor` for
-    # parallelism, but the trace bus showed encode_qsize=0 across every
-    # storm-time loop.tick while encode_ms still climbed to 50–200 ms — pool
-    # dispatch isn't the cost, GIL contention is, and offloading to a worker
-    # only adds dispatch overhead while making the worker fight for the GIL
-    # alongside the main loop. msgspec's C-level encoder is fast (sub-ms for
-    # the typical envelope) and inline encoding eliminates one full thread
-    # round-trip per send. The legacy `ws.encode_slow` event still fires if
-    # this assumption breaks under future load.
+    # Inline encode (deliberate). A dedicated encode thread-pool was tried and
+    # removed: the trace bus showed encode_qsize=0 across every storm-time
+    # loop.tick while encode_ms still climbed to 50–200 ms — pool dispatch isn't
+    # the cost, GIL contention is, and offloading only adds dispatch overhead
+    # while the worker fights for the GIL alongside the main loop. msgspec's
+    # C-level encoder is fast (sub-ms for the typical envelope) and inline
+    # encoding eliminates a thread round-trip per send. The `ws.encode_slow`
+    # event still fires if this assumption breaks under future load.
     if _WIRE_FORMAT == "msgpack":
         data = _msgpack_encoder.encode(obj)
     else:
@@ -4722,17 +4699,6 @@ async def lifespan(app: "FastAPI"):
         except asyncio.TimeoutError:
             print(f"[SHUTDOWN] {_elapsed()} {sum(1 for t in tasks if not t.done())} bg task(s) did not finish in 2s", flush=True)
         print(f"[SHUTDOWN] {_elapsed()} cancelled {len(tasks)} bg tasks", flush=True)
-
-    # 3b. Shut down the dedicated status-encode pool. wait=False because a
-    # mid-flight encode must not delay the deterministic HAL LOW below;
-    # cancel_futures=True abandons any encodes still queued. The default
-    # asyncio executor is shut down implicitly by the runtime — we only
-    # own this dedicated pool's lifecycle.
-    try:
-        _status_encode_executor.shutdown(wait=False, cancel_futures=True)
-        print(f"[SHUTDOWN] {_elapsed()} status encode pool shutdown", flush=True)
-    except Exception as e:
-        print(f"[SHUTDOWN] {_elapsed()} encode pool shutdown failed: {type(e).__name__}: {e}", flush=True)
 
     # 4. Final HAL state — deterministic LOW transition. hal_watchdog also
     # forces pins LOW on socket close (recv empty data), but explicit is
