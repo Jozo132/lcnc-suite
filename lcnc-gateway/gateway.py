@@ -4009,9 +4009,16 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if blocked:
                 return blocked
 
+            # Phase markers (B8) subdivide load_file so the lag monitor pins which
+            # step holds the loop — the run named "handle_command cmd=load_file"
+            # at ~78 ms but couldn't say which part. set_mode/program_open already
+            # offload their NML work; if a marker dominates a future lag.window,
+            # that's the synchronous piece to move off-loop next.
+            _set_phase("load_file.set_mode")
             await set_mode(linuxcnc.MODE_AUTO)
             # program_open can legitimately take several seconds on large files —
             # offload so the heartbeat/poller keep ticking during the wait.
+            _set_phase("load_file.program_open")
             await _cmd_blocking(CMD.program_open, abs_path, wait=5)
             return {"ok": True, "path": abs_path}
 
