@@ -234,6 +234,15 @@ UVICORN_COLOR=(--use-colors)
 # enough to feel instant. Validated against probe data 2026-05-01.
 UVICORN_GRACEFUL=(--timeout-graceful-shutdown 1)
 
+# Disable WebSocket per-message-deflate. uvicorn defaults it ON (the websockets
+# lib + browsers negotiate it), so every status frame was zlib-compressed
+# synchronously inside the WS task on the event loop — CPU that eats the HAL
+# heartbeat margin. Our frames are already-compact binary msgpack and the big
+# payloads (preview) go over HTTP with their own gzip, so on a LAN/localhost
+# control surface this trades a bandwidth saving we don't need for loop-CPU we
+# do. (A bandwidth-constrained remote link is not the deployment.)
+UVICORN_WS=(--ws-per-message-deflate false)
+
 # Bounded SIGTERM→SIGKILL escalation. The gateway's clean shutdown path
 # (uvicorn graceful drain + FastAPI lifespan teardown) only works while
 # the asyncio event loop is responsive. Under stuck-peer scenarios (LAN
@@ -430,7 +439,7 @@ if [[ "$DEV" == "1" ]]; then
   # the trap above can signal it. Gateway exit (clean or crash) propagates:
   # we kill Vite, wait for reaping, and exit with the gateway's status.
   # No respawn — crash is operator-diagnosable, not silently retried.
-  setsid python3 -m uvicorn gateway:app --host "$HOST" --port "$PORT" --app-dir "$GATEWAY_DIR" "${UVICORN_LOOP[@]}" "${UVICORN_COLOR[@]}" "${UVICORN_GRACEFUL[@]}" &
+  setsid python3 -m uvicorn gateway:app --host "$HOST" --port "$PORT" --app-dir "$GATEWAY_DIR" "${UVICORN_LOOP[@]}" "${UVICORN_COLOR[@]}" "${UVICORN_GRACEFUL[@]}" "${UVICORN_WS[@]}" &
   GATEWAY_PID=$!
   _log "DEV gateway started pid=$GATEWAY_PID"
   _start_hal_sampler "DEV"
@@ -511,7 +520,7 @@ trap _term INT TERM
 # wait returns, the launcher exits with the gateway's status, which
 # triggers LinuxCNC's Cleanup phase. No respawn — crash is operator-
 # diagnosable, not silently retried.
-setsid python3 -m uvicorn gateway:app --host "$HOST" --port "$PORT" --app-dir "$GATEWAY_DIR" "${UVICORN_LOOP[@]}" "${UVICORN_COLOR[@]}" "${UVICORN_GRACEFUL[@]}" &
+setsid python3 -m uvicorn gateway:app --host "$HOST" --port "$PORT" --app-dir "$GATEWAY_DIR" "${UVICORN_LOOP[@]}" "${UVICORN_COLOR[@]}" "${UVICORN_GRACEFUL[@]}" "${UVICORN_WS[@]}" &
 GATEWAY_PID=$!
 _log "PROD gateway started pid=$GATEWAY_PID"
 _start_hal_sampler "PROD"
