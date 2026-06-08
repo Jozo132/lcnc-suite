@@ -348,8 +348,17 @@ fi
 # #34 trip-latch rollout — `Pin 'webui-safety.trip-latch' does not exist`).
 # Re-linked on every run so existing installs pick up template changes too.
 if [[ -d "$SIM_CONFIG_DIR/hallib" ]]; then
-  ln -sf "$TARGET_DIR/examples/sim_config/hallib/lcnc_webui.hal" \
-         "$SIM_CONFIG_DIR/hallib/lcnc_webui.hal"
+  HAL_LINK="$SIM_CONFIG_DIR/hallib/lcnc_webui.hal"
+  # If a REGULAR file (not our symlink) is already there, it may be operator-
+  # customized — back it up before linking the template rather than silently
+  # clobbering it. The suite still needs the live safety glue, so we link anyway;
+  # the operator can merge their changes from the .bak.
+  if [[ -e "$HAL_LINK" && ! -L "$HAL_LINK" ]]; then
+    HAL_BAK="$HAL_LINK.bak.$(date +%Y%m%d%H%M%S)"
+    cp -p "$HAL_LINK" "$HAL_BAK" 2>/dev/null || true
+    warn "Existing lcnc_webui.hal was a regular file — backed up to $(basename "$HAL_BAK") before linking the template (merge any local edits from it)"
+  fi
+  ln -sf "$TARGET_DIR/examples/sim_config/hallib/lcnc_webui.hal" "$HAL_LINK"
   ok "Linked lcnc_webui.hal → repo template (safety glue stays in sync)"
 fi
 
