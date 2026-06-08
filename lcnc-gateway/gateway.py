@@ -1724,11 +1724,14 @@ async def _status_poller():
             # Cache results for per-client loops
             _shared_status = st
             _shared_status_dict = status_dict
-            # Pre-encode the shared `data` dict into msgpack bytes once per
-            # tick so each client's envelope encode can splice via msgspec.Raw
-            # instead of re-encoding the identical payload N times. JSON wire
-            # format has no Raw-splice primitive, so we skip there.
-            if _WIRE_FORMAT == "msgpack":
+            # Pre-encode the shared `data` dict into msgpack bytes once per tick so
+            # each client's envelope encode can splice via msgspec.Raw instead of
+            # re-encoding the identical payload N times. Only the `_use_shared`
+            # path consumes it, and that path requires `not _STATUS_DELTA_ENABLED`
+            # — so when delta mode is on (each client diffs+encodes its own frame)
+            # this full-status encode every tick was pure wasted loop work. JSON
+            # wire format has no Raw-splice primitive, so we skip there too.
+            if _WIRE_FORMAT == "msgpack" and not _STATUS_DELTA_ENABLED:
                 _set_phase("status_poller.shared_msgpack_encode")
                 _t_enc = time.monotonic()
                 _shared_status_data_msgpack = _msgpack_encoder.encode(status_dict)
