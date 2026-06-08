@@ -4648,6 +4648,23 @@ def register_bg_task(t: asyncio.Task) -> asyncio.Task:
     return t
 
 
+async def _terminate_parse_proc(proc) -> None:
+    """Terminate an in-flight G-code parse subprocess, bounded so a stuck child can't
+    hang the deterministic shutdown: SIGTERM, wait ≤1 s, then SIGKILL. wait() is a
+    blocking stdlib Popen call (B7), so it's offloaded via to_thread. No-op when the
+    proc is None or already exited. Callers pass a LOCAL handle (captured before any
+    concurrent _refresh_gcode_preview finally can clear the global), so the child is
+    always either live (terminate works) or already reaped (poll short-circuits)."""
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=1.0)
+    except asyncio.TimeoutError:
+        proc.kill()
+        await asyncio.to_thread(proc.wait)
+
+
 @asynccontextmanager
 async def lifespan(app: "FastAPI"):
     _trace.emit("boot.lifespan_ready")
@@ -4782,19 +4799,14 @@ async def lifespan(app: "FastAPI"):
             print(f"[SHUTDOWN] {_elapsed()} reader writer close: {type(e).__name__}: {e}", flush=True)
     print(f"[SHUTDOWN] {_elapsed()} HAL sockets disconnected", flush=True)
 
-    # 6. Terminate gcode parse subprocess if alive. It's a stdlib Popen now (B7),
-    # so wait() is blocking — bound it via to_thread so a stuck child can't hang
-    # the deterministic shutdown.
+    # 6. Terminate gcode parse subprocess if alive. Capture the handle LOCALLY first
+    # so a concurrent _refresh_gcode_preview finally clearing the global can't drop it
+    # mid-terminate (review #1). _terminate_parse_proc bounds the wait (to_thread).
     proc = _gcode_parse_proc
-    if proc is not None and proc.poll() is None:
+    if proc is not None:
         try:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=1.0)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await asyncio.to_thread(proc.wait)
-            print(f"[SHUTDOWN] {_elapsed()} gcode parse subprocess terminated rc={proc.returncode}", flush=True)
+            await _terminate_parse_proc(proc)
+            print(f"[SHUTDOWN] {_elapsed()} gcode parse subprocess handled rc={proc.returncode}", flush=True)
         except Exception as e:
             print(f"[SHUTDOWN] {_elapsed()} gcode proc terminate failed: {e}", flush=True)
 

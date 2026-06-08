@@ -368,6 +368,114 @@ class TestStreamUpload(unittest.TestCase):
         self.assertFalse(os.path.exists(dest), "published a partial/oversized file")
         self.assertEqual(self._parts(), [], "left a .part temp behind after rejection")
 
+    def test_cancel_midstream_leaves_no_dest_or_temp(self):
+        # Review finding #3: a client disconnect cancels the upload coroutine. The
+        # atomic-replace runs only on full success (not reached here), and the temp
+        # is unlinked in the finally — so a cancelled upload must leave neither a
+        # dest file nor a stray .part temp.
+        import os
+        import asyncio
+        dest = os.path.join(self.tmp, "cancelled.ngc")
+
+        class _SlowUpload:
+            def __init__(self):
+                self._reads = 0
+
+            async def read(self, n: int = -1) -> bytes:
+                self._reads += 1
+                if self._reads <= 2:
+                    return b"G1 X1\n" * 100   # write a couple of real chunks first
+                await asyncio.sleep(10)        # then hang, giving a window to cancel
+                return b""
+
+        async def _drive():
+            task = asyncio.ensure_future(
+                gateway._atomic_stream_upload(_SlowUpload(), dest, 10 << 20, chunk_size=512)
+            )
+            await asyncio.sleep(0.05)          # let the first chunks land, then hang
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+
+        _run(_drive())
+        self.assertFalse(os.path.exists(dest), "published a dest file on cancel")
+        self.assertEqual(self._parts(), [], "left a .part temp behind on cancel")
+
+
+class TestTerminateParseProc(unittest.TestCase):
+    """Review #1: shutdown must terminate an in-flight parse child, bounded, with a
+    SIGKILL fallback if it ignores SIGTERM — and no-op a child that already exited."""
+
+    def test_terminates_a_live_child(self):
+        class _Proc:
+            def __init__(self):
+                self.terminated = False
+                self.killed = False
+                self.returncode = None
+
+            def poll(self):
+                return None if not self.terminated else self.returncode
+
+            def terminate(self):
+                self.terminated = True
+                self.returncode = -15
+
+            def kill(self):
+                self.killed = True
+
+            def wait(self):
+                return self.returncode
+
+        p = _Proc()
+        _run(gateway._terminate_parse_proc(p))
+        self.assertTrue(p.terminated)
+        self.assertFalse(p.killed)  # exited on SIGTERM → no kill needed
+
+    def test_noop_for_already_exited_child(self):
+        class _Dead:
+            returncode = 0
+
+            def poll(self):
+                return 0
+
+            def terminate(self):
+                raise AssertionError("must not signal an already-exited child")
+
+            def kill(self):
+                raise AssertionError("must not kill an already-exited child")
+
+            def wait(self):
+                return 0
+
+        _run(gateway._terminate_parse_proc(_Dead()))  # no exception == clean no-op
+
+    def test_kills_a_child_that_ignores_sigterm(self):
+        import threading
+        class _Stubborn:
+            def __init__(self):
+                self.killed = False
+                self.returncode = None
+                self._released = threading.Event()
+
+            def poll(self):
+                return None  # alive until killed
+
+            def terminate(self):
+                pass  # ignores SIGTERM → forces the wait_for timeout
+
+            def kill(self):
+                self.killed = True
+                self.returncode = -9
+                self._released.set()  # unblock the hung wait()
+
+            def wait(self):
+                self._released.wait(timeout=5)  # blocks until kill() (5 s safety)
+                return self.returncode
+
+        p = _Stubborn()
+        _run(gateway._terminate_parse_proc(p))
+        self.assertTrue(p.killed)
+
 
 if __name__ == "__main__":
     unittest.main()
