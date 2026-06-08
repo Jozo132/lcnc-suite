@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
 import { applyClientOverlay, PERMISSIONS_KEY, type Permissions } from "./permissions";
 import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, gcodeContent, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, safetyTrip, acknowledgeSafetyTrip, readerStale, configWarning, previewLoadError, serverShuttingDown, type LcncMessage } from "./lcncWs";
-import ThreeViewer from "./ThreeViewer.vue";
+// Lazy-load the 3D viewer so Three.js (~866 KB) + troika load as a separate async
+// chunk after first paint instead of blocking the initial bundle (P6). The viewerRef
+// methods are all `?.`-guarded, so calls during the brief load gap safely no-op.
+const ThreeViewer = defineAsyncComponent(() => import("./ThreeViewer.vue"));
 import TabPanel from "./TabPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
 import SafetyStrip from "./SafetyStrip.vue";
