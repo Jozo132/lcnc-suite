@@ -11,15 +11,24 @@ import { decode as msgpackDecode } from "@msgpack/msgpack";
 
 interface Req { version: number; url: string }
 
+// Newest-version-wins: abort any in-flight fetch when a newer preview arrives, so a
+// superseded version no longer burns network + decode CPU (review #2). The main
+// thread already discards stale *results* via a version guard; this stops the *work*.
+let _currentAbort: AbortController | null = null;
+
 self.onmessage = async (e: MessageEvent<Req>) => {
   const { version, url } = e.data;
+  if (_currentAbort) _currentAbort.abort();
+  const ac = new AbortController();
+  _currentAbort = ac;
   try {
-    const resp = await fetch(url);
+    const resp = await fetch(url, { signal: ac.signal });
     if (!resp.ok) {
       self.postMessage({ version, error: `HTTP ${resp.status}` });
       return;
     }
     const buf = await resp.arrayBuffer();
+    if (ac.signal.aborted) return;  // superseded during the read — skip the decode
     const g = msgpackDecode(new Uint8Array(buf)) as Record<string, any>;
 
     const feedPos = _flatten(g.feed);
@@ -38,6 +47,7 @@ self.onmessage = async (e: MessageEvent<Req>) => {
       { transfer },
     );
   } catch (err) {
+    if ((err as Error)?.name === "AbortError") return;  // expected on supersede — silent
     self.postMessage({ version, error: String((err as Error)?.message ?? err) });
   }
 };
