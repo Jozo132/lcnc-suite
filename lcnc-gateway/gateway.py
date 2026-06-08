@@ -6803,6 +6803,86 @@ def _camera_release():
             _camera.release()
             _camera = None
 
+
+class _CameraBroker:
+    """Single-producer camera fan-out (P3).
+
+    Previously every `/camera/stream` viewer ran its own capture+JPEG-encode loop
+    (`_camera_grab_jpeg` per frame), so N viewers paid N× the read+`imencode` cost
+    (serialized behind `_camera_lock`, so extra viewers added queued duplicate work
+    rather than throughput). Here one producer task captures+encodes at `CAMERA_FPS`
+    into a shared latest JPEG + a monotonic sequence; consumers await the next
+    sequence and stream the *same* bytes — newest-wins, stale frames dropped. The
+    device opens on the first subscriber and releases a short grace after the last.
+    All state is touched only on the event loop (single-threaded); the blocking cv2
+    calls stay off-loop via `to_thread` (and `_camera_lock`)."""
+
+    _GRACE_S = 2.0
+
+    def __init__(self) -> None:
+        self._subscribers = 0
+        self._task: Optional[asyncio.Task] = None
+        self._cond = asyncio.Condition()
+        self._latest: Optional[bytes] = None
+        self._seq = 0
+        self._stop_handle: Optional[asyncio.TimerHandle] = None
+
+    async def subscribe(self) -> bool:
+        """Register a viewer; start the producer on the first. False if no camera."""
+        if self._stop_handle is not None:          # a viewer arrived within the grace
+            self._stop_handle.cancel()
+            self._stop_handle = None
+        self._subscribers += 1
+        if self._task is None:
+            ok = await asyncio.to_thread(_camera_init)
+            if not ok:
+                self._subscribers -= 1
+                return False
+            self._task = register_bg_task(asyncio.create_task(self._produce()))
+        return True
+
+    def unsubscribe(self) -> None:
+        self._subscribers = max(0, self._subscribers - 1)
+        if self._subscribers == 0 and self._task is not None and self._stop_handle is None:
+            loop = asyncio.get_event_loop()
+            self._stop_handle = loop.call_later(self._GRACE_S, self._stop)
+
+    def _stop(self) -> None:
+        self._stop_handle = None
+        if self._subscribers > 0:                  # someone re-subscribed in the grace
+            return
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
+        register_bg_task(asyncio.create_task(asyncio.to_thread(_camera_release)))
+
+    async def _produce(self) -> None:
+        fps = int(os.environ.get("LCNC_CAMERA_FPS", "15"))
+        delay = 1.0 / max(1, fps)
+        while True:
+            jpeg = await asyncio.to_thread(_camera_grab_jpeg)
+            if jpeg is not None:
+                async with self._cond:
+                    self._latest = jpeg
+                    self._seq += 1
+                    self._cond.notify_all()
+            await asyncio.sleep(delay)
+
+    async def frames(self):
+        """Yield the latest shared JPEG, newest-wins (a slow viewer drops frames,
+        never the producer or other viewers)."""
+        last_seq = -1
+        while True:
+            async with self._cond:
+                await self._cond.wait_for(lambda: self._seq != last_seq)
+                last_seq = self._seq
+                jpeg = self._latest
+            if jpeg is not None:
+                yield jpeg
+
+
+_camera_broker = _CameraBroker()
+
 # ---- Server-Side Settings Endpoints ----
 
 @app.get("/settings")
@@ -6841,22 +6921,20 @@ async def delete_settings():
 
 @app.get("/camera/stream")
 async def camera_stream():
-    loop = asyncio.get_event_loop()
-    ok = await loop.run_in_executor(None, _camera_init)
+    # One shared producer feeds all viewers (P3): subscribing starts it on the
+    # first viewer; the `finally` releases this viewer's slot so the device is
+    # freed a short grace after the last one leaves.
+    ok = await _camera_broker.subscribe()
     if not ok:
         return JSONResponse({"error": "No camera configured"}, status_code=503)
-    fps = int(os.environ.get("LCNC_CAMERA_FPS", "15"))
-    delay = 1.0 / fps
 
     async def generate():
-        while True:
-            jpeg = await loop.run_in_executor(None, _camera_grab_jpeg)
-            if jpeg is None:
-                await asyncio.sleep(delay)
-                continue
-            yield (b"--frame\r\n"
-                   b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
-            await asyncio.sleep(delay)
+        try:
+            async for jpeg in _camera_broker.frames():
+                yield (b"--frame\r\n"
+                       b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
+        finally:
+            _camera_broker.unsubscribe()
 
     return StreamingResponse(
         generate(),
