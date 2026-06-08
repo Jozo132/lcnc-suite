@@ -2100,7 +2100,11 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
   // Remove previous
   if (surfaceGroup) {
     surfaceGroup.parent?.remove(surfaceGroup);
-    surfaceGroup.traverse((o: any) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    surfaceGroup.traverse((o: any) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+      if (typeof o.dispose === "function") o.dispose();  // InstancedMesh.instanceMatrix
+    });
     surfaceGroup = null;
   }
 
@@ -2124,7 +2128,7 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
   const gyRange = grid.y[ny - 1]! - grid.y[0]!;
   const geom = new THREE.PlaneGeometry(gxRange || 1, gyRange || 1, nx - 1, ny - 1);
   const posArr = geom.attributes.position!;
-  const colors: number[] = [];
+  const colors = new Float32Array(nx * ny * 3);  // pre-allocated, set by vertex index (P4.2)
 
   for (let iy = 0; iy < ny; iy++) {
     for (let ix = 0; ix < nx; ix++) {
@@ -2132,7 +2136,10 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
       const gx = grid.x[ix]!, gy = grid.y[iy]!;
       let z = grid.zi[ix]?.[iy];
       if (z == null || !isFinite(z)) {
-        // Outside convex hull — nearest raw point
+        // Outside the convex hull — nearest raw probe point. O(invalid cells × pts);
+        // bounded (only out-of-hull edge cells scan) and probe-point counts are
+        // small. If large surveys ever make this slow, the right fix is to publish
+        // a complete (nearest-filled) grid from the backend (P4.2) — left as-is here.
         let bestD2 = Infinity, bestZ = 0;
         for (const p of pts) {
           const d2 = (gx - p[0]) ** 2 + (gy - p[1]) ** 2;
@@ -2145,7 +2152,9 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
       posArr.setZ(vi, z);
       const t = (z - zMin) / zRange;
       const [r, g, b] = viridis(t);
-      colors.push(r / 255, g / 255, b / 255);
+      colors[vi * 3] = r / 255;
+      colors[vi * 3 + 1] = g / 255;
+      colors[vi * 3 + 2] = b / 255;
     }
   }
   geom.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
@@ -2159,15 +2168,21 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
   });
   surfaceGroup.add(new THREE.Mesh(geom, mat));
 
-  // Add probe point dots
+  // Probe-point dots as a single InstancedMesh (P4.2): one geometry + one draw call
+  // instead of N separate Mesh objects, which each added scene-graph + per-frame
+  // cull/draw overhead for as long as the surface stayed visible.
   const dotR = Math.min(gxRange || 1, gyRange || 1) * 0.012;
   const dotGeom = new THREE.SphereGeometry(dotR, 8, 8);
   const dotMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
-  for (const p of pts) {
-    const dot = new THREE.Mesh(dotGeom, dotMat);
-    dot.position.set(p[0], p[1], p[2]);
-    surfaceGroup.add(dot);
+  const dots = new THREE.InstancedMesh(dotGeom, dotMat, pts.length);
+  const _dotM = new THREE.Matrix4();
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i]!;
+    _dotM.makeTranslation(p[0], p[1], p[2]);
+    dots.setMatrixAt(i, _dotM);
   }
+  dots.instanceMatrix.needsUpdate = true;
+  surfaceGroup.add(dots);
 
   workRotGroup!.add(surfaceGroup);
   surfaceGroup.visible = surfaceVisible;
