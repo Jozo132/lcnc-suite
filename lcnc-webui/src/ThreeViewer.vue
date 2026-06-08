@@ -1624,35 +1624,43 @@ function applyGcode(g: ViewerGcode) {
     workRotGroup!.add(highlightLine);
   }
 
-  // Compute toolpath bounding box (work coordinates) for overflow detection.
-  // One O(n) arithmetic pass over feed+rapid, handling flat Float32Array (P4.1)
-  // or nested points. The heavy decode/flatten is already off-thread, so this
-  // single pass is cheap relative to what used to block here.
+  // Toolpath bounding box (work coordinates) for overflow detection. Prefer the
+  // bounds the parse worker computed over the same decimated polyline (P4.1) so we
+  // don't re-scan every point on the UI thread; fall back to a main-thread pass for
+  // the WS/legacy path that carries no bounds.
   toolpathBBox = null;
-  const mn: [number, number, number] = [Infinity, Infinity, Infinity];
-  const mx: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-  let _bboxAny = false;
-  const _scanBBox = (d: number[][] | Float32Array) => {
-    if (d instanceof Float32Array) {
-      for (let i = 0; i + 2 < d.length; i += 3) {
-        _bboxAny = true;
-        const x = d[i]!, y = d[i + 1]!, z = d[i + 2]!;
-        if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
-        if (y < mn[1]) mn[1] = y; if (y > mx[1]) mx[1] = y;
-        if (z < mn[2]) mn[2] = z; if (z > mx[2]) mx[2] = z;
+  const _wb = g.bounds;
+  if (_wb && Array.isArray(_wb.min) && Array.isArray(_wb.max) && _wb.min.length === 3) {
+    toolpathBBox = {
+      min: [_wb.min[0]!, _wb.min[1]!, _wb.min[2]!],
+      max: [_wb.max[0]!, _wb.max[1]!, _wb.max[2]!],
+    };
+  } else {
+    const mn: [number, number, number] = [Infinity, Infinity, Infinity];
+    const mx: [number, number, number] = [-Infinity, -Infinity, -Infinity];
+    let _bboxAny = false;
+    const _scanBBox = (d: number[][] | Float32Array) => {
+      if (d instanceof Float32Array) {
+        for (let i = 0; i + 2 < d.length; i += 3) {
+          _bboxAny = true;
+          const x = d[i]!, y = d[i + 1]!, z = d[i + 2]!;
+          if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
+          if (y < mn[1]) mn[1] = y; if (y > mx[1]) mx[1] = y;
+          if (z < mn[2]) mn[2] = z; if (z > mx[2]) mx[2] = z;
+        }
+      } else {
+        for (const p of d) {
+          _bboxAny = true;
+          if (p[0]! < mn[0]) mn[0] = p[0]!; if (p[0]! > mx[0]) mx[0] = p[0]!;
+          if (p[1]! < mn[1]) mn[1] = p[1]!; if (p[1]! > mx[1]) mx[1] = p[1]!;
+          if (p[2]! < mn[2]) mn[2] = p[2]!; if (p[2]! > mx[2]) mx[2] = p[2]!;
+        }
       }
-    } else {
-      for (const p of d) {
-        _bboxAny = true;
-        if (p[0]! < mn[0]) mn[0] = p[0]!; if (p[0]! > mx[0]) mx[0] = p[0]!;
-        if (p[1]! < mn[1]) mn[1] = p[1]!; if (p[1]! > mx[1]) mx[1] = p[1]!;
-        if (p[2]! < mn[2]) mn[2] = p[2]!; if (p[2]! > mx[2]) mx[2] = p[2]!;
-      }
-    }
-  };
-  _scanBBox(feedData);
-  _scanBBox(rapidData);
-  if (_bboxAny) toolpathBBox = { min: mn, max: mx };
+    };
+    _scanBBox(feedData);
+    _scanBBox(rapidData);
+    if (_bboxAny) toolpathBBox = { min: mn, max: mx };
+  }
   updateOverflowCheck();
   rebuildToolpathBounds();
 

@@ -430,6 +430,9 @@ export interface ViewerGcode {
   // over the nested arrays — ThreeViewer builds BufferAttributes directly).
   feedPos?: Float32Array;          // flat [x,y,z, ...]
   rapidPos?: Float32Array;
+  // P4.1: bounding box of the rendered polyline, computed in the parse worker so
+  // ThreeViewer skips an O(n) main-thread scan per load.
+  bounds?: { min: number[]; max: number[] } | null;
   [key: string]: any;  // stats fields are folded in by GcodePanel watcher
 }
 

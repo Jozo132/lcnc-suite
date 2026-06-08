@@ -294,6 +294,24 @@ def parse(ctx: dict) -> dict:
         file=sys.stderr, flush=True,
     )
 
+    # Bounding box over the rendered (post-RDP) polyline, in the same raw-program
+    # coords as the points — so the frontend uses it directly instead of re-scanning
+    # every point on the UI thread per load (P4.1). `null` when there are no points.
+    bounds = None
+    _mn = [float("inf"), float("inf"), float("inf")]
+    _mx = [float("-inf"), float("-inf"), float("-inf")]
+    _any = False
+    for _poly in (feed, rapid):
+        for _p in _poly:
+            _any = True
+            for _k in range(3):
+                if _p[_k] < _mn[_k]:
+                    _mn[_k] = _p[_k]
+                if _p[_k] > _mx[_k]:
+                    _mx[_k] = _p[_k]
+    if _any:
+        bounds = {"min": _mn, "max": _mx}
+
     try:
         file_size = os.path.getsize(filename)
     except OSError:
@@ -323,7 +341,8 @@ def parse(ctx: dict) -> dict:
     # what keeps the multi-MB polyline from ever becoming Python objects on the
     # event-loop process (mmw#4 GC pressure).
     return {"file": filename, "feed": feed, "feed_lines": feed_lines, "rapid": rapid,
-            "stats": stats, "parse_error": parse_error, "error_line": error_line}
+            "stats": stats, "bounds": bounds,
+            "parse_error": parse_error, "error_line": error_line}
 
 
 def main() -> None:
