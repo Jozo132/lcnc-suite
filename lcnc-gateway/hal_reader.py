@@ -163,20 +163,49 @@ def _send(sock, obj: dict):
     sock.sendall((json.dumps(obj) + "\n").encode())
 
 
+# P0.2: edge-trigger missing-pin warnings instead of printing every 30 Hz tick.
+# Log on the transition into failure and on recovery, with a slow periodic
+# reminder while a pin stays missing — a real fault stays visible without 30 log
+# lines/sec drowning the trace. The gateway still sees the field absent from the
+# snapshot and surfaces that honestly regardless of logging.
+_pin_fail_logged: set = set()
+_pin_fail_last_reminder = 0.0
+_PIN_FAIL_REMINDER_S = 30.0
+
+
+def _note_pin_fail(key: str, detail: str) -> None:
+    if key not in _pin_fail_logged:
+        print(f"[READER] read {detail} (logged once until recovery)", flush=True)
+        _pin_fail_logged.add(key)
+
+
+def _note_pin_ok(key: str) -> None:
+    if key in _pin_fail_logged:
+        print(f"[READER] read '{key}' recovered", flush=True)
+        _pin_fail_logged.discard(key)
+
+
 def _build_snapshot() -> dict:
+    global _pin_fail_last_reminder
     snap = {"type": "snapshot", "ts": int(time.time() * 1000)}
     for source, field, coerce in SNAPSHOT_PINS:
         try:
             snap[field] = coerce(hal.get_value(source))
+            _note_pin_ok(source)
         except Exception as e:
-            # Pin missing right now — log every tick. The gateway will see
-            # the field absent from the snapshot and surface that honestly.
-            print(f"[READER] read '{source}' failed: {e}", flush=True)
+            _note_pin_fail(source, f"'{source}' failed: {e}")
     for field, pin in _extra_pins.items():
         try:
             snap[field] = float(hal.get_value(pin))
+            _note_pin_ok(pin)
         except Exception as e:
-            print(f"[READER] read extra pin '{pin}' (field={field}) failed: {e}", flush=True)
+            _note_pin_fail(pin, f"extra pin '{pin}' (field={field}) failed: {e}")
+    if _pin_fail_logged:
+        now = time.monotonic()
+        if now - _pin_fail_last_reminder >= _PIN_FAIL_REMINDER_S:
+            _pin_fail_last_reminder = now
+            print(f"[READER] {len(_pin_fail_logged)} pin(s) still missing: "
+                  f"{sorted(_pin_fail_logged)}", flush=True)
     return snap
 
 

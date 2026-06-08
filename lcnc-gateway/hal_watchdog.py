@@ -13,6 +13,7 @@ import signal
 import socket
 import select
 import time
+import collections
 import hal
 
 import lcnc_trace as _trace
@@ -132,6 +133,30 @@ def _hb_recv_print(line: str) -> None:
             _hb_recv_log.write(line + "\n")
         except OSError:
             pass  # safe-silent: instrumentation log; failure must not destabilize the watchdog
+
+
+# P0.2: keep heartbeat arrivals in a bounded in-memory ring rather than writing
+# every ~33 ms arrival to disk. Healthy operation does zero per-heartbeat disk
+# I/O; the ring is dumped only on a trip-relevant event (a near-trip True-to-True
+# gap, an operator trip-reset, or shutdown), so a trip bundle still carries the
+# preceding heartbeat timeline. The lightweight [HB-RISING] one-liner still marks
+# the smaller 200 ms jitter threshold (edge-triggered, rare).
+_HB_RING_SIZE = 256        # ~8.5 s of arrivals at 30 Hz — ample pre-event context
+_HB_DUMP_GAP_MS = 400      # dump the ring only on near-trip gaps (budget is 500 ms)
+_hb_recv_ring = collections.deque(maxlen=_HB_RING_SIZE)
+
+
+def _hb_recv_flush(reason: str) -> None:
+    """Dump the heartbeat-arrival ring to the log — forensic, event-driven."""
+    if _hb_recv_log is None or not _hb_recv_ring:
+        return
+    ts_now = int((time.monotonic() - _T0) * 1000)
+    try:
+        _hb_recv_log.write(f"[HB-DUMP] +{ts_now}ms reason={reason} n={len(_hb_recv_ring)}\n")
+        for ts_ms, val in _hb_recv_ring:
+            _hb_recv_log.write(f"  +{ts_ms}ms hb={'T' if val else 'F'}\n")
+    except OSError:
+        pass  # safe-silent: instrumentation log
 
 
 _hb_recv_print(f"[HB-RECV] +{(time.monotonic() - _T0) * 1000:.0f}ms watchdog ready, instrumentation active")
@@ -272,9 +297,7 @@ try:
                             # gaps over 200 ms so trip-relevant gaps are
                             # easy to spot.
                             ts_ms = int((_now - _T0) * 1000)
-                            _hb_recv_print(
-                                f"[HB-RECV] +{ts_ms}ms hb={'T' if _new_val else 'F'}"
-                            )
+                            _hb_recv_ring.append((ts_ms, _new_val))  # in-memory only (P0.2)
                             if _new_val:
                                 if _last_hb_recv_true is not None:
                                     rising_gap_ms = int((_now - _last_hb_recv_true) * 1000)
@@ -283,6 +306,8 @@ try:
                                             f"[HB-RISING] +{ts_ms}ms "
                                             f"True-to-True gap {rising_gap_ms}ms"
                                         )
+                                        if rising_gap_ms > _HB_DUMP_GAP_MS:
+                                            _hb_recv_flush(f"gap_{rising_gap_ms}ms")
                                 _last_hb_recv_true = _now
                             _last_hb_recv = _now
                             comp["heartbeat"] = _new_val
@@ -302,6 +327,7 @@ try:
                             _reset_pulse_off_at = time.monotonic() + _RESET_PULSE_S
                             print("[SAFETY] trip latch reset pulsed by operator", flush=True)
                             _trace.emit("wd.trip_reset")
+                            _hb_recv_flush("trip_reset")  # capture pre-reset HB timeline
                         _wd_msgs_processed += 1
                 except Exception:
                     # Socket error — force pins LOW for safety
@@ -322,6 +348,7 @@ try:
 except KeyboardInterrupt:
     pass  # safe-silent: Ctrl-C → graceful shutdown via finally
 finally:
+    _hb_recv_flush("shutdown")  # final heartbeat timeline for post-mortem
     if client:
         try:
             client.close()
