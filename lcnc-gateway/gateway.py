@@ -4026,10 +4026,18 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             # that's the synchronous piece to move off-loop next.
             _set_phase("load_file.set_mode")
             await set_mode(linuxcnc.MODE_AUTO)
-            # program_open can legitimately take several seconds on large files —
-            # offload so the heartbeat/poller keep ticking during the wait.
+            # Fire-and-forget (no wait_complete). milltask opens the file in its
+            # OWN process; our `wait=5` just polled it via CMD.wait_complete — and
+            # the LinuxCNC C binding HOLDS THE GIL across that poll, so the
+            # `to_thread` offload could not free the loop (a 44 MB open stalled it
+            # 62 ms — `load_file.program_open` dominated the lag.window; a larger
+            # file or slower disk scales straight toward the 500 ms watchdog trip).
+            # The program_open SEND is a microsecond NML write. Completion is
+            # observed via the status stream (interp_state + file) and the preview
+            # re-parses from disk independently — same contract as the tool_change
+            # fire-and-forget path. Open failures surface on the error channel.
             _set_phase("load_file.program_open")
-            await _cmd_blocking(CMD.program_open, abs_path, wait=5)
+            await _cmd_blocking(CMD.program_open, abs_path, wait=None)
             return {"ok": True, "path": abs_path}
 
         if cmd == "unload_file":
