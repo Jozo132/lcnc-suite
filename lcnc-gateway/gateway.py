@@ -1215,6 +1215,7 @@ _tool_table_version: int = int(time.time())  # bumped after every CMD.load_tool_
 _halshow_loop_task: Optional[asyncio.Task] = None
 _halshow_last_values: dict = {}                # "section/name" → last broadcast value (delta source)
 _halshow_topology_sent: dict = {}              # client_id → True once topology has been delivered
+_halshow_topology_cache: Optional[dict] = None  # built-once HAL graph (P5); HAL graph is static post-boot
 
 # Shared gcode preview — parsed once in a subprocess (gcode_parse_worker.py)
 # on file/rotation change. The parsed result (multi-MB polylines) is NOT
@@ -5626,14 +5627,31 @@ def _parse_hal_params() -> list:
 
 async def _halshow_topology() -> dict:
     """Full HAL topology (pin/sig/param structure with links) via halcmd subprocess.
-    Run once per subscribe — cheap when amortized vs the live-update loop."""
+
+    Cached for the gateway lifetime (P5): the HAL graph is fixed at config load, so
+    we build it ONCE (3 halcmd subprocesses) and reuse it for every subscriber —
+    previously each new subscriber re-ran all three subprocesses. `_halshow_loop`
+    processes subscribers sequentially, so the first cache-miss build completes
+    before the next subscriber is served (no double-build). Force a rebuild via
+    `_invalidate_halshow_topology()` (the `halshow_refresh` command), e.g. after an
+    external HAL reload."""
+    global _halshow_topology_cache
+    if _halshow_topology_cache is not None:
+        return _halshow_topology_cache
     loop = asyncio.get_event_loop()
     pins, signals, params = await asyncio.gather(
         loop.run_in_executor(None, _parse_hal_pins),
         loop.run_in_executor(None, _parse_hal_signals),
         loop.run_in_executor(None, _parse_hal_params),
     )
-    return {"pins": pins, "signals": signals, "params": params}
+    _halshow_topology_cache = {"pins": pins, "signals": signals, "params": params}
+    return _halshow_topology_cache
+
+
+def _invalidate_halshow_topology() -> None:
+    """Drop the cached HAL topology so the next subscriber rebuilds it (P5)."""
+    global _halshow_topology_cache
+    _halshow_topology_cache = None
 
 
 async def _halshow_value_snapshot() -> dict:
@@ -6547,6 +6565,14 @@ async def ws_endpoint(ws: WebSocket):
                     # Drop any stale flag so subscriber gets a fresh snapshot
                     _halshow_topology_sent.pop(client_id, None)
                     _ensure_halshow_loop()
+                await ws_send_json(ws, {"type": "reply", "ok": True})
+                continue
+
+            if msg.get("cmd") == "halshow_refresh":
+                # Force a topology rebuild (P5) — e.g. after an external HAL reload.
+                # Clears every subscriber's sent-flag so the rebuilt graph re-sends.
+                _invalidate_halshow_topology()
+                _halshow_topology_sent.clear()
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 
