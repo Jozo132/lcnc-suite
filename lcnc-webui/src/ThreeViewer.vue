@@ -263,6 +263,18 @@ function normalizeKinematics(kin: ViewerInit["kinematics"]): KinEntry[] {
   }));
 }
 
+// applyState() runs per animate frame; the legacy object-form path above allocated
+// a fresh array every call (P4.3). init.kinematics is stable across frames, so cache
+// the normalized result by source identity and recompute only when init changes.
+let _kinCacheSrc: ViewerInit["kinematics"] | null = null;
+let _kinCacheVal: KinEntry[] = [];
+function normalizeKinematicsCached(kin: ViewerInit["kinematics"]): KinEntry[] {
+  if (kin === _kinCacheSrc) return _kinCacheVal;
+  _kinCacheSrc = kin;
+  _kinCacheVal = normalizeKinematics(kin);
+  return _kinCacheVal;
+}
+
 // Visual objects
 let toolMarker: THREE.Group | null = null;
 let toolCutterMesh: THREE.Mesh | null = null;
@@ -1151,7 +1163,7 @@ async function buildFromInit(init: ViewerInit) {
     if (myToken !== buildToken) return;
 
     // Build group → material map from kinematics direction
-    const kinEntries = normalizeKinematics(init.kinematics);
+    const kinEntries = normalizeKinematicsCached(init.kinematics);
     const dirMat: Record<string, THREE.MeshStandardMaterial> = { x: MAT.axisX, y: MAT.axisY, z: MAT.axisZ };
     const groupMat: Record<string, THREE.MeshStandardMaterial> = {};
     _groupDirMap = {};
@@ -1285,7 +1297,7 @@ function applyState(init: ViewerInit, st: ViewerState) {
 
   if (!_workGrp || !_toolGrp) return;
 
-  const kinEntries = normalizeKinematics(init.kinematics);
+  const kinEntries = normalizeKinematicsCached(init.kinematics);
   const ax = (idx: number) => (idx >= 0 && idx < jp.length ? jp[idx]! : 0);
 
   // Apply kinematics: each entry drives a group's position or rotation
@@ -1346,7 +1358,10 @@ function applyState(init: ViewerInit, st: ViewerState) {
 
     // Determine if we need a rebuild
     const needsRebuild = (toolNum !== _currentToolNum && _toolGrp)
-      || (meta && JSON.stringify(meta) !== JSON.stringify(_lastToolMeta))
+      // Reference compare, not JSON.stringify×2 per status (P4.3): lcncWs carries
+      // over the SAME meta object while unchanged and produces a NEW one on an
+      // actual tool/library change, so identity is the exact change signal.
+      || (meta != null && meta !== _lastToolMeta)
       || (() => {
         // Same tool, same meta — check if diam/length changed
         const visMesh = toolBodyMesh ?? toolCutterMesh;
