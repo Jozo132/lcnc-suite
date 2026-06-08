@@ -2034,7 +2034,12 @@ else:
 
 # ---- NC files directory ----
 # ALLOWED_EXTENSIONS now lives in gateway_util (imported at top).
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB (G-code can legitimately be this large)
+# Fusion tool-library import (P1.2): json.loads holds the GIL in the worker thread
+# (~6 ms/MB measured), so it can't be isolated from the heartbeat. Realistic
+# libraries are <2 MB (<15 ms); cap at 16 MB (~100 ms worst case, sub-trip, machine
+# idle during import) so a bogus 50 MB upload can't approach the watchdog budget.
+MAX_TOOL_LIBRARY_SIZE = 16 * 1024 * 1024  # 16 MB
 _nc_files_dir: Optional[str] = None
 _nc_files_ini: Optional[str] = None   # INI identity the _nc_files_dir cache is keyed to
 _ini_config: Optional[dict] = None
@@ -5243,9 +5248,9 @@ async def import_tool_library(file: UploadFile = File(...)):
       ?apply=true  — actually write to tool table + library (default: preview only)
       ?overwrite=true — overwrite existing tools (default: skip)
     """
-    raw = await file.read(MAX_UPLOAD_SIZE + 1)
-    if len(raw) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large")
+    raw = await file.read(MAX_TOOL_LIBRARY_SIZE + 1)
+    if len(raw) > MAX_TOOL_LIBRARY_SIZE:
+        raise HTTPException(status_code=413, detail="Tool library too large (max 16 MB)")
 
     loop = asyncio.get_event_loop()
     machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
@@ -5281,9 +5286,9 @@ async def apply_tool_library_import(
     file: UploadFile = File(...),
 ):
     """Apply a Fusion 360 tool library import — replaces tool.tbl and tool_library.json."""
-    raw = await file.read(MAX_UPLOAD_SIZE + 1)
-    if len(raw) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large")
+    raw = await file.read(MAX_TOOL_LIBRARY_SIZE + 1)
+    if len(raw) > MAX_TOOL_LIBRARY_SIZE:
+        raise HTTPException(status_code=413, detail="Tool library too large (max 16 MB)")
 
     loop = asyncio.get_event_loop()
     machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
