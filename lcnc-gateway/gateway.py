@@ -1222,13 +1222,14 @@ _halshow_topology_sent: dict = {}              # client_id → True once topolog
 # writer and trips the heartbeat watchdog. Instead: pre-encode the bytes, serve
 # them via GET /preview (uvicorn streamed response runs off the WS writer),
 # and broadcast a tiny JSON ping per version so clients know to fetch.
-_gcode_preview_pending: Optional[dict] = None   # {"file","feed","feed_lines","rapid","stats"}
+_gcode_preview_pending: Optional[dict] = None   # {"file"} metadata only — the polyline lives in _gcode_preview_bytes (worker passthrough); consumers only read .get("file")
 _gcode_preview_version: int = int(time.time()) # bumps on file change (or unload); seeded from startup so ?v= URLs don't collide across restarts
 _gcode_last_file: Optional[str] = None          # edge detection in poller
 _gcode_last_mtime: Optional[float] = None       # re-parse on in-place edits of the same path
 _gcode_refresh_running: bool = False            # single-flight guard
-# Pre-encoded msgpack bytes of _gcode_preview_pending. Served over HTTP by
-# GET /preview so the 2.7 MB polyline payload never touches the WS writer.
+# The parse worker's msgpack output, published verbatim (passthrough — never
+# decoded on the gateway). Served over HTTP by GET /preview so the 2.7 MB
+# polyline payload never touches the WS writer.
 _gcode_preview_bytes: Optional[bytes] = None
 # Same payload pre-compressed once per parse so each client doesn't pay the
 # gzip cost on every fetch. /preview picks one based on Accept-Encoding.
@@ -4542,62 +4543,53 @@ async def _refresh_gcode_preview(filepath: str):
             _trace.emit("gcode.parse_worker_failed", level="warn",
                         rc=returncode, stderr_tail=err_tail)
             return
-        # Surface worker-side timing (printed to stderr by the worker).
+        # Surface worker-side timing + lift the partial-parse marker into a
+        # structured event WITHOUT decoding the (multi-MB) stdout payload.
         if stderr:
             for ln in stderr.decode(errors="replace").splitlines():
-                if ln.strip():
+                if not ln.strip():
+                    continue
+                if ln.startswith("__PARTIAL__"):
+                    _p = ln.split("\t", 2)
+                    _trace.emit("gcode.parse_partial", level="warn", file=filepath,
+                                error=_p[2] if len(_p) > 2 else "",
+                                error_line=_p[1] if len(_p) > 1 else "")
+                else:
                     _trace.emit("gcode.worker_log", line=ln)
         _trace.emit("gcode.worker_done",
                     parse_ms=round((t_communicated - t_spawn) * 1000, 1),
                     stdout_bytes=len(stdout))
+        if not stdout:
+            _trace.emit("gcode.preview_refresh_failed", level="warn",
+                        file=filepath, exc="EmptyOutput", msg="worker emitted no bytes")
+            return
 
-        t_dec = time.monotonic()
-        preview = await asyncio.to_thread(_msgspec.msgpack.decode, stdout)
-        t_dec_done = time.monotonic()
-        pending = {
-            "file": filepath,
-            "feed": preview.get("feed", []),
-            "feed_lines": preview.get("feed_lines", []),
-            "rapid": preview.get("rapid", []),
-            "stats": preview.get("stats"),
-            # Partial-preview flag: the interpreter errored partway through, so
-            # the polyline stops short of the program. Carried in the preview
-            # payload so the UI can badge it instead of showing a truncated path
-            # as complete. None when the parse was clean.
-            "parse_error": preview.get("parse_error"),
-            "error_line": preview.get("error_line"),
-        }
-        if pending["parse_error"]:
-            _trace.emit("gcode.parse_partial", level="warn",
-                        file=filepath, error=pending["parse_error"],
-                        error_line=pending["error_line"])
-        # Encode once off-thread for the GET /preview endpoint. Clients fetch
-        # this over HTTP (uvicorn's streamed-response path — independent of
-        # the WS writer), so the event loop isn't stalled by N-way 2.7 MB
-        # send_bytes() on a single thread.
-        preview_bytes: bytes = await asyncio.to_thread(_msgspec.msgpack.encode, pending)
-        t_enc_done = time.monotonic()
-        # Pre-compress once so each client doesn't pay the gzip cost per fetch.
-        # Level 6 = default; for our msgpack of float arrays it gets ~70-80%
-        # reduction. Skip below 4 KB — overhead isn't worth it.
+        # PASSTHROUGH (mmw#4 / GC): the worker already emits the EXACT GET /preview
+        # wire shape (incl. "file"), so we publish its bytes verbatim — no decode +
+        # re-encode. Decoding inflated the payload into hundreds of thousands of
+        # tiny [x,y,z] list objects purely to re-serialize them, and that fresh
+        # live-object population is what drove gen-0/gen-1 GC scans to 50-120 ms
+        # (the HB-WAKEs). Nothing in the gateway reads the polylines as Python
+        # objects — both consumers only need `file` — so we keep just that. gzip
+        # runs on the opaque bytes off-thread (GIL-releasing C, allocates no
+        # tracked objects). Clients fetch over HTTP (GET /preview), off the WS writer.
+        t_gz0 = time.monotonic()
         preview_bytes_gz: Optional[bytes] = None
-        if len(preview_bytes) >= 4096:
-            preview_bytes_gz = await asyncio.to_thread(gzip.compress, preview_bytes, 6)
+        if len(stdout) >= 4096:
+            preview_bytes_gz = await asyncio.to_thread(gzip.compress, stdout, 6)
         t_gz_done = time.monotonic()
-        # Publish pending + bytes together before bumping the version so
+        # Publish metadata + bytes together before bumping the version so
         # GET /preview readers never see stale bytes under a new version.
-        _gcode_preview_pending = pending
-        _gcode_preview_bytes = preview_bytes
+        _gcode_preview_pending = {"file": filepath}
+        _gcode_preview_bytes = stdout
         _gcode_preview_bytes_gz = preview_bytes_gz
         _gcode_preview_version += 1
         _gcode_last_file = filepath
         _gcode_last_mtime = _mtime_at_parse
         _trace.emit("gcode.publish",
                     version=_gcode_preview_version,
-                    decode_ms=round((t_dec_done - t_dec) * 1000, 1),
-                    encode_ms=round((t_enc_done - t_dec_done) * 1000, 1),
-                    gzip_ms=round((t_gz_done - t_enc_done) * 1000, 1),
-                    bytes=len(preview_bytes),
+                    gzip_ms=round((t_gz_done - t_gz0) * 1000, 1),
+                    bytes=len(stdout),
                     bytes_gz=len(preview_bytes_gz) if preview_bytes_gz else 0,
                     total_ms=round((t_gz_done - t_start) * 1000, 1))
     except Exception as e:

@@ -166,7 +166,9 @@ def parse(ctx: dict) -> dict:
             # complete one (silent partial-success was the bug).
             parse_error = gcode.strerror(result)
             error_line = seq
-            print(f"parse error at line {seq}: {parse_error}", file=sys.stderr, flush=True)
+            # Machine-readable marker so the gateway can raise the structured
+            # parse_partial event WITHOUT decoding the (multi-MB) stdout payload.
+            print(f"__PARTIAL__\t{seq}\t{parse_error}", file=sys.stderr, flush=True)
         print(f"gcode.parse feed={len(canon.feed)} rapid={len(canon.rapid)} parse_ms={(t1-t0)*1000:.0f}", file=sys.stderr, flush=True)
     finally:
         shutil.rmtree(td, ignore_errors=True)
@@ -316,8 +318,12 @@ def parse(ctx: dict) -> dict:
         "fileSize": file_size,
     }
 
-    return {"feed": feed, "feed_lines": feed_lines, "rapid": rapid, "stats": stats,
-            "parse_error": parse_error, "error_line": error_line}
+    # Include "file" so this dict is the EXACT GET /preview wire shape: the
+    # gateway publishes these bytes verbatim (no decode + re-encode), which is
+    # what keeps the multi-MB polyline from ever becoming Python objects on the
+    # event-loop process (mmw#4 GC pressure).
+    return {"file": filename, "feed": feed, "feed_lines": feed_lines, "rapid": rapid,
+            "stats": stats, "parse_error": parse_error, "error_line": error_line}
 
 
 def main() -> None:
