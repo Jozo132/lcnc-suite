@@ -551,7 +551,7 @@ function _ensurePreviewWorker(): Worker {
     }
     // markRaw: the payload holds transferred Float32Array/Uint32Array buffers;
     // letting Vue deep-proxy them would wrap the typed arrays in a Proxy, which
-    // breaks/​slows THREE.BufferAttribute's GPU upload. Consumers only react to
+    // breaks/slows THREE.BufferAttribute's GPU upload. Consumers only react to
     // the ref reassignment, not deep mutation, so raw is correct here.
     viewerGcode.value = m.gcode ? markRaw(m.gcode) : null;
     _previewErr.value = null;
