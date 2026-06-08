@@ -5052,22 +5052,26 @@ async def save_gcode(path: str = Body(...), content: str = Body(...)):
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    encoded = content.encode("utf-8")
-    if len(encoded) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
-
-    # Offload encode-already-done + the atomic write+fsync off the event loop so a
-    # large editor save / slow disk can't stall the HAL heartbeat (#35). fsync for
+    # Encode + size-check + atomic write+fsync ALL off the event loop (#35, P1.1):
+    # the UTF-8 encode of a multi-MB editor save holds the GIL, so running it inline
+    # (as before) stalled the HAL heartbeat just like the disk write did. fsync for
     # durable atomic publication — LinuxCNC must never read a half-written file.
+    def _encode_check_write() -> Tuple[bool, int]:
+        encoded = content.encode("utf-8")
+        if len(encoded) > MAX_UPLOAD_SIZE:
+            return (False, len(encoded))
+        atomic_write_bytes(abs_path, encoded, fsync=True)
+        return (True, len(encoded))
+
     try:
         loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, lambda: atomic_write_bytes(abs_path, encoded, fsync=True)
-        )
+        ok, size = await loop.run_in_executor(None, _encode_check_write)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+    if not ok:
+        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
 
-    return {"ok": True, "path": abs_path, "size": len(encoded)}
+    return {"ok": True, "path": abs_path, "size": size}
 
 
 # ---- Fusion 360 Tool Library Import ----
