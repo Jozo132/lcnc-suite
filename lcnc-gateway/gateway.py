@@ -1951,8 +1951,11 @@ def try_connect_lcnc() -> bool:
     """Attempt to connect to LinuxCNC. Returns True on success."""
     global STAT, CMD, ERR, lcnc_connected, _lcnc_pid, _nc_files_dir, _ini_config, _ever_connected
     global _machine_pos_warned, _spindle_warned, _err_poll_warned
+    global _var_file_path_cache_key, _var_file_path_cache_val
     _nc_files_dir = None        # re-resolve on reconnect
     _ini_config = None          # re-read INI config on reconnect
+    _var_file_path_cache_key = None  # re-resolve var-file path on reconnect (P2.1)
+    _var_file_path_cache_val = None
     if not _nml_connectable():
         return False
     try:
@@ -2676,21 +2679,38 @@ def _write_var_file_updates(var_file: str, str_vars: Dict[str, float]) -> None:
     atomic_write_bytes(var_file, "".join(lines).encode("utf-8"))
 
 
+# Memoized resolved var-file path, keyed by the active INI filename. Resolving it
+# parses the INI (linuxcnc.ini + .find) — wasteful to repeat on every 30 Hz poll
+# (P2.1), since PARAMETER_FILE is static for a given INI. Re-resolved only when
+# STAT.ini_filename changes; also cleared on reconnect (try_connect_lcnc).
+_var_file_path_cache_key: Optional[str] = None
+_var_file_path_cache_val: Optional[str] = None
+
+
 def _resolve_var_file_path() -> Optional[str]:
-    """Resolve absolute path to the LinuxCNC var file from the active INI."""
+    """Resolve absolute path to the LinuxCNC var file from the active INI.
+
+    Memoized by INI filename so the INI parse runs once per INI, not on every
+    30 Hz poll. A successful resolve AND a configured-but-absent PARAMETER_FILE
+    are both cached (both stable for the INI); only a transient `linuxcnc.ini`
+    failure is left uncached so it retries next tick.
+    """
+    global _var_file_path_cache_key, _var_file_path_cache_val
     ini_path = getattr(STAT, "ini_filename", None)
     if not ini_path:
         return None
+    if ini_path == _var_file_path_cache_key:
+        return _var_file_path_cache_val
     try:
         ini = linuxcnc.ini(ini_path)
     except Exception:
-        return None
+        return None  # transient — don't poison the cache; retry next tick
     var_file = ini.find("RS274NGC", "PARAMETER_FILE")
-    if not var_file:
-        return None
-    if not os.path.isabs(var_file):
+    if var_file and not os.path.isabs(var_file):
         var_file = os.path.join(os.path.dirname(ini_path), var_file)
-    return var_file
+    _var_file_path_cache_key = ini_path
+    _var_file_path_cache_val = var_file or None
+    return _var_file_path_cache_val
 
 
 def _seed_wcs_cache():
