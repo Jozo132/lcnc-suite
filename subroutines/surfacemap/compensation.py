@@ -122,6 +122,18 @@ class Compensation :
 		viz_y = self.y[yi_idx]
 		viz_zi = self.zi[np.ix_(xi_idx, yi_idx)]
 
+		# Backfill out-of-hull NaN (from cubic/linear griddata) with nearest-neighbour
+		# so the browser receives a COMPLETE grid and derives nothing itself — the
+		# "scipy comp grid required, no IDW fallback" architecture (a95fc7d). UI-only:
+		# self.zi (the runtime compensation grid) is untouched. scipy nearest uses a
+		# cKDTree, far cheaper than the old O(cells x points) frontend fill.
+		viz_nan = np.isnan(viz_zi)
+		if viz_nan.any():
+			vxx, vyy = np.meshgrid(viz_x, viz_y, indexing='ij')
+			viz_near = griddata((self.x_data, self.y_data), self.z_data,
+			                    (vxx, vyy), method='nearest')
+			viz_zi = np.where(viz_nan, viz_near, viz_zi)
+
 		grid_path = os.path.splitext(self.filename)[0] + "-grid.json"
 		try:
 			grid_dir = os.path.dirname(grid_path) or "."

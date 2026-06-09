@@ -2135,18 +2135,10 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
       const vi = iy * nx + ix;
       const gx = grid.x[ix]!, gy = grid.y[iy]!;
       let z = grid.zi[ix]?.[iy];
-      if (z == null || !isFinite(z)) {
-        // Outside the convex hull — nearest raw probe point. O(invalid cells × pts);
-        // bounded (only out-of-hull edge cells scan) and probe-point counts are
-        // small. If large surveys ever make this slow, the right fix is to publish
-        // a complete (nearest-filled) grid from the backend (P4.2) — left as-is here.
-        let bestD2 = Infinity, bestZ = 0;
-        for (const p of pts) {
-          const d2 = (gx - p[0]) ** 2 + (gy - p[1]) ** 2;
-          if (d2 < bestD2) { bestD2 = d2; bestZ = p[2]; }
-        }
-        z = bestZ;
-      }
+      // Complete grid expected — out-of-hull cells are filled server-side now
+      // (compensation.py nearest backfill; a95fc7d "no IDW fallback"). A residual
+      // null only means a stale/pre-fix grid file → render flat, no main-thread scan.
+      if (z == null || !isFinite(z)) z = 0;
       posArr.setX(vi, gx);
       posArr.setY(vi, gy);
       posArr.setZ(vi, z);

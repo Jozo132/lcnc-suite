@@ -36,6 +36,9 @@ def main() -> None:
     ap.add_argument("--grid", type=int, default=160, help="comp-grid resolution per axis")
     ap.add_argument("--cx", type=float, default=0.0, help="disk centre X")
     ap.add_argument("--cy", type=float, default=0.0, help="disk centre Y")
+    ap.add_argument("--holes", action="store_true",
+                    help="leave out-of-hull cells null (simulate a stale/pre-fix grid "
+                         "that compensation.py's nearest-backfill would now complete)")
     args = ap.parse_args()
 
     R, S, cx, cy = args.radius, args.step, args.cx, args.cy
@@ -65,10 +68,14 @@ def main() -> None:
         col = []
         for iy in range(ny):
             x, y = gx[ix], gy[iy]
-            if (x - cx) ** 2 + (y - cy) ** 2 <= R * R:
+            inside = (x - cx) ** 2 + (y - cy) ** 2 <= R * R
+            if inside or not args.holes:
+                # Default: a COMPLETE grid, as compensation.py now emits (out-of-hull
+                # cells nearest-backfilled server-side). --holes leaves them null to
+                # exercise the frontend's stale-file flat fallback.
                 col.append(round(surface_z(x - cx, y - cy), 4))
             else:
-                col.append(None)   # out-of-hull → frontend NN-fills (the deferred path)
+                col.append(None)
                 null_cells += 1
         zi.append(col)
 
@@ -76,11 +83,13 @@ def main() -> None:
     with open(json_path, "w") as f:
         json.dump({"x": gx, "y": gy, "zi": zi, "method": 0}, f)
 
-    nn_ops = null_cells * len(pts)
     print(f"  probe-results.txt      {len(pts):>6d} points  ({os.path.getsize(txt_path)//1024} KB)")
     print(f"  probe-results-grid.json {nx}x{ny} grid, {null_cells} null cells "
           f"({os.path.getsize(json_path)//1024} KB)")
-    print(f"  → {len(pts)} InstancedMesh dots; NN fill ~{nn_ops/1e6:.1f}M ops on load")
+    if null_cells:
+        print(f"  → --holes: {null_cells} null cells → frontend flat fallback (stale-file path)")
+    else:
+        print(f"  → complete grid: {len(pts)} InstancedMesh dots, no frontend NN fill")
     print(f"  written to {args.out_dir}")
     print("  RESTART the suite (gateway reads these at startup), then load the surface layer.")
 
