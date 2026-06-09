@@ -4833,9 +4833,10 @@ async def lifespan(app: "FastAPI"):
         except Exception as e:
             print(f"[SHUTDOWN] {_elapsed()} gcode proc terminate failed: {e}", flush=True)
 
-    # 7. Camera.
+    # 7. Camera — awaitable broker shutdown stops the producer + releases the
+    # device deterministically (review #4), instead of a fire-and-forget release.
     try:
-        _camera_release()
+        await _camera_broker.aclose()
         print(f"[SHUTDOWN] {_elapsed()} camera released", flush=True)
     except Exception as e:
         print(f"[SHUTDOWN] {_elapsed()} camera release failed: {e}", flush=True)
@@ -6901,35 +6902,64 @@ class _CameraBroker:
         self._latest: Optional[bytes] = None
         self._seq = 0
         self._stop_handle: Optional[asyncio.TimerHandle] = None
+        # Serialize ALL start/stop transitions: two simultaneous first subscribers
+        # must not both open the device + start a producer (review #3), and a
+        # grace-stop release must not race a re-subscribe reusing the device
+        # (review #4). Teardown is awaited — no fire-and-forget release task.
+        self._lock = asyncio.Lock()
 
     async def subscribe(self) -> bool:
         """Register a viewer; start the producer on the first. False if no camera."""
-        if self._stop_handle is not None:          # a viewer arrived within the grace
-            self._stop_handle.cancel()
-            self._stop_handle = None
-        self._subscribers += 1
-        if self._task is None:
-            ok = await asyncio.to_thread(_camera_init)
-            if not ok:
-                self._subscribers -= 1
-                return False
-            self._task = register_bg_task(asyncio.create_task(self._produce()))
-        return True
+        async with self._lock:
+            if self._stop_handle is not None:      # a viewer arrived within the grace
+                self._stop_handle.cancel()
+                self._stop_handle = None
+            self._subscribers += 1
+            if self._task is None or self._task.done():
+                ok = await asyncio.to_thread(_camera_init)
+                if not ok:
+                    self._subscribers -= 1
+                    return False
+                self._task = register_bg_task(asyncio.create_task(self._produce()))
+            return True
 
     def unsubscribe(self) -> None:
+        # Sync, on the loop. Schedule a grace-stop when the last viewer leaves.
         self._subscribers = max(0, self._subscribers - 1)
         if self._subscribers == 0 and self._task is not None and self._stop_handle is None:
             loop = asyncio.get_event_loop()
-            self._stop_handle = loop.call_later(self._GRACE_S, self._stop)
+            self._stop_handle = loop.call_later(
+                self._GRACE_S,
+                lambda: register_bg_task(asyncio.create_task(self._grace_stop())),
+            )
 
-    def _stop(self) -> None:
-        self._stop_handle = None
-        if self._subscribers > 0:                  # someone re-subscribed in the grace
-            return
+    async def _grace_stop(self) -> None:
+        async with self._lock:
+            self._stop_handle = None
+            if self._subscribers > 0:              # re-subscribed during the grace
+                return
+            await self._teardown()
+
+    async def aclose(self) -> None:
+        """Awaitable shutdown for lifespan: stop the producer + release the device."""
+        async with self._lock:
+            if self._stop_handle is not None:
+                self._stop_handle.cancel()
+                self._stop_handle = None
+            self._subscribers = 0
+            await self._teardown()
+
+    async def _teardown(self) -> None:
+        # Caller holds self._lock. Cancel + AWAIT the producer, then release — so
+        # nothing closes a device a later subscriber has already reopened.
         if self._task is not None:
             self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
             self._task = None
-        register_bg_task(asyncio.create_task(asyncio.to_thread(_camera_release)))
+        await asyncio.to_thread(_camera_release)
 
     async def _produce(self) -> None:
         fps = int(os.environ.get("LCNC_CAMERA_FPS", "15"))

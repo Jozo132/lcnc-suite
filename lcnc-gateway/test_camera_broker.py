@@ -1,6 +1,8 @@
-"""F4 / P3: the single-producer CameraBroker. The device must open once regardless
-of viewer count, survive viewers leaving while others remain, and a re-subscribe
-within the grace window must reuse the running producer (not re-open the device)."""
+"""F4 / P3 + review #3/#4: the single-producer CameraBroker. The device opens once
+regardless of viewer count — including under *concurrent* first subscribers (review #3)
+— survives viewers leaving while others remain, reuses the producer on a re-subscribe
+within the grace window, and tears down deterministically via an awaitable aclose()
+that releases the device exactly once (review #4)."""
 import asyncio
 import os
 import sys
@@ -44,15 +46,6 @@ class TestCameraBroker(unittest.IsolatedAsyncioTestCase):
             gateway.register_bg_task,
         ) = self._orig
 
-    @staticmethod
-    async def _cancel(task):
-        if task is not None and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-
     async def test_one_producer_for_many_subscribers(self):
         b = gateway._CameraBroker()
         self.assertTrue(await b.subscribe())
@@ -61,28 +54,34 @@ class TestCameraBroker(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.init_calls, 1)   # device opened ONCE for 3 viewers
         self.assertEqual(b._subscribers, 3)
         self.assertIsNotNone(b._task)
-        producer = b._task
-        # two leave — producer stays, no stop scheduled
         b.unsubscribe()
         b.unsubscribe()
         self.assertEqual(b._subscribers, 1)
-        self.assertIsNone(b._stop_handle)
-        self.assertFalse(producer.done())
-        await self._cancel(producer)
+        self.assertIsNone(b._stop_handle)      # producer stays, no stop scheduled
+        await b.aclose()
 
-    async def test_last_unsubscribe_schedules_stop_then_releases(self):
+    async def test_concurrent_first_subscribers_start_one_producer(self):
+        # review #3: two/three simultaneous first subscribers must not each open the
+        # device + start a producer. The lock serializes the start transition.
+        b = gateway._CameraBroker()
+        results = await asyncio.gather(b.subscribe(), b.subscribe(), b.subscribe())
+        self.assertEqual(results, [True, True, True])
+        self.assertEqual(self.init_calls, 1)   # ONE device-open, not three
+        self.assertEqual(b._subscribers, 3)
+        self.assertIsNotNone(b._task)
+        await b.aclose()
+
+    async def test_grace_stop_releases_once(self):
         b = gateway._CameraBroker()
         await b.subscribe()
-        producer = b._task
         b.unsubscribe()
         self.assertEqual(b._subscribers, 0)
-        self.assertIsNotNone(b._stop_handle)   # grace stop armed
-        b._stop()                              # fire it directly (skip the 2 s wait)
-        self.assertIsNone(b._task)             # producer dropped
-        await asyncio.sleep(0)                 # let the offloaded release task run
-        await asyncio.sleep(0.01)
+        self.assertIsNotNone(b._stop_handle)   # grace timer armed
+        b._stop_handle.cancel()                # drive the stop directly (skip the 2 s wait)
+        b._stop_handle = None
+        await b._grace_stop()
+        self.assertIsNone(b._task)
         self.assertEqual(self.release_calls, 1)
-        await self._cancel(producer)
 
     async def test_resubscribe_within_grace_reuses_producer(self):
         b = gateway._CameraBroker()
@@ -94,7 +93,16 @@ class TestCameraBroker(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(b._stop_handle)      # grace stop cancelled
         self.assertIs(b._task, producer)       # same producer reused
         self.assertEqual(self.init_calls, 1)   # device NOT re-opened
-        await self._cancel(b._task)
+        await b.aclose()
+
+    async def test_aclose_stops_and_releases(self):
+        # review #4: shutdown is awaitable and releases exactly once.
+        b = gateway._CameraBroker()
+        await b.subscribe()
+        self.assertIsNotNone(b._task)
+        await b.aclose()
+        self.assertIsNone(b._task)
+        self.assertEqual(self.release_calls, 1)
 
 
 if __name__ == "__main__":
