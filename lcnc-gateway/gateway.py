@@ -56,6 +56,7 @@ from tool_table import (
 )
 from settings_store import SettingsStore, VALID_SECTIONS as _VALID_SETTINGS_SECTIONS
 from tool_store import ToolLibraryStore
+from camera_broker import CameraBroker
 
 
 # === TEMP LIFECYCLE PROBE (remove after debugging) ===
@@ -6895,113 +6896,14 @@ def _camera_release():
             _camera = None
 
 
-class _CameraBroker:
-    """Single-producer camera fan-out (P3).
-
-    Previously every `/camera/stream` viewer ran its own capture+JPEG-encode loop
-    (`_camera_grab_jpeg` per frame), so N viewers paid N× the read+`imencode` cost
-    (serialized behind `_camera_lock`, so extra viewers added queued duplicate work
-    rather than throughput). Here one producer task captures+encodes at `CAMERA_FPS`
-    into a shared latest JPEG + a monotonic sequence; consumers await the next
-    sequence and stream the *same* bytes — newest-wins, stale frames dropped. The
-    device opens on the first subscriber and releases a short grace after the last.
-    All state is touched only on the event loop (single-threaded); the blocking cv2
-    calls stay off-loop via `to_thread` (and `_camera_lock`)."""
-
-    _GRACE_S = 2.0
-
-    def __init__(self) -> None:
-        self._subscribers = 0
-        self._task: Optional[asyncio.Task] = None
-        self._cond = asyncio.Condition()
-        self._latest: Optional[bytes] = None
-        self._seq = 0
-        self._stop_handle: Optional[asyncio.TimerHandle] = None
-        # Serialize ALL start/stop transitions: two simultaneous first subscribers
-        # must not both open the device + start a producer (review #3), and a
-        # grace-stop release must not race a re-subscribe reusing the device
-        # (review #4). Teardown is awaited — no fire-and-forget release task.
-        self._lock = asyncio.Lock()
-
-    async def subscribe(self) -> bool:
-        """Register a viewer; start the producer on the first. False if no camera."""
-        async with self._lock:
-            if self._stop_handle is not None:      # a viewer arrived within the grace
-                self._stop_handle.cancel()
-                self._stop_handle = None
-            self._subscribers += 1
-            if self._task is None or self._task.done():
-                ok = await asyncio.to_thread(_camera_init)
-                if not ok:
-                    self._subscribers -= 1
-                    return False
-                self._task = register_bg_task(asyncio.create_task(self._produce()))
-            return True
-
-    def unsubscribe(self) -> None:
-        # Sync, on the loop. Schedule a grace-stop when the last viewer leaves.
-        self._subscribers = max(0, self._subscribers - 1)
-        if self._subscribers == 0 and self._task is not None and self._stop_handle is None:
-            loop = asyncio.get_event_loop()
-            self._stop_handle = loop.call_later(
-                self._GRACE_S,
-                lambda: register_bg_task(asyncio.create_task(self._grace_stop())),
-            )
-
-    async def _grace_stop(self) -> None:
-        async with self._lock:
-            self._stop_handle = None
-            if self._subscribers > 0:              # re-subscribed during the grace
-                return
-            await self._teardown()
-
-    async def aclose(self) -> None:
-        """Awaitable shutdown for lifespan: stop the producer + release the device."""
-        async with self._lock:
-            if self._stop_handle is not None:
-                self._stop_handle.cancel()
-                self._stop_handle = None
-            self._subscribers = 0
-            await self._teardown()
-
-    async def _teardown(self) -> None:
-        # Caller holds self._lock. Cancel + AWAIT the producer, then release — so
-        # nothing closes a device a later subscriber has already reopened.
-        if self._task is not None:
-            self._task.cancel()
-            try:
-                await self._task
-            except asyncio.CancelledError:
-                pass
-            self._task = None
-        await asyncio.to_thread(_camera_release)
-
-    async def _produce(self) -> None:
-        fps = int(os.environ.get("LCNC_CAMERA_FPS", "15"))
-        delay = 1.0 / max(1, fps)
-        while True:
-            jpeg = await asyncio.to_thread(_camera_grab_jpeg)
-            if jpeg is not None:
-                async with self._cond:
-                    self._latest = jpeg
-                    self._seq += 1
-                    self._cond.notify_all()
-            await asyncio.sleep(delay)
-
-    async def frames(self):
-        """Yield the latest shared JPEG, newest-wins (a slow viewer drops frames,
-        never the producer or other viewers)."""
-        last_seq = -1
-        while True:
-            async with self._cond:
-                await self._cond.wait_for(lambda: self._seq != last_seq)
-                last_seq = self._seq
-                jpeg = self._latest
-            if jpeg is not None:
-                yield jpeg
-
-
-_camera_broker = _CameraBroker()
+# Single-producer camera fan-out (P3 / M5) — the async lifecycle lives in
+# camera_broker.py; the device-touching cv2 I/O + bg-task registry are injected.
+_camera_broker = CameraBroker(
+    grab_jpeg=_camera_grab_jpeg,
+    device_init=_camera_init,
+    device_release=_camera_release,
+    register_bg_task=register_bg_task,
+)
 
 # ---- Server-Side Settings Endpoints ----
 
