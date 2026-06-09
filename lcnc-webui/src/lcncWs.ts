@@ -460,6 +460,9 @@ export interface ViewerGcode {
   // P4.1: bounding box of the rendered polyline, computed in the parse worker so
   // ThreeViewer skips an O(n) main-thread scan per load.
   bounds?: { min: number[]; max: number[] } | null;
+  // P4.1: source-line → point-index range map, built off-thread by previewWorker
+  // (Maps survive structured clone) so ThreeViewer skips the O(points) build.
+  feedLineMap?: Map<number, { start: number; end: number }>;
   [key: string]: any;  // stats fields are folded in by GcodePanel watcher
 }
 

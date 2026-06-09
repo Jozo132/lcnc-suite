@@ -1581,7 +1581,6 @@ function applyGcode(g: ViewerGcode) {
   if (highlightGeom) highlightGeom.dispose();
   feedLine = rapidLine = feedOverflow = rapidOverflow = highlightLine = null;
   feedSharedGeom = rapidSharedGeom = highlightGeom = null;
-  feedLineMap = new Map();
 
   // Prefer the flat Float32Array buffers from previewWorker (P4.1); fall back to
   // the nested arrays (WS path / older payloads). feed_lines is index-aligned to
@@ -1592,14 +1591,17 @@ function applyGcode(g: ViewerGcode) {
   const _pointCount = (d: number[][] | Float32Array) =>
     d instanceof Float32Array ? d.length / 3 : d.length;
 
-  // Build line-number → point-index range map
-  for (let i = 0; i < feedLines.length; i++) {
-    const ln = feedLines[i]!;
-    const entry = feedLineMap.get(ln);
-    if (entry) {
-      entry.end = i;
-    } else {
-      feedLineMap.set(ln, { start: i, end: i });
+  // Prefer the line→point-range map built off-thread by previewWorker (P4.1); fall
+  // back to building it here for the WS/legacy path that carries no worker map.
+  if (g.feedLineMap instanceof Map) {
+    feedLineMap = g.feedLineMap;
+  } else {
+    feedLineMap = new Map();
+    for (let i = 0; i < feedLines.length; i++) {
+      const ln = feedLines[i]!;
+      const entry = feedLineMap.get(ln);
+      if (entry) entry.end = i;
+      else feedLineMap.set(ln, { start: i, end: i });
     }
   }
 

@@ -34,6 +34,7 @@ self.onmessage = async (e: MessageEvent<Req>) => {
     const feedPos = _flatten(g.feed);
     const rapidPos = _flatten(g.rapid);
     const feedLines = _toU32(g.feed_lines);
+    const feedLineMap = _buildFeedLineMap(g.feed_lines);
 
     // Drop the nested arrays from the passthrough; the flat typed arrays replace
     // them. Everything else (file, stats fields) is small and cloned as-is.
@@ -43,7 +44,7 @@ self.onmessage = async (e: MessageEvent<Req>) => {
     if (feedLines) transfer.push(feedLines.buffer as ArrayBuffer);
 
     self.postMessage(
-      { version, gcode: { ...rest, feedPos, rapidPos, feed_lines: feedLines } },
+      { version, gcode: { ...rest, feedPos, rapidPos, feed_lines: feedLines, feedLineMap } },
       { transfer },
     );
   } catch (err) {
@@ -69,4 +70,19 @@ function _toU32(a: unknown): Uint32Array | undefined {
   const out = new Uint32Array(a.length);
   for (let i = 0; i < a.length; i++) out[i] = a[i];
   return out;
+}
+
+// Build the source-line → point-index range map off the main thread (P4.1). A Map
+// survives structured clone, and it has one entry per source line (far fewer than
+// points), so cloning it is cheap while the O(points) build moves off the UI thread.
+function _buildFeedLineMap(feed_lines: unknown): Map<number, { start: number; end: number }> {
+  const m = new Map<number, { start: number; end: number }>();
+  if (!Array.isArray(feed_lines)) return m;
+  for (let i = 0; i < feed_lines.length; i++) {
+    const ln = feed_lines[i];
+    const entry = m.get(ln);
+    if (entry) entry.end = i;
+    else m.set(ln, { start: i, end: i });
+  }
+  return m;
 }
