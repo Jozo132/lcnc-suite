@@ -324,6 +324,33 @@ export const halSignals = ref<HalSignal[]>([]);
 export const halParams = ref<HalParam[]>([]);
 export const halInitialized = ref(false);
 
+// HALshow: persistent name→index maps, rebuilt only when a snapshot arrives (review #7).
+// Avoids allocating three Sets + scanning every pin/signal/param on every 5 Hz value
+// update — each update then applies only its (few) delta keys via O(1) lookups.
+let _halPinIdx = new Map<string, number>();
+let _halSigIdx = new Map<string, number>();
+let _halParamIdx = new Map<string, number>();
+
+function _buildHalIndex(arr: Array<{ name: string }>): Map<string, number> {
+  const m = new Map<string, number>();
+  for (let i = 0; i < arr.length; i++) m.set(arr[i]!.name, i);
+  return m;
+}
+
+function _applyHalDelta(
+  delta: Record<string, string>,
+  arr: Array<{ value: string }>,
+  idx: Map<string, number>,
+): number {
+  let unknown = 0;
+  for (const k in delta) {
+    const i = idx.get(k);
+    if (i === undefined) { unknown++; continue; }  // key not in the snapshot → stale
+    arr[i]!.value = delta[k]!;
+  }
+  return unknown;
+}
+
 const TIMING_MAX_SAMPLES = 300;
 
 type TimingKey = "rt" | "network" | "server" | "cycle" | "poll" | "errors" | "parse" | "overhead" | "encode" | "sharedEncode" | "decode" | "ws_bytes";
@@ -902,30 +929,17 @@ function onFrame(data: string | ArrayBuffer) {
       halPins.value = msg.pins ?? [];
       halSignals.value = msg.signals ?? [];
       halParams.value = msg.params ?? [];
+      _halPinIdx = _buildHalIndex(halPins.value);
+      _halSigIdx = _buildHalIndex(halSignals.value);
+      _halParamIdx = _buildHalIndex(halParams.value);
       halInitialized.value = true;
     } else if (msg.type === "halshow_update") {
-      const pinDelta = msg.pins ?? {};
-      const sigDelta = msg.signals ?? {};
-      const paramDelta = msg.params ?? {};
-      const knownPins = new Set(halPins.value.map(p => p.name));
-      const knownSigs = new Set(halSignals.value.map(s => s.name));
-      const knownParams = new Set(halParams.value.map(p => p.name));
-      let unknownCount = 0;
-      for (const p of halPins.value) {
-        const v = pinDelta[p.name];
-        if (v !== undefined) p.value = v;
-      }
-      for (const s of halSignals.value) {
-        const v = sigDelta[s.name];
-        if (v !== undefined) s.value = v;
-      }
-      for (const p of halParams.value) {
-        const v = paramDelta[p.name];
-        if (v !== undefined) p.value = v;
-      }
-      for (const k of Object.keys(pinDelta)) if (!knownPins.has(k)) unknownCount++;
-      for (const k of Object.keys(sigDelta)) if (!knownSigs.has(k)) unknownCount++;
-      for (const k of Object.keys(paramDelta)) if (!knownParams.has(k)) unknownCount++;
+      // Apply only the delta keys via the persistent index maps (review #7) — no
+      // per-update Set allocation, no full-array scans.
+      const unknownCount =
+        _applyHalDelta(msg.pins ?? {}, halPins.value, _halPinIdx)
+        + _applyHalDelta(msg.signals ?? {}, halSignals.value, _halSigIdx)
+        + _applyHalDelta(msg.params ?? {}, halParams.value, _halParamIdx);
       // Unknown keys mean the local snapshot is out of sync with the server
       // (HAL graph rebuilt, or we missed a snapshot). Mark uninitialised so
       // the panel can ask the user to reload — silent shadowing would let the
