@@ -374,6 +374,17 @@ function scheduleRender() {
   }, 150);
 }
 
+// Render-on-demand (like the main viewer): render once on a data change and on
+// OrbitControls 'change' (user interaction), NOT a continuous rAF loop. The old loop
+// re-rendered the heavy surface every frame forever — even with the probing tab
+// hidden — dropping frames until a browser reload. enableDamping is off, so there's
+// no inertia to animate; 'change' covers all camera motion.
+function _svRenderOnce() {
+  if (!_svRenderer || !_svScene || !_svCamera) return;
+  for (const lbl of _svLabels) lbl.quaternion.copy(_svCamera.quaternion);
+  _svRenderer.render(_svScene, _svCamera);
+}
+
 function render3DSurface(pts: [number, number, number][]) {
   if (!surfaceContainer.value || pts.length < 3) return;
   // Atomic render: scipy comp grid required, no IDW fallback
@@ -414,13 +425,8 @@ function render3DSurface(pts: [number, number, number][]) {
         _svControls.enablePan = true;
         _svControls.screenSpacePanning = true;
 
-        function animate() {
-          _svAnimId = requestAnimationFrame(animate);
-          for (const lbl of _svLabels) lbl.quaternion.copy(_svCamera!.quaternion);
-          _svControls!.update();
-          _svRenderer!.render(_svScene, _svCamera);
-        }
-        animate();
+        // Render-on-demand: only when the user moves the camera (no rAF loop).
+        _svControls.addEventListener("change", _svRenderOnce);
 
         _svRo = new ResizeObserver(() => {
           const cw = container.clientWidth || 1;
@@ -429,11 +435,13 @@ function render3DSurface(pts: [number, number, number][]) {
           _svCamera!.aspect = cw / ch;
           _svCamera!.updateProjectionMatrix();
           _svRenderer!.setSize(cw, ch);
+          _svRenderOnce();
         });
         _svRo.observe(container);
 
         _threeCleanup = () => {
           cancelAnimationFrame(_svAnimId);
+          _svControls?.removeEventListener("change", _svRenderOnce);
           _svRo?.disconnect(); _svRo = null;
           for (const lbl of _svLabels) { _svScene?.remove(lbl); lbl.dispose(); }
           _svLabels = [];
@@ -590,6 +598,7 @@ function render3DSurface(pts: [number, number, number][]) {
       _svCamera.position.copy(center).addScaledVector(dir, dist);
       _svControls.target.copy(center);
       _svControls.update();
+      _svRenderOnce();  // render-on-demand: paint the new data once
     });
 }
 
