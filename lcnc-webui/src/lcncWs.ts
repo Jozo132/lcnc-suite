@@ -142,6 +142,20 @@ function _telemetryBody(events: Array<Record<string, any>>): string {
   return events.map(e => JSON.stringify(e)).join("\n");
 }
 
+// Long-task observer (temporary diagnostic): report any main-thread task that blocks
+// > 500 ms — on a contended box that can starve the heartbeat worker and disarm the
+// client. The longtask API gives duration + start, not the JS culprit, so per-op timing
+// (GcodePanel edit.seed_blocked / edit.split_blocked) pins the cause.
+if (typeof PerformanceObserver !== "undefined") {
+  try {
+    new PerformanceObserver((list) => {
+      for (const e of list.getEntries()) {
+        if (e.duration > 500) emitTelemetry("longtask", { ms: Math.round(e.duration), start_ms: Math.round(e.startTime) });
+      }
+    }).observe({ entryTypes: ["longtask"] });
+  } catch { /* longtask not supported (Safari/Firefox) — per-op timing still covers it */ }
+}
+
 function _flushTelemetry(): void {
   _telemetryFlushScheduled = false;
   if (_telemetryQueue.length === 0) return;

@@ -4,6 +4,7 @@ import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
 import { loadMachineDefaults, STEP_RPM } from "./defaults";
 import { highlightGcode, type Token } from "./gcodeHighlight";
+import { emitTelemetry } from "./lcncWs";
 import { GCODE_LOOKUP, GCODE_REFERENCE } from "./gcodeReference";
 import { Play, SkipForward, Pause } from "lucide-vue-next";
 import Gate from "./Gate.vue";
@@ -108,7 +109,11 @@ const fileName = computed(() => {
 
 const lines = computed(() => {
   if (!props.gcodeContent) return [];
-  return props.gcodeContent.split("\n");
+  const _t = performance.now();
+  const out = props.gcodeContent.split("\n");
+  const _dt = performance.now() - _t;
+  if (_dt > 100) emitTelemetry("edit.split_blocked", { ms: Math.round(_dt), lines: out.length, bytes: props.gcodeContent.length });
+  return out;
 });
 
 const lineCount = computed(() => lines.value.length);
@@ -317,7 +322,12 @@ async function enterEdit() {
   editing.value = true;
   // Wait for v-if to mount the textarea, then seed its value imperatively.
   await nextTick();
-  if (editTextarea.value) editTextarea.value.value = props.gcodeContent;
+  if (editTextarea.value) {
+    const _t = performance.now();
+    editTextarea.value.value = props.gcodeContent;
+    const _dt = performance.now() - _t;
+    if (_dt > 100) emitTelemetry("edit.seed_blocked", { ms: Math.round(_dt), bytes: props.gcodeContent.length });
+  }
 }
 
 function discardEdit() {
