@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 import re
 import shutil
 from urllib.parse import urlsplit
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body, Request, Depends
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, JSONResponse, FileResponse, Response
 
@@ -5092,8 +5092,15 @@ async def upload_gcode(file: UploadFile = File(...)):
 
 
 @app.put("/save", dependencies=[Depends(require_token)])
-async def save_gcode(path: str = Body(...), content: str = Body(...)):
-    """Save edited G-code content back to an existing file."""
+async def save_gcode(request: Request, path: str = Query(...)):
+    """Save edited G-code content back to an existing file.
+
+    The body is the RAW UTF-8 text, not JSON (#35): a 50 MB `JSON.stringify` on the
+    browser main thread blocked it for seconds and starved the client heartbeat (the
+    gateway never even saw the request — so it never showed as an HB-WAKE). Reading the
+    raw body is async network I/O (no loop block), and it arrives already UTF-8-encoded,
+    so there's no on-loop encode either. Only the atomic write+fsync is offloaded.
+    """
     nc_dir = get_nc_files_dir()
     abs_path = os.path.abspath(path)
 
@@ -5109,26 +5116,18 @@ async def save_gcode(path: str = Body(...), content: str = Body(...)):
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    # Encode + size-check + atomic write+fsync ALL off the event loop (#35, P1.1):
-    # the UTF-8 encode of a multi-MB editor save holds the GIL, so running it inline
-    # (as before) stalled the HAL heartbeat just like the disk write did. fsync for
-    # durable atomic publication — LinuxCNC must never read a half-written file.
-    def _encode_check_write() -> Tuple[bool, int]:
-        encoded = content.encode("utf-8")
-        if len(encoded) > MAX_UPLOAD_SIZE:
-            return (False, len(encoded))
-        atomic_write_bytes(abs_path, encoded, fsync=True)
-        return (True, len(encoded))
-
-    try:
-        loop = asyncio.get_event_loop()
-        ok, size = await loop.run_in_executor(None, _encode_check_write)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
-    if not ok:
+    raw = await request.body()  # bytes, UTF-8 from the browser — async read, no loop block
+    if len(raw) > MAX_UPLOAD_SIZE:
         raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
 
-    return {"ok": True, "path": abs_path, "size": size}
+    # Atomic write + fsync off the loop — LinuxCNC must never read a half-written file.
+    try:
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, lambda: atomic_write_bytes(abs_path, raw, fsync=True))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
+
+    return {"ok": True, "path": abs_path, "size": len(raw)}
 
 
 # ---- Fusion 360 Tool Library Import ----
