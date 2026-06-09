@@ -4762,6 +4762,13 @@ async def lifespan(app: "FastAPI"):
             print(f"[SHUTDOWN] {_elapsed()} WS close timed out", flush=True)
         print(f"[SHUTDOWN] {_elapsed()} closed {len(snapshot)} WS connection(s)", flush=True)
 
+    # Capture the in-flight parse handle BEFORE cancelling background tasks
+    # (review #2): cancelling _refresh_gcode_preview runs its finally, which
+    # clears _gcode_parse_proc — but the to_thread worker + subprocess keep
+    # running. Reading the global in step 6 would then see None and orphan the
+    # child. Hold the handle here so step 6 can still terminate it.
+    _shutdown_parse_proc = _gcode_parse_proc
+
     # 3. Cancel background tasks. Must precede step 4: _disconnect_grace and
     # _heartbeat_loop continuously toggle the heartbeat field via _hal_send;
     # if still running when step 4 writes the deterministic LOW, the watchdog
@@ -4799,10 +4806,10 @@ async def lifespan(app: "FastAPI"):
             print(f"[SHUTDOWN] {_elapsed()} reader writer close: {type(e).__name__}: {e}", flush=True)
     print(f"[SHUTDOWN] {_elapsed()} HAL sockets disconnected", flush=True)
 
-    # 6. Terminate gcode parse subprocess if alive. Capture the handle LOCALLY first
-    # so a concurrent _refresh_gcode_preview finally clearing the global can't drop it
-    # mid-terminate (review #1). _terminate_parse_proc bounds the wait (to_thread).
-    proc = _gcode_parse_proc
+    # 6. Terminate the gcode parse subprocess if still alive, using the handle
+    # captured before step 3 (review #2). _terminate_parse_proc bounds the wait
+    # (to_thread); terminating the child unblocks the orphaned communicate() thread.
+    proc = _shutdown_parse_proc
     if proc is not None:
         try:
             await _terminate_parse_proc(proc)
@@ -6727,6 +6734,11 @@ async def ws_endpoint(ws: WebSocket):
     finally:
         _finally_t0 = time.monotonic()
         _set_phase(f"ws_endpoint.finally.entry client#{client_id}")
+        # Capture heartbeat freshness BEFORE removing the client (review #1): the
+        # resume-hold decision below needs it, and popping first made the later
+        # lookup always miss → 1e9 → even a healthy Ctrl-R reconnect could never
+        # register an armed-resume hold.
+        _last_hb_at_drop = _clients[client_id].last_hb if client_id in _clients else None
         _clients.pop(client_id, None)
         _halshow_topology_sent.pop(client_id, None)
         # Disconnect of an armed client: jog-stop any in-flight jog this
@@ -6761,7 +6773,7 @@ async def ws_endpoint(ws: WebSocket):
             # drop (clean Ctrl-R / wifi blip). A client whose heartbeat was already
             # lagging was struggling/overloaded — don't silently auto-restore armed
             # on reconnect; the operator must explicitly re-arm (safety clarity).
-            _hb_age = (time.time() - _clients[client_id].last_hb) if client_id in _clients else 1e9
+            _hb_age = (time.time() - _last_hb_at_drop) if _last_hb_at_drop is not None else 1e9
             if _hb_age <= _RESUME_MAX_HB_AGE:
                 _register_armed_resume_hold(_disc_session_id, client_id)
                 _trace.emit("safety.disconnect_disarmed", client_id=client_id)

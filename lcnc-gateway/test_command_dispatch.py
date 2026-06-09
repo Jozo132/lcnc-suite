@@ -476,6 +476,47 @@ class TestTerminateParseProc(unittest.TestCase):
         _run(gateway._terminate_parse_proc(p))
         self.assertTrue(p.killed)
 
+    def test_shutdown_reaps_child_after_owner_cancel(self):
+        # Review #2: lifespan must capture the parse handle BEFORE cancelling
+        # background tasks. Cancelling the owner runs its finally (which clears the
+        # global) while the subprocess keeps running — so reading the global in
+        # step 6 would see None and orphan the child. This models the fixed order
+        # (capture → cancel owner → terminate captured) with a REAL subprocess and
+        # proves the child is actually reaped.
+        import subprocess
+        import sys
+        import asyncio
+
+        proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+        gateway._gcode_parse_proc = proc
+        try:
+            async def _owner():
+                try:
+                    await asyncio.sleep(30)          # mimic awaiting the parse worker
+                finally:
+                    gateway._gcode_parse_proc = None  # _refresh's finally clears it
+
+            async def _drive():
+                task = gateway.register_bg_task(asyncio.ensure_future(_owner()))
+                await asyncio.sleep(0.02)             # let the owner reach its await
+                captured = gateway._gcode_parse_proc  # <-- capture BEFORE cancel (the fix)
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                self.assertIsNone(gateway._gcode_parse_proc)  # owner cleared the global
+                await gateway._terminate_parse_proc(captured)  # captured handle still reaps it
+
+            _run(_drive())
+            self.assertIsNotNone(proc.poll(), "orphaned parse child was not reaped on shutdown")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+            gateway._bg_tasks.clear()
+            gateway._gcode_parse_proc = None
+
 
 if __name__ == "__main__":
     unittest.main()
