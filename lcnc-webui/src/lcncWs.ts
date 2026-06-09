@@ -1,7 +1,7 @@
 import { ref, shallowRef, computed, markRaw } from "vue";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
 import { type WsCommand, OPERATOR_ERROR, isQueueSafe } from "./lcnc";
-import { updateServerCache, loadDisplayDefaults, type Vec3 } from "./defaults";
+import { updateServerCache, loadDisplayDefaults, registerSettingsSaver, type Vec3 } from "./defaults";
 import { enableWakeLock, disableWakeLock } from "./wakeLock";
 import { withToken } from "./auth";
 
@@ -851,8 +851,13 @@ function onFrame(data: string | ArrayBuffer) {
       // includes the field while _unacked_trip is set; absence = no trip.
       // Update synchronously (not via the rAF buffer) so the dialog opens
       // on the first status after a trip without a frame of delay.
+      // Only reassign when the value actually changes (P4.3) — reassigning the ref
+      // each status allocated a fresh object AND re-triggered every watcher, even
+      // when the trip reason was identical.
       if (msg.safety_trip) {
-        safetyTrip.value = { reason: msg.safety_trip.reason };
+        if (safetyTrip.value?.reason !== msg.safety_trip.reason) {
+          safetyTrip.value = { reason: msg.safety_trip.reason };
+        }
       } else if (safetyTrip.value !== null) {
         safetyTrip.value = null;
       }
@@ -860,9 +865,15 @@ function onFrame(data: string | ArrayBuffer) {
       const stale = msg.reader_stale === true;
       if (readerStale.value !== stale) readerStale.value = stale;
 
-      configWarning.value = msg.config_warning
-        ? { reason: msg.config_warning.reason, units: msg.config_warning.units === true }
-        : null;
+      const cw = msg.config_warning;
+      if (cw) {
+        const units = cw.units === true;
+        if (configWarning.value?.reason !== cw.reason || configWarning.value?.units !== units) {
+          configWarning.value = { reason: cw.reason, units };
+        }
+      } else if (configWarning.value !== null) {
+        configWarning.value = null;
+      }
 
       // Buffer status as plain data — flush to reactive ref once per rAF.
       // When messages queue up, only the latest triggers Vue reactivity.
@@ -968,6 +979,8 @@ export function send(obj: WsCommand) {
 export function saveSettings(section: string, data: any) {
   send({ cmd: "save_settings", section, data });
 }
+// Let defaults.ts flush settings through us without importing this module (P6).
+registerSettingsSaver(saveSettings);
 
 export function acknowledgeSafetyTrip() {
   // Optimistic clear — gateway will also stop broadcasting safety_trip on the

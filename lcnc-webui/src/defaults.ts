@@ -1,5 +1,15 @@
 import { ref } from "vue";
 import { withToken } from "./auth";
+import { resetServerSettings } from "./lcncApi";
+
+// lcncWs registers its WS settings-saver here so this module can flush a save
+// WITHOUT importing lcncWs (which imports defaults) — removes the import cycle and
+// the ineffective-dynamic-import build warning (P6). Registered when lcncWs loads
+// (app startup), long before any user-triggered save flush.
+let _settingsSaver: ((section: string, data: any) => void) | null = null;
+export function registerSettingsSaver(fn: (section: string, data: any) => void): void {
+  _settingsSaver = fn;
+}
 
 // ─── Input step constants ─────────────────────────────────────────
 export const STEP_DEFAULT = 1;
@@ -158,8 +168,7 @@ export function saveSection(key: string, data: any): void {
   clearTimeout(_saveTimers[key]);
   _saveTimers[key] = setTimeout(() => {
     _pendingSaves.delete(key);
-    // Dynamic import to avoid circular dependency at module load time
-    import("./lcncWs").then(({ saveSettings }) => saveSettings(key, data));
+    _settingsSaver?.(key, data);  // registered by lcncWs (avoids the import cycle)
   }, 300);
 }
 
@@ -779,9 +788,7 @@ export function resetAllDefaults(): void {
   localStorage.removeItem("lcnc-toolsetter-params");
   localStorage.removeItem("lcnc-probe-params");
   _cache = null;
-  import("./lcncApi").then(({ resetServerSettings }) =>
-    resetServerSettings().catch((e) =>
-      console.error("[settings] server reset failed:", e),
-    ),
+  resetServerSettings().catch((e) =>
+    console.error("[settings] server reset failed:", e),
   );
 }
