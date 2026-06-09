@@ -401,6 +401,85 @@ class TestStreamUpload(unittest.TestCase):
         self.assertFalse(os.path.exists(dest), "published a dest file on cancel")
         self.assertEqual(self._parts(), [], "left a .part temp behind on cancel")
 
+    def test_cancel_during_write_runs_close_after_the_write(self):
+        # Review #5: cancel while a disk WRITE is in flight and prove close/unlink
+        # happen only AFTER the write completes (the single-thread io executor
+        # serializes them) — not the earlier test's cancel-during-read.
+        import os
+        import asyncio
+        import threading
+        dest = os.path.join(self.tmp, "midwrite.ngc")
+        holder = {}
+        orig_opener = gateway._upload_file_opener
+
+        class _BlockingFile:
+            def __init__(self, fd):
+                self._fd = fd
+                self.ops = []
+                self.write_started = threading.Event()
+                self.write_release = threading.Event()
+
+            def write(self, data):
+                self.ops.append("write_start")
+                self.write_started.set()
+                self.write_release.wait(timeout=5)  # block until the test releases it
+                self.ops.append("write_end")
+                return len(data)
+
+            def flush(self):
+                self.ops.append("flush")
+
+            def fileno(self):
+                return self._fd
+
+            def close(self):
+                self.ops.append("close")
+                try:
+                    os.close(self._fd)
+                except OSError:
+                    pass
+
+        def _opener(fd, mode):
+            holder["f"] = _BlockingFile(fd)
+            return holder["f"]
+
+        class _OneChunk:
+            def __init__(self):
+                self._n = 0
+
+            async def read(self, n=-1):
+                self._n += 1
+                return (b"x" * 256) if self._n == 1 else b""
+
+        async def _drive():
+            task = asyncio.ensure_future(
+                gateway._atomic_stream_upload(_OneChunk(), dest, 10 << 20, chunk_size=256))
+            while "f" not in holder:
+                await asyncio.sleep(0.005)
+            bf = holder["f"]
+            await asyncio.to_thread(bf.write_started.wait, 5)  # write is now in flight
+            task.cancel()
+            await asyncio.sleep(0.05)                          # let cancel queue the close
+            self.assertNotIn("close", bf.ops, "close ran while the write was still in flight")
+            bf.write_release.set()                            # let the write finish
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            return bf.ops
+
+        try:
+            gateway._upload_file_opener = _opener
+            ops = _run(_drive())
+        finally:
+            gateway._upload_file_opener = orig_opener
+        self.assertIn("write_end", ops)
+        self.assertIn("close", ops)
+        self.assertLess(ops.index("write_end"), ops.index("close"),
+                        "close must run only after the in-flight write completes")
+        self.assertFalse(os.path.exists(dest), "published a dest file on mid-write cancel")
+        self.assertEqual(self._parts(), [], "left a .part temp behind on mid-write cancel")
+
 
 class TestTerminateParseProc(unittest.TestCase):
     """Review #1: shutdown must terminate an in-flight parse child, bounded, with a

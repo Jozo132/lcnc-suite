@@ -7,6 +7,7 @@ import time
 import os
 import subprocess
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import threading
 from pathlib import Path
 import linuxcnc
@@ -5001,6 +5002,11 @@ def _safe_unlink(path: str) -> None:
         pass  # safe-silent: best-effort temp cleanup, already-gone is fine
 
 
+# Injectable file opener for _atomic_stream_upload — tests substitute a blocking
+# writer to exercise cancellation during an in-flight write (review #5).
+_upload_file_opener = os.fdopen
+
+
 async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
                                 max_bytes: int, chunk_size: int = 1 << 20) -> int:
     """Stream an upload to ``dest_path`` atomically and bounded, keeping the
@@ -5020,30 +5026,39 @@ async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
     """
     loop = asyncio.get_event_loop()
     dest_dir = os.path.dirname(dest_path) or "."
-    fd, tmp = await loop.run_in_executor(
-        None, lambda: tempfile.mkstemp(dir=dest_dir, suffix=".part")
-    )
-    written = 0
+    # Dedicated single-thread executor so THIS upload's file ops (mkstemp/write/flush/
+    # fsync/close/replace/unlink) serialize on one thread. If the coroutine is cancelled
+    # mid-write, the queued close/unlink run AFTER the in-flight write finishes rather
+    # than racing it on another pool thread (review #5). Uploads are infrequent, so the
+    # per-upload thread is cheap.
+    io_ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload-io")
     try:
-        f = os.fdopen(fd, "wb")
+        fd, tmp = await loop.run_in_executor(
+            io_ex, lambda: tempfile.mkstemp(dir=dest_dir, suffix=".part")
+        )
+        written = 0
         try:
-            while True:
-                chunk = await file.read(chunk_size)
-                if not chunk:
-                    break
-                written += len(chunk)
-                if written > max_bytes:
-                    raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
-                await loop.run_in_executor(None, f.write, chunk)
-            await loop.run_in_executor(None, lambda: (f.flush(), os.fsync(f.fileno())))
+            f = _upload_file_opener(fd, "wb")
+            try:
+                while True:
+                    chunk = await file.read(chunk_size)
+                    if not chunk:
+                        break
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+                    await loop.run_in_executor(io_ex, f.write, chunk)
+                await loop.run_in_executor(io_ex, lambda: (f.flush(), os.fsync(f.fileno())))
+            finally:
+                await loop.run_in_executor(io_ex, f.close)
+            await loop.run_in_executor(io_ex, os.replace, tmp, dest_path)
+            tmp = None  # published — don't unlink in finally
+            return written
         finally:
-            await loop.run_in_executor(None, f.close)
-        await loop.run_in_executor(None, os.replace, tmp, dest_path)
-        tmp = None  # published — don't unlink in finally
-        return written
+            if tmp is not None:
+                await loop.run_in_executor(io_ex, _safe_unlink, tmp)
     finally:
-        if tmp is not None:
-            await loop.run_in_executor(None, _safe_unlink, tmp)
+        io_ex.shutdown(wait=False)
 
 
 @app.post("/upload", dependencies=[Depends(require_token)])
