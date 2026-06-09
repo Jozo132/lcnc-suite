@@ -1432,6 +1432,29 @@ _PROBE_EVAL_RE = re.compile(
 )
 
 
+def _poll_is_active(st, reader_stale: bool) -> bool:
+    """Adaptive-poll active decision (review #6 / safety).
+
+    Returns True (→ 30 Hz) whenever the machine is doing something OR the status is
+    incomplete/unknown/stale — we only drop to the idle rate for a CONFIDENTLY idle
+    machine. A None key field or a stale reader means we don't actually know the
+    machine is idle, so we must keep polling fast, never coast at the idle rate on
+    uncertainty. (The old per-field `is not None and …` guards made an unknown field
+    contribute nothing, so a fully-unknown status read as idle.)"""
+    if st is None or reader_stale:
+        return True
+    if (st.interp_state is None or st.task_mode is None
+            or st.current_vel is None or st.inpos is None):
+        return True
+    return (
+        st.interp_state != linuxcnc.INTERP_IDLE
+        or st.task_mode in (linuxcnc.MODE_AUTO, linuxcnc.MODE_MDI)
+        or abs(st.current_vel) > 0.001
+        or st.inpos is False
+        or st.tool_change_requested is True
+    )
+
+
 async def _status_poller():
     """Single global poller — polls LinuxCNC once per cycle for all clients.
 
@@ -1837,15 +1860,8 @@ async def _status_poller():
         # machine is idle (interp idle, not moving, no motion mode); full
         # POLL_HZ otherwise. Instant wake-up on idle→active transition keeps
         # first-motion latency at most one poll cycle, not one idle cycle.
-        if _ADAPTIVE_POLL_ENABLED and _shared_status is not None:
-            st = _shared_status
-            _is_active = (
-                (st.interp_state is not None and st.interp_state != linuxcnc.INTERP_IDLE)
-                or (st.task_mode in (linuxcnc.MODE_AUTO, linuxcnc.MODE_MDI))
-                or (st.current_vel is not None and abs(st.current_vel) > 0.001)
-                or (st.inpos is False)
-                or (st.tool_change_requested is True)
-            )
+        if _ADAPTIVE_POLL_ENABLED:
+            _is_active = _poll_is_active(_shared_status, _reader_is_stale())
             if _is_active and not _was_active:
                 # idle → active: skip the sleep, tick immediately
                 _was_active = True
