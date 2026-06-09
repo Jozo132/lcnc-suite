@@ -888,7 +888,7 @@ function rebuildOverflowEdges(size: Vec3, offset: Vec3): THREE.LineSegments | nu
   return lines;
 }
 
-function makeLine(points: number[][] | Float32Array, colorHex: number | string, dashed = false, opacity = 1.0) {
+function makeLine(points: number[][] | Float32Array, colorHex: number | string, dashed = false, opacity = 1.0, lineDist?: Float32Array) {
   const geom = new THREE.BufferGeometry();
   // Shared with overflow (and position-attr shared with highlight).
   // Disposal is owned by applyGcode; disposeObject() skips _shared geometries.
@@ -927,7 +927,16 @@ function makeLine(points: number[][] | Float32Array, colorHex: number | string, 
   // don't require recomputation. Culling skips draw work when zoomed in.
   line.frustumCulled = true;
 
-  if (dashed) (line as any).computeLineDistances?.();
+  if (dashed) {
+    if (lineDist) {
+      // Worker-precomputed (P4.1) — set the attribute directly instead of scanning
+      // every point on the main thread. The overflow line shares this geometry, so
+      // it reuses the attribute too (see makeOverflowLine).
+      geom.setAttribute("lineDistance", new THREE.Float32BufferAttribute(lineDist, 1));
+    } else {
+      (line as any).computeLineDistances?.();
+    }
+  }
   return line;
 }
 
@@ -1616,7 +1625,10 @@ function applyGcode(g: ViewerGcode) {
     if (feedOverflow) workRotGroup!.add(feedOverflow);
   }
   if (_pointCount(rapidData) >= 2) {
-    rapidLine = makeLine(rapidData, rapidColor, true);
+    // Pass the worker-precomputed lineDistance when the flat buffer is in use (P4.1);
+    // undefined on the WS/legacy path → makeLine falls back to computeLineDistances.
+    const _rapidDist = rapidData === g.rapidPos ? g.rapidDist : undefined;
+    rapidLine = makeLine(rapidData, rapidColor, true, 1.0, _rapidDist);
     rapidSharedGeom = rapidLine.geometry as THREE.BufferGeometry;
     workRotGroup!.add(rapidLine);
     rapidOverflow = makeOverflowLine(rapidSharedGeom);

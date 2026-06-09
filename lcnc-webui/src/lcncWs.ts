@@ -463,6 +463,9 @@ export interface ViewerGcode {
   // P4.1: source-line → point-index range map, built off-thread by previewWorker
   // (Maps survive structured clone) so ThreeViewer skips the O(points) build.
   feedLineMap?: Map<number, { start: number; end: number }>;
+  // P4.1: cumulative lineDistance for the dashed rapid line, computed off-thread so
+  // ThreeViewer sets the attribute directly instead of Three.computeLineDistances().
+  rapidDist?: Float32Array;
   [key: string]: any;  // stats fields are folded in by GcodePanel watcher
 }
 

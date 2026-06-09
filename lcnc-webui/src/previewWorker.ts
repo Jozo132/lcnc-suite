@@ -35,16 +35,21 @@ self.onmessage = async (e: MessageEvent<Req>) => {
     const rapidPos = _flatten(g.rapid);
     const feedLines = _toU32(g.feed_lines);
     const feedLineMap = _buildFeedLineMap(g.feed_lines);
+    const rapidDist = _lineDistances(rapidPos);  // dashed rapid line's lineDistance (P4.1)
 
     // Drop the nested arrays from the passthrough; the flat typed arrays replace
     // them. Everything else (file, stats fields) is small and cloned as-is.
     const { feed: _f, rapid: _r, feed_lines: _fl, ...rest } = g;
 
-    const transfer: Transferable[] = [feedPos.buffer as ArrayBuffer, rapidPos.buffer as ArrayBuffer];
+    const transfer: Transferable[] = [
+      feedPos.buffer as ArrayBuffer,
+      rapidPos.buffer as ArrayBuffer,
+      rapidDist.buffer as ArrayBuffer,
+    ];
     if (feedLines) transfer.push(feedLines.buffer as ArrayBuffer);
 
     self.postMessage(
-      { version, gcode: { ...rest, feedPos, rapidPos, feed_lines: feedLines, feedLineMap } },
+      { version, gcode: { ...rest, feedPos, rapidPos, feed_lines: feedLines, feedLineMap, rapidDist } },
       { transfer },
     );
   } catch (err) {
@@ -70,6 +75,22 @@ function _toU32(a: unknown): Uint32Array | undefined {
   const out = new Uint32Array(a.length);
   for (let i = 0; i < a.length; i++) out[i] = a[i];
   return out;
+}
+
+// Cumulative polyline distances for the dashed rapid line, so LineDashedMaterial's
+// `lineDistance` attribute is ready off-thread instead of Three.computeLineDistances()
+// scanning every point on the main thread (P4.1). Matches Three's Line algorithm:
+// d[0]=0, d[i]=d[i-1]+|p[i]-p[i-1]|.
+function _lineDistances(pos: Float32Array): Float32Array {
+  const n = pos.length / 3;
+  const d = new Float32Array(n);
+  for (let i = 1; i < n; i++) {
+    const dx = pos[i * 3]! - pos[(i - 1) * 3]!;
+    const dy = pos[i * 3 + 1]! - pos[(i - 1) * 3 + 1]!;
+    const dz = pos[i * 3 + 2]! - pos[(i - 1) * 3 + 2]!;
+    d[i] = d[i - 1]! + Math.sqrt(dx * dx + dy * dy + dz * dz);
+  }
+  return d;
 }
 
 // Build the source-line → point-index range map off the main thread (P4.1). A Map
