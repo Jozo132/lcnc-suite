@@ -307,41 +307,76 @@ function confirmRunFromLine() {
 }
 
 /** ---------- Edit mode ---------- */
-// The editor is an *uncontrolled* textarea: it owns its own value natively
-// while the user types, so there is no per-keystroke reactive round-trip over
-// the whole file (which made large files lag). We seed it once on open and read
-// it back only on Save.
+// Virtualized editor (CodeMirror 6), lazy-loaded on first edit. The previous raw
+// <textarea> natively re-laid-out the ENTIRE document on keystrokes — on a ~32 MB
+// file that jams the browser main thread for seconds, and Firefox (and WebKit)
+// route a worker's WebSocket I/O THROUGH the main thread, so the jam froze the
+// client heartbeat → hb_stall disarms (delivery probe caught 6 heartbeats stuck
+// in ws.bufferedAmount while typing, inbound silent too). CM6 is rope-backed and
+// renders only the viewport, so the main thread stays free regardless of file
+// size — the same virtualization principle as the read-only viewer above.
 const editing = ref(false);
-const editTextarea = ref<HTMLTextAreaElement | null>(null);
+const editorHost = ref<HTMLDivElement | null>(null);
 const saving = ref(false);
 const saveError = ref<string | null>(null);
+let _editorView: any = null;
 
 async function enterEdit() {
   if (!props.gcodeContent || !props.activeFile) return;
   saveError.value = null;
   editing.value = true;
-  // Wait for v-if to mount the textarea, then seed its value imperatively.
-  await nextTick();
-  if (editTextarea.value) {
-    const _t = performance.now();
-    editTextarea.value.value = props.gcodeContent;
-    const _dt = performance.now() - _t;
-    if (_dt > 100) emitTelemetry("edit.seed_blocked", { ms: Math.round(_dt), bytes: props.gcodeContent.length });
-  }
+  await nextTick();  // v-if mounts the host div
+  if (!editorHost.value) return;
+  const _t = performance.now();
+  // Dynamic import: CM6 stays out of the initial bundle (P6 pattern) — it loads
+  // only when someone actually edits.
+  const [{ EditorState }, { EditorView, keymap, lineNumbers }, { defaultKeymap, history, historyKeymap }] =
+    await Promise.all([
+      import("@codemirror/state"),
+      import("@codemirror/view"),
+      import("@codemirror/commands"),
+    ]);
+  if (!editing.value || !editorHost.value || _editorView) return;  // discarded while loading
+  const theme = EditorView.theme({
+    "&": { backgroundColor: "var(--bg)", color: "var(--fg)", height: "100%" },
+    ".cm-scroller": { fontFamily: "var(--font-mono)", overflow: "auto" },
+    ".cm-gutters": { backgroundColor: "var(--bg)", color: "var(--fg)", opacity: "var(--opacity-muted)", border: "none" },
+    "&.cm-focused": { outline: "none" },
+  }, { dark: true });
+  _editorView = new EditorView({
+    state: EditorState.create({
+      doc: props.gcodeContent,
+      extensions: [lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), theme],
+    }),
+    parent: editorHost.value,
+  });
+  const _dt = performance.now() - _t;
+  if (_dt > 250) emitTelemetry("edit.seed_blocked", { ms: Math.round(_dt), bytes: props.gcodeContent.length });
+}
+
+function _destroyEditor() {
+  _editorView?.destroy();
+  _editorView = null;
 }
 
 function discardEdit() {
   editing.value = false;
   saveError.value = null;
+  _destroyEditor();
 }
 
+onUnmounted(_destroyEditor);
+
 async function saveEdit() {
-  if (!props.activeFile || !editTextarea.value) return;
+  if (!props.activeFile || !_editorView) return;
   saving.value = true;
   saveError.value = null;
   try {
-    await saveFile(props.activeFile, editTextarea.value.value);
+    // doc.toString() materializes the full text once at save — a one-off cost,
+    // sent as a raw body (no JSON.stringify pass).
+    await saveFile(props.activeFile, _editorView.state.doc.toString());
     editing.value = false;
+    _destroyEditor();
     emit("loadFile", props.activeFile);
   } catch (e: any) {
     saveError.value = `Save failed: ${e.message}`;
@@ -459,7 +494,7 @@ async function saveEdit() {
           <span>{{ saveError }}</span>
           <MachineBtn type="close" @click="saveError = null">&times;</MachineBtn>
         </div>
-        <textarea ref="editTextarea" class="editTextarea" spellcheck="false"></textarea>
+        <div ref="editorHost" class="editorHost"></div>
         <div class="editActions">
           <MachineBtn type="fileSave" class="actionBtn" @click="saveEdit" :disabled="saving">{{ saving ? 'Saving...' : 'Save' }}</MachineBtn>
           <MachineBtn type="fileOp" class="actionBtn" @click="discardEdit" :disabled="saving">Discard</MachineBtn>
@@ -850,13 +885,14 @@ async function saveEdit() {
   min-height: 0;
 }
 
-.editTextarea {
+.editorHost {
   flex: 1;
   min-height: 0;
-  resize: none;
-  white-space: pre;
-  tab-size: 4;
-  overflow: auto;
+  overflow: hidden;  /* CM6 owns scrolling via .cm-scroller */
+}
+/* Layout-only deep override (CM6 mounts inside the host): fill the host. */
+.editorHost :deep(.cm-editor) {
+  height: 100%;
 }
 
 .editActions {
