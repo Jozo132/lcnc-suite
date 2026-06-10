@@ -12,7 +12,8 @@ import threading
 from pathlib import Path
 import linuxcnc
 
-from dataclasses import dataclass
+import collections
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, List, Tuple
 from fastapi.staticfiles import StaticFiles
 import re
@@ -361,6 +362,12 @@ class ClientState:
     send_pending: bool = False # status fan-out is in-flight to this client
     hidden: bool = False       # client tab is backgrounded (visibilityState)
     session_id: Optional[str] = None  # tab-scoped UUID; basis for armed-resume across brief reconnects
+    # Forensics for hb-stall disarms (delivery-vs-generation attribution): the
+    # browser proved it generated+sent heartbeats on time while the gateway saw a
+    # 3 s gap (the Vite dev proxy stalled the relay). On a stall, the arrival ring
+    # + total frame count say definitively what reached us and when.
+    frames_rx: int = 0         # every frame received from this client
+    hb_ring: "collections.deque" = field(default_factory=lambda: collections.deque(maxlen=12))  # monotonic hb arrival times
 
 
 _clients: Dict[int, ClientState] = {}
@@ -6360,9 +6367,22 @@ async def ws_endpoint(ws: WebSocket):
                                 # reconnect can't silently restore armed; the
                                 # operator must explicitly re-arm (safety clarity).
                                 _consume_armed_resume_hold(_clients[client_id].session_id)
+                                # Forensics: arrival gaps (ms between the last hb
+                                # arrivals) + total frames received. "No frames at
+                                # all in the gap" = delivery-path stall (e.g. the
+                                # Vite dev proxy); "frames but no heartbeat" =
+                                # browser-side generation problem.
+                                _c = _clients[client_id]
+                                _now_m = time.monotonic()
+                                _ring = list(_c.hb_ring)
+                                _gaps = [round((_ring[i] - _ring[i - 1]) * 1000) for i in range(1, len(_ring))]
                                 _trace.emit(
                                     "safety.hb_stall_disarmed",
                                     client_id=client_id,
+                                    hb_age_ms=round((time.time() - _c.last_hb) * 1000),
+                                    last_hb_arrival_ms_ago=round((_now_m - _ring[-1]) * 1000) if _ring else None,
+                                    hb_arrival_gaps_ms=_gaps,
+                                    frames_rx_total=_c.frames_rx,
                                 )
                                 try:
                                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
@@ -6432,11 +6452,14 @@ async def ws_endpoint(ws: WebSocket):
                 await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Invalid JSON"})
                 continue
             _set_phase(f"handle_msg cmd={msg.get('cmd', '?')} client#{client_id}")
+            if client_id in _clients:
+                _clients[client_id].frames_rx += 1  # hb-stall forensics: ANY frame counts as delivery
 
             if msg.get("cmd") == "heartbeat":
                 if client_id in _clients:
                     _clients[client_id].last_hb = time.time()
                     _clients[client_id].hb_mono = time.monotonic()
+                    _clients[client_id].hb_ring.append(time.monotonic())
                 await ws_send_json(ws, {"type": "pong"})
                 continue
 

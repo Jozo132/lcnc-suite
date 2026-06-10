@@ -652,9 +652,21 @@ export function connectWs() {
   _terminateWsWorker();
 
   const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+  // In dev the page is served by Vite (:5173), and a proxied /ws would relay the
+  // client heartbeat through the single-threaded node dev server. That proxy hop
+  // caused false disarms: a page-reload transform storm delayed relayed WS frames
+  // > 3 s while browser AND gateway were demonstrably healthy (worker hb_slip=0,
+  // no buffer pressure, no gateway HB-WAKE — the frames sat in node). The deadman
+  // heartbeat must not ride a dev-only proxy: connect the WS straight to the
+  // gateway. The gateway's dev origin rule explicitly admits :5173 origins for
+  // this. Production builds (import.meta.env.DEV=false) keep location.host —
+  // there the gateway serves the page itself and there is no proxy.
+  const wsHost = import.meta.env.DEV
+    ? `${location.hostname}:${import.meta.env.VITE_GATEWAY_PORT ?? 8000}`
+    : location.host;
   // Token rides in the URL so the worker replays it for free on every
   // reconnect (browsers can't set WS headers). Empty token ⇒ unchanged URL.
-  const wsUrl = withToken(`${wsProto}//${location.host}/ws`);
+  const wsUrl = withToken(`${wsProto}//${wsHost}/ws`);
   wsWorker = new Worker(new URL("./wsWorker.ts", import.meta.url), { type: "module" });
   wsWorker.onmessage = (ev: MessageEvent) => onWorkerMessage(ev.data);
   wsWorker.postMessage({
