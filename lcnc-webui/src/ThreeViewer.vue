@@ -1592,11 +1592,14 @@ function applyGcode(g: ViewerGcode) {
   feedSharedGeom = rapidSharedGeom = highlightGeom = null;
 
   // Prefer the flat Float32Array buffers from previewWorker (P4.1); fall back to
-  // the nested arrays (WS path / older payloads). feed_lines is index-aligned to
-  // the point index either way (number[] or Uint32Array — both index the same).
-  const feedData: number[][] | Float32Array = g.feedPos ?? g.feed ?? [];
-  const rapidData: number[][] | Float32Array = g.rapidPos ?? g.rapid ?? [];
-  const feedLines = g.feed_lines ?? [];
+  // the nested arrays (WS path / older payloads). The wire's raw Uint8Array form
+  // never reaches here — previewWorker always converts it to feedPos/rapidPos —
+  // so the fallback accepts only the nested-list shape. feed_lines is
+  // index-aligned to the point index either way.
+  const _legacyPts = (v: unknown): number[][] => (Array.isArray(v) ? (v as number[][]) : []);
+  const feedData: number[][] | Float32Array = g.feedPos ?? _legacyPts(g.feed);
+  const rapidData: number[][] | Float32Array = g.rapidPos ?? _legacyPts(g.rapid);
+  const feedLines = (Array.isArray(g.feed_lines) || g.feed_lines instanceof Uint32Array) ? g.feed_lines : [];
   const _pointCount = (d: number[][] | Float32Array) =>
     d instanceof Float32Array ? d.length / 3 : d.length;
 
