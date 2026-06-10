@@ -330,11 +330,12 @@ async function enterEdit() {
   const _t = performance.now();
   // Dynamic import: CM6 stays out of the initial bundle (P6 pattern) — it loads
   // only when someone actually edits.
-  const [{ EditorState }, { EditorView, keymap, lineNumbers }, { defaultKeymap, history, historyKeymap }] =
+  const [{ EditorState }, { EditorView, keymap, lineNumbers }, { defaultKeymap, history, historyKeymap }, { gcodeEditorLanguage }] =
     await Promise.all([
       import("@codemirror/state"),
       import("@codemirror/view"),
       import("@codemirror/commands"),
+      import("./gcodeCmLanguage"),
     ]);
   if (!editing.value || !editorHost.value || _editorView) return;  // discarded while loading
   const theme = EditorView.theme({
@@ -346,7 +347,7 @@ async function enterEdit() {
   _editorView = new EditorView({
     state: EditorState.create({
       doc: props.gcodeContent,
-      extensions: [lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), theme],
+      extensions: [lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), theme, gcodeEditorLanguage],
     }),
     parent: editorHost.value,
   });
