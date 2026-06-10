@@ -42,7 +42,6 @@ if [[ -n "$INI_FILE" ]]; then
   CAM_FPS="${LCNC_CAMERA_FPS:-$(ini_get CAMERA_FPS)}"
   WIRE_FORMAT="${WEBUI_WIRE_FORMAT:-$(ini_get WEBUI_WIRE_FORMAT)}"
   STATUS_DELTA="${WEBUI_STATUS_DELTA:-$(ini_get WEBUI_STATUS_DELTA)}"
-  UVLOOP_ON="${WEBUI_UVLOOP:-$(ini_get WEBUI_UVLOOP)}"
   ADAPTIVE_POLL="${WEBUI_ADAPTIVE_POLL:-$(ini_get WEBUI_ADAPTIVE_POLL)}"
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-$(ini_get WEBUI_IDLE_POLL_HZ)}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-$(ini_get WEBUI_WS_INIT_CONCURRENCY)}"
@@ -60,7 +59,6 @@ else
   CAM_FPS="${LCNC_CAMERA_FPS:-}"
   WIRE_FORMAT="${WEBUI_WIRE_FORMAT:-}"
   STATUS_DELTA="${WEBUI_STATUS_DELTA:-}"
-  UVLOOP_ON="${WEBUI_UVLOOP:-}"
   ADAPTIVE_POLL="${WEBUI_ADAPTIVE_POLL:-}"
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-}"
@@ -106,7 +104,6 @@ esac
 # Perf experiment flags (all optional — unset = default OFF)
 [[ -n "$WIRE_FORMAT"   ]] && export WEBUI_WIRE_FORMAT="$WIRE_FORMAT"
 [[ -n "$STATUS_DELTA"  ]] && export WEBUI_STATUS_DELTA="$STATUS_DELTA"
-[[ -n "$UVLOOP_ON"     ]] && export WEBUI_UVLOOP="$UVLOOP_ON"
 [[ -n "$ADAPTIVE_POLL" ]] && export WEBUI_ADAPTIVE_POLL="$ADAPTIVE_POLL"
 [[ -n "$IDLE_POLL_HZ"  ]] && export WEBUI_IDLE_POLL_HZ="$IDLE_POLL_HZ"
 # Cap simultaneous WS-init handshakes. Default (set in gateway.py) is 20,
@@ -207,15 +204,14 @@ _log "tee started via FIFO=$LCNC_FIFO (setsid + reparented to init)"
 # = killed by signal (rc-128 = signal number).
 trap '_EXIT_RC=$?; rm -f "$LCNC_FIFO" 2>/dev/null; _log "EXIT trap fired rc=$_EXIT_RC"' EXIT
 
-# ── uvicorn loop selection (Experiment 3: uvloop opt-in) ──
-# Force --loop asyncio unless WEBUI_UVLOOP=1, so A/B comparisons aren't
-# muddied by uvicorn auto-detecting uvloop on hosts that happen to have it
-# installed. When the flag is on, uvloop is explicitly selected.
-if [[ "${UVLOOP_ON:-}" == "1" ]]; then
-  UVICORN_LOOP=(--loop uvloop)
-else
-  UVICORN_LOOP=(--loop asyncio)
-fi
+# ── uvicorn loop: stdlib asyncio, pinned ──
+# uvloop was A/B-tested (Experiment 3) and REJECTED: it produced 600 ms–1.6 s
+# event-loop stalls and repeated HAL watchdog false-trips on this workload.
+# Pinning --loop asyncio also stops uvicorn auto-detecting uvloop on hosts that
+# happen to have it installed. Do not reintroduce a flag for this — a one-flag
+# switch onto a loop that false-trips the safety chain is a footgun, not an
+# option (see memory: project_uvloop_causes_watchdog_trips).
+UVICORN_LOOP=(--loop asyncio)
 
 # Force colored output even though stdout is piped through tee above —
 # uvicorn/Click auto-disable ANSI codes on non-TTY, which swallows the

@@ -359,7 +359,6 @@ let _svCamera: any = null;
 let _svControls: any = null;
 let _svLabels: any[] = [];    // Text objects — disposed on rebuild
 let _svItems: any[] = [];     // all scene children added during rebuild
-let _svAnimId = 0;
 let _svRo: ResizeObserver | null = null;
 let _threeCleanup: (() => void) | null = null;
 let _renderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -440,7 +439,6 @@ function render3DSurface(pts: [number, number, number][]) {
         _svRo.observe(container);
 
         _threeCleanup = () => {
-          cancelAnimationFrame(_svAnimId);
           _svControls?.removeEventListener("change", _svRenderOnce);
           _svRo?.disconnect(); _svRo = null;
           for (const lbl of _svLabels) { _svScene?.remove(lbl); lbl.dispose(); }

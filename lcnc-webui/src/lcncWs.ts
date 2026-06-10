@@ -142,7 +142,7 @@ function _telemetryBody(events: Array<Record<string, any>>): string {
   return events.map(e => JSON.stringify(e)).join("\n");
 }
 
-// Long-task observer (temporary diagnostic): report any main-thread task that blocks
+// Long-task observer (permanent diagnostic — quiet by design): report any main-thread task that blocks
 // > 500 ms — on a contended box that can starve the heartbeat worker and disarm the
 // client. The longtask API gives duration + start, not the JS culprit, so per-op timing
 // (GcodePanel edit.seed_blocked / edit.split_blocked) pins the cause.

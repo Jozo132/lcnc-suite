@@ -98,7 +98,7 @@ _trip_count = 0
 _RESET_PULSE_S = 0.05
 _reset_pulse_off_at = None
 
-# === TEMP HB-RECV PROBE === track time of last received heartbeat
+# === HB-RECV DIAGNOSTICS (permanent — quiet by design) === track last received heartbeat
 # message from the gateway. The gateway sends heartbeats at ~30 Hz
 # (every ~33 ms). If the kernel socket buffer or hal_watchdog's read
 # loop introduces delivery latency that the gateway itself can't see,
@@ -277,7 +277,7 @@ try:
                             _trace.emit("wd.bad_msg", level="warn", err=str(_je))
                             continue
                         if "heartbeat" in msg:
-                            # === TEMP HB-RECV PROBE === log inter-arrival gap
+                            # === HB-RECV DIAGNOSTICS === log inter-arrival gap
                             # for heartbeat messages. Gateway sends at ~33 ms
                             # cadence; anything past 100 ms means delivery is
                             # late from the watchdog's perspective regardless
@@ -288,7 +288,8 @@ try:
                             # sub-trip jitter that compounds.
                             _now = time.monotonic()
                             _new_val = bool(msg["heartbeat"])
-                            # === TEMP HB-RECV PROBE === log EVERY heartbeat.
+                            # === HB-RECV DIAGNOSTICS === ring-buffer every heartbeat (P0.2: in-memory,
+                            # dumped only on trip-relevant events).
                             # The HAL `oneshot` likely retriggers on rising
                             # edge only — what matters is the time between
                             # consecutive TRUE values, not raw inter-arrival.

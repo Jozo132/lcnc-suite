@@ -60,13 +60,17 @@ from tool_store import ToolLibraryStore
 from camera_broker import CameraBroker
 
 
-# === TEMP LIFECYCLE PROBE (remove after debugging) ===
+# === LIFECYCLE DIAGNOSTICS (permanent — promoted from temp probe) ===
+# This timeline + the [GC]/[HB-WAKE]/lag.window family below is the proven
+# attribution toolkit of the #35 effort (it pinned the GC object churn, the
+# estop_reset NML hold, and the heartbeat delivery cliff). Quiet by design
+# when healthy — keep it.
 # Single timeline anchor: every probe line carries +Nms from this anchor,
 # so boot, per-client connect, and shutdown all sit on one ruler. See
 # /home/cnc/.claude/plans/can-you-plan-for-jolly-leaf.md for the full plan.
 #
 # REMOVAL MAP — when stripping this probe later, delete:
-#   1. This whole block (lines 27 .. END TEMP LIFECYCLE PROBE marker below):
+#   1. This whole block (lines 27 .. END LIFECYCLE DIAGNOSTICS marker below):
 #        _T0, _dbg, _UvicornTimingFilter (+ filter install loop),
 #        _format_conn_state, _install_shutdown_probe (incl. the _patched
 #        monkey-patch of Server._wait_tasks_to_complete).
@@ -116,7 +120,7 @@ for _logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     logging.getLogger(_logger_name).addFilter(_uv_timing_filter)
 
 
-# === TEMP GC-PROBE === log generation-0/1/2 garbage-collector events
+# === GC DIAGNOSTICS (permanent) === log generation-0/1/2 garbage-collector events
 # with duration. Python GC mark-sweep can stall the main thread for
 # hundreds of ms on a large object graph (e.g. accumulated msgpack
 # envelopes / status snapshots / error queues during a 12-client
@@ -150,7 +154,7 @@ def _gc_callback(phase: str, info: Dict[str, Any]) -> None:
 
 
 _gc.callbacks.append(_gc_callback)
-# === END TEMP LIFECYCLE PROBE ===
+# === END LIFECYCLE DIAGNOSTICS ===
 
 
 class _UvicornUrlColorFilter(logging.Filter):
@@ -845,7 +849,7 @@ async def _heartbeat_loop():
     global _hal_last_hb
     _hb_expected = 1.0 / POLL_HZ
     _hb_last = time.monotonic()
-    # === TEMP HB-TRACE PROBE === fires only when a 30-iteration window (~1 s
+    # === HB-TRACE DIAGNOSTICS (permanent) === fires only when a 30-iteration window (~1 s
     # at POLL_HZ=30) shows an anomaly that [HB-STALL]'s per-tick drift detector
     # misses. Two cases:
     #   1. Monotonic clock froze (VM pause / cgroup throttle / scheduler
@@ -863,7 +867,7 @@ async def _heartbeat_loop():
     # means accumulated stall worth surfacing.
     _HB_SKEW_THRESH = 0.1
     _HB_MONO_THRESH = 1.5
-    # === TEMP HB-WAKE PROBE === pre-send anchor to catch a hidden gap that
+    # === HB-WAKE DIAGNOSTICS (permanent) === pre-send anchor to catch a hidden gap that
     # [HB-STALL] cannot see: scheduling delay between asyncio.sleep returning
     # and the heartbeat task actually being selected to run its body. If a
     # busy event loop holds the heartbeat task ready-but-not-running for
@@ -897,7 +901,7 @@ async def _heartbeat_loop():
         _hb_last = _hb_now
         _hb_iter += 1
         # Sample wall/mono every 30 iterations (~1 s at POLL_HZ=30). Log only
-        # when the window shows clock skew or accumulated stall — see TEMP
+        # when the window shows clock skew or accumulated stall — see the
         # HB-TRACE PROBE comment above the loop for the two failure modes.
         if _hb_iter % 30 == 0:
             _hb_now_wall = time.time()
@@ -1287,7 +1291,7 @@ _status_event: Optional[asyncio.Event] = None
 _status_tick_stats: Dict[str, Any] = {
     "gen": 0, "tick_start": 0.0, "expected": 0, "done": 0,
     "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
-    # === TEMP STATUS-PAYLOAD PROBE === aggregate per-tick wire metrics so
+    # === STATUS-PAYLOAD DIAGNOSTICS (permanent) === aggregate per-tick wire metrics so
     # the [STATUS] outlier log can attribute encode cost to actual payload
     # size. tool_meta_count: how many clients got a tool_meta block this
     # tick (suspected reconnect-storm inflator).
@@ -1489,7 +1493,7 @@ async def _status_poller():
     _last_pid_check = 0.0
     _cycle_start = time.monotonic()
     _was_active = True  # Experiment 4: track active/idle edge for instant wake-up
-    # === TEMP IDLE-GATEWAY PROBE === log when the gateway is up but no
+    # === IDLE-GATEWAY DIAGNOSTICS (permanent) === log when the gateway is up but no
     # clients are connected. Helps tell "all tabs reconnected fast" from
     # "tabs are stuck somewhere and never reaching us" in the log alone.
     _idle_last_log = 0.0
@@ -4696,7 +4700,7 @@ async def lifespan(app: "FastAPI"):
     # Asyncio loop exists only after lifespan startup — wire the
     # unhandled-task hook here so uvicorn's own handler is preserved.
     _trace.install_asyncio_handler("gateway")
-    # === TEMP IDLE-GATEWAY PROBE === start the status poller from lifespan
+    # === IDLE-GATEWAY DIAGNOSTICS === start the status poller from lifespan
     # rather than waiting for the first WS connect, so the [IDLE] log fires
     # during the pre-first-client window. The poller's `if not _clients`
     # branch sleeps cheaply, so running from boot is harmless.
@@ -5838,7 +5842,7 @@ async def get_g30():
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    _conn_t0 = time.monotonic()  # === TEMP LIFECYCLE PROBE anchor for [CONN] deltas ===
+    _conn_t0 = time.monotonic()  # === LIFECYCLE DIAGNOSTICS anchor for [CONN] deltas ===
     # Per-client init under the WS-init semaphore. Released at block
     # exit (before the recv loop) so live connections aren't capped by
     # WEBUI_WS_INIT_CONCURRENCY. With cached build_viewer_init() this
@@ -6251,7 +6255,7 @@ async def ws_endpoint(ws: WebSocket):
                         _status_tick_stats["send_sum"] += _prev_send_ms
                         if _prev_send_ms > _status_tick_stats["send_max"]:
                             _status_tick_stats["send_max"] = _prev_send_ms
-                        # === TEMP STATUS-PAYLOAD PROBE === wire-size accounting.
+                        # === STATUS-PAYLOAD DIAGNOSTICS === wire-size accounting.
                         _status_tick_stats["bytes_sum"] += _bytes_sent
                         if _bytes_sent > _status_tick_stats["bytes_max"]:
                             _status_tick_stats["bytes_max"] = _bytes_sent

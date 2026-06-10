@@ -21,6 +21,12 @@ export default defineConfig({
   },
   server: {
     proxy: {
+      // NOTE: in dev the app's WebSocket does NOT use this proxy — lcncWs builds
+      // ws://<hostname>:8000 directly (the deadman heartbeat must not ride the
+      // single-threaded dev server: a transform storm delayed relayed frames
+      // > 3 s and false-disarmed the client). Override the gateway port via
+      // VITE_GATEWAY_PORT if it isn't 8000. The /ws entry below stays only as
+      // a fallback for manual testing.
       '/ws': {
         target: 'http://127.0.0.1:8000',
         ws: true,
