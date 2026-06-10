@@ -54,11 +54,13 @@ let lastCloseCode = 0;
 const HB_SLIP_THRESHOLD_MS = 1500;   // 1 s cadence + 0.5 s slack
 let lastHbFireAt = 0;
 let framesRelayedSinceHb = 0;
+let lastFrameRxAt = 0;               // when we last RECEIVED any frame from the gateway
 
 function startHeartbeat() {
   stopHeartbeat();
   lastHbFireAt = performance.now();
   framesRelayedSinceHb = 0;
+  lastFrameRxAt = performance.now();
   hbTimer = setInterval(() => {
     const now = performance.now();
     const gap = now - lastHbFireAt;
@@ -68,6 +70,18 @@ function startHeartbeat() {
     }
     framesRelayedSinceHb = 0;
     if (ws && ws.readyState === WebSocket.OPEN) {
+      // Delivery probe (hb-stall forensics): the gateway saw metronome-perfect
+      // arrivals then a >3 s cliff while this timer kept firing — so the loss is
+      // BETWEEN ws.send() and the gateway. A 19-byte heartbeat must flush within
+      // milliseconds: if last tick's frame is still buffered a full second later,
+      // the browser's send path is frozen (e.g. WebKit proxies worker WS through
+      // the busy main thread). rxGap covers the inbound half: status flows at
+      // 5–30 Hz, so a silent receive side means the whole pipe stalled.
+      const buffered = ws.bufferedAmount;
+      const rxGap = now - lastFrameRxAt;
+      if (buffered > 0 || rxGap > HB_SLIP_THRESHOLD_MS) {
+        post({ type: "hbdeliv", buffered, rxGapMs: Math.round(rxGap) });
+      }
       try { ws.send('{"cmd":"heartbeat"}'); } catch { /* socket closing */ }
       post({ type: "hbsent" });
     }
@@ -180,6 +194,7 @@ function openSocket() {
 
   ws.onmessage = (ev: MessageEvent) => {
     framesRelayedSinceHb++;   // for hb-slip attribution (busy-relaying vs starved)
+    lastFrameRxAt = performance.now();  // inbound-stall detection (hbdeliv probe)
     if (typeof ev.data === "string") {
       post({ type: "message", data: ev.data });
     } else {

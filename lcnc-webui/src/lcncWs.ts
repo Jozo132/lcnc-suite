@@ -667,6 +667,10 @@ export function connectWs() {
   // Token rides in the URL so the worker replays it for free on every
   // reconnect (browsers can't set WS headers). Empty token ⇒ unchanged URL.
   const wsUrl = withToken(`${wsProto}//${wsHost}/ws`);
+  // Identify the browser engine in the trace: WS-delivery behavior differs per
+  // engine (WebKit proxies worker WebSocket I/O via the main thread; Chromium
+  // uses a separate network process), which matters for hb-stall attribution.
+  emitTelemetry("ws.client_env", { ua: navigator.userAgent, ws_host: wsHost });
   wsWorker = new Worker(new URL("./wsWorker.ts", import.meta.url), { type: "module" });
   wsWorker.onmessage = (ev: MessageEvent) => onWorkerMessage(ev.data);
   wsWorker.postMessage({
@@ -746,6 +750,16 @@ function onWorkerMessage(m: any) {
       // (browser → gateway → HAL). framesRelayed tells busy-relaying from
       // CPU-starved (#35).
       emitTelemetry("ws.hb_slip", { gap_ms: m.gapMs, frames_relayed: m.framesRelayed });
+      break;
+
+    case "hbdeliv":
+      // The worker's timer fired ON TIME but delivery looks stalled: last tick's
+      // 19-byte heartbeat is still in the socket buffer after a full second
+      // (buffered > 0 — send path frozen) and/or nothing has been received from
+      // the gateway despite 5–30 Hz status flow (rxGapMs — inbound stalled too).
+      // Distinguishes browser-send-path stalls (e.g. WebKit routing worker WS
+      // through a jammed main thread) from network/VM-link stalls.
+      emitTelemetry("ws.hb_delivery_stall", { buffered: m.buffered, rx_gap_ms: m.rxGapMs });
       break;
 
     case "bufferpressure":
