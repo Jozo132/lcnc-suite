@@ -157,7 +157,7 @@ const scrollTop = ref(0);
 // currentLine advances 5–50×/s, each nudging scrollTop; keying retokenization
 // off the integer bounds avoids redundant work on every sub-LINE_HEIGHT delta.
 const rangeStart = computed(() =>
-  Math.max(0, Math.floor(scrollTop.value / LINE_HEIGHT) - BUFFER)
+  Math.max(0, Math.floor(_scrollToContent(scrollTop.value) / LINE_HEIGHT) - BUFFER)
 );
 const rangeEnd = computed(() => {
   const viewportH = codeViewerRef.value?.clientHeight ?? 400;
@@ -177,19 +177,50 @@ const visibleLines = computed(() => {
   return out;
 });
 
-const totalHeight = computed(() => lineCount.value * LINE_HEIGHT);
-const offsetY = computed(() => rangeStart.value * LINE_HEIGHT);
+// Scaled spacer: browsers clamp element heights (Firefox ≈17.9M px), so a
+// 1.35M-line file's true 31M px spacer silently truncates and the scrollbar
+// can't reach the bottom. Cap the spacer and linearly map scrollbar-space ↔
+// content-space; at scale 1 (files under ~520k lines) every formula reduces
+// exactly to the unscaled originals.
+const SPACER_MAX_PX = 12_000_000;
+const contentHeight = computed(() => lineCount.value * LINE_HEIGHT);
+const totalHeight = computed(() => Math.min(contentHeight.value, SPACER_MAX_PX));
+
+function _viewH(): number {
+  return codeViewerRef.value?.clientHeight ?? 400;
+}
+/** scrollbar position → content y */
+function _scrollToContent(s: number): number {
+  const ch = contentHeight.value, sh = totalHeight.value, vh = _viewH();
+  if (sh >= ch || sh <= vh) return s;
+  return (s * (ch - vh)) / (sh - vh);
+}
+/** content y → scrollbar position */
+function _contentToScroll(y: number): number {
+  const ch = contentHeight.value, sh = totalHeight.value, vh = _viewH();
+  if (sh >= ch || ch <= vh) return y;
+  return (y * (sh - vh)) / (ch - vh);
+}
+
+// Pin the rendered window under the scrollbar thumb: place it at scrollTop,
+// backed off by how far rangeStart's content position sits above the mapped
+// viewport top. At scale 1 this is exactly rangeStart * LINE_HEIGHT.
+const offsetY = computed(() => {
+  const y = _scrollToContent(scrollTop.value);
+  return Math.max(0, scrollTop.value + rangeStart.value * LINE_HEIGHT - y);
+});
 
 function onCodeScroll(ev: Event) {
   scrollTop.value = (ev.target as HTMLElement).scrollTop;
   tooltip.value = null;
 }
 
-// Scroll to current line (mathematical — no DOM search)
+// Scroll to current line (mathematical — no DOM search). Target is computed in
+// content space, then mapped to scrollbar space (identity at scale 1).
 watch(() => props.currentLine, (newLine) => {
   if (newLine != null && codeViewerRef.value) {
-    const targetTop = (newLine - 1) * LINE_HEIGHT - codeViewerRef.value.clientHeight / 2 + LINE_HEIGHT / 2;
-    codeViewerRef.value.scrollTop = Math.max(0, targetTop);
+    const targetY = (newLine - 1) * LINE_HEIGHT - codeViewerRef.value.clientHeight / 2 + LINE_HEIGHT / 2;
+    codeViewerRef.value.scrollTop = Math.max(0, _contentToScroll(targetY));
   }
 });
 
@@ -313,8 +344,16 @@ function onLineClick(lineNum: number) {
   selectedLine.value = selectedLine.value === lineNum ? null : lineNum;
 }
 
+// A selection is only meaningful while run-from-line mode is ON: clicks can't
+// deselect once the mode is off (onLineClick guards on it), so a stale selection
+// would silently hijack Start into the run-from-line dialog forever. Clear it on
+// disable, and gate Start on the mode as well (belt and braces).
+watch(() => props.runFromLine, (on) => {
+  if (!on) selectedLine.value = null;
+});
+
 function onStartClick() {
-  if (selectedLine.value && selectedLine.value > 1) {
+  if (props.runFromLine && selectedLine.value && selectedLine.value > 1) {
     showRunDialog.value = true;
   } else {
     emit("cycleStart");
