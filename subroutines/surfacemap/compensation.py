@@ -109,11 +109,29 @@ class Compensation :
 		self.zi = griddata((self.x_data,self.y_data),self.z_data,(self.xi,self.yi),method=method)
 		self.zi = np.transpose(self.zi)
 
+		# Backfill out-of-hull NaN ONCE at the source: cubic/linear griddata yields
+		# NaN outside the probe points' convex hull (e.g. the bbox corners of a
+		# round part's scan). self.zi feeds BOTH runtime compensation and the UI
+		# grid — a NaN reaching compensate() crashed this component mid-RUNNING
+		# ("cannot convert float NaN to integer"), freezing the eoffset with
+		# nothing left alive to disable. Off-hull cells take the nearest probe
+		# point's value: the same hold-the-edge semantics the XY clamp already
+		# applies off-map. (An earlier fix filled only the decimated viz copy —
+		# wrong altitude; the runtime consumer stayed exposed.)
+		zi_nan = np.isnan(self.zi)
+		if zi_nan.any():
+			near = np.transpose(griddata((self.x_data, self.y_data), self.z_data,
+			                             (self.xi, self.yi), method='nearest'))
+			self.zi = np.where(zi_nan, near, self.zi)
+			print(f" backfilled {int(zi_nan.sum())} out-of-hull cells with nearest-probe values", flush=True)
+
 		# Write interpolated grid for UI visualization (atomic: temp + rename).
 		# Decimated to MAX_VIZ on the longer axis so the JSON stays ~tens of KB
 		# for the /comp_grid HTTP fan-out. self.zi above remains full-resolution
 		# for runtime HAL compensation — this decimation affects the browser
 		# surface-mesh preview only, never the offset values applied at runtime.
+		# self.zi is complete (backfilled above), so the slice needs no fill of
+		# its own — the browser still receives a COMPLETE grid (a95fc7d).
 		MAX_VIZ = 60
 		nx, ny = len(self.x), len(self.y)
 		xi_idx = np.linspace(0, nx - 1, min(nx, MAX_VIZ), dtype=int)
@@ -121,18 +139,6 @@ class Compensation :
 		viz_x = self.x[xi_idx]
 		viz_y = self.y[yi_idx]
 		viz_zi = self.zi[np.ix_(xi_idx, yi_idx)]
-
-		# Backfill out-of-hull NaN (from cubic/linear griddata) with nearest-neighbour
-		# so the browser receives a COMPLETE grid and derives nothing itself — the
-		# "scipy comp grid required, no IDW fallback" architecture (a95fc7d). UI-only:
-		# self.zi (the runtime compensation grid) is untouched. scipy nearest uses a
-		# cKDTree, far cheaper than the old O(cells x points) frontend fill.
-		viz_nan = np.isnan(viz_zi)
-		if viz_nan.any():
-			vxx, vyy = np.meshgrid(viz_x, viz_y, indexing='ij')
-			viz_near = griddata((self.x_data, self.y_data), self.z_data,
-			                    (vxx, vyy), method='nearest')
-			viz_zi = np.where(viz_nan, viz_near, viz_zi)
 
 		grid_path = os.path.splitext(self.filename)[0] + "-grid.json"
 		try:
@@ -350,6 +356,21 @@ class Compensation :
 		except KeyboardInterrupt:
 			raise SystemExit
 		finally:
+			# Fail-safe: never exit leaving a frozen eoffset behind. A fatal error
+			# used to kill the component with counts/enable-out still asserted —
+			# the offset froze at its last value and "disable" had nothing left to
+			# talk to. Best-effort compressed RESET sequence (zero counts + clear
+			# pulse while still enabled, per the delta-counts rule above, then
+			# drop enable) so downstream HAL sees compensation cleanly off.
+			try:
+				self.h["counts"] = 0
+				self.h["clear"] = 1
+				time.sleep(0.05)  # a few servo cycles so the clear pulse latches
+				self.h["clear"] = 0
+				self.h["enable-out"] = 0
+				print("[COMP] failsafe teardown: counts zeroed, clear pulsed, enable dropped", flush=True)
+			except Exception as e:
+				print(f"[COMP] failsafe teardown failed: {e}", flush=True)
 			try:
 				self.h.exit()
 			except Exception as e:
