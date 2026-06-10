@@ -5015,16 +5015,15 @@ def _safe_unlink(path: str) -> None:
 _upload_file_opener = os.fdopen
 
 
-async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
-                                max_bytes: int, chunk_size: int = 1 << 20) -> int:
-    """Stream an upload to ``dest_path`` atomically and bounded, keeping the
-    event loop free.
+async def _atomic_stream_write(chunks, dest_path: str, max_bytes: int) -> int:
+    """Stream an async iterator of byte chunks to ``dest_path`` atomically and
+    bounded, keeping the event loop free. Shared core for ``POST /upload``
+    (multipart) and ``PUT /save`` (raw body) — one machinery, not two.
 
-    Reads are async (Starlette's threadpool — yields to the loop between chunks);
-    every blocking disk op (write/flush/fsync/replace/unlink) is offloaded via
-    run_in_executor, so a slow disk, an fsync, or a large file can't stall the
-    HAL heartbeat (#35). The body is never materialized whole — that also avoids
-    the multi-MB allocation burst that feeds gen-2 GC (mmw#4).
+    Every blocking disk op (mkstemp/write/flush/fsync/close/replace/unlink) is
+    offloaded via run_in_executor, so a slow disk, an fsync, or a large file
+    can't stall the HAL heartbeat (#35). The body is never materialized whole —
+    that also avoids the multi-MB allocation burst that feeds gen-2 GC (mmw#4).
 
     Bounded: rejects with 413 the instant the running byte count exceeds
     ``max_bytes`` (no oversized buffering). Atomic + durable: writes to a
@@ -5034,11 +5033,10 @@ async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
     """
     loop = asyncio.get_event_loop()
     dest_dir = os.path.dirname(dest_path) or "."
-    # Dedicated single-thread executor so THIS upload's file ops (mkstemp/write/flush/
-    # fsync/close/replace/unlink) serialize on one thread. If the coroutine is cancelled
-    # mid-write, the queued close/unlink run AFTER the in-flight write finishes rather
-    # than racing it on another pool thread (review #5). Uploads are infrequent, so the
-    # per-upload thread is cheap.
+    # Dedicated single-thread executor so THIS request's file ops serialize on one
+    # thread. If the coroutine is cancelled mid-write, the queued close/unlink run
+    # AFTER the in-flight write finishes rather than racing it on another pool
+    # thread (review #5). Uploads/saves are infrequent, so the thread is cheap.
     io_ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload-io")
     try:
         fd, tmp = await loop.run_in_executor(
@@ -5048,10 +5046,9 @@ async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
         try:
             f = _upload_file_opener(fd, "wb")
             try:
-                while True:
-                    chunk = await file.read(chunk_size)
+                async for chunk in chunks:
                     if not chunk:
-                        break
+                        continue
                     written += len(chunk)
                     if written > max_bytes:
                         raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
@@ -5067,6 +5064,19 @@ async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
                 await loop.run_in_executor(io_ex, _safe_unlink, tmp)
     finally:
         io_ex.shutdown(wait=False)
+
+
+async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
+                                max_bytes: int, chunk_size: int = 1 << 20) -> int:
+    """Multipart-upload adapter over _atomic_stream_write: reads are async
+    (Starlette's threadpool — yields to the loop between chunks)."""
+    async def _chunks():
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                return
+            yield chunk
+    return await _atomic_stream_write(_chunks(), dest_path, max_bytes)
 
 
 @app.post("/upload", dependencies=[Depends(require_token)])
@@ -5123,18 +5133,19 @@ async def save_gcode(request: Request, path: str = Query(...)):
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    raw = await request.body()  # bytes, UTF-8 from the browser — async read, no loop block
-    if len(raw) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
-
-    # Atomic write + fsync off the loop — LinuxCNC must never read a half-written file.
+    # Stream the raw UTF-8 body through the same bounded atomic chunk-writer as
+    # /upload (one machinery, not two): the ≤50 MB body is never materialized as
+    # one bytes object (request.body() buffered it whole in RAM), the size bound
+    # rejects mid-stream, and write/fsync/replace serialize off the loop —
+    # LinuxCNC never sees a half-written file.
     try:
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(None, lambda: atomic_write_bytes(abs_path, raw, fsync=True))
+        size = await _atomic_stream_write(request.stream(), abs_path, MAX_UPLOAD_SIZE)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    return {"ok": True, "path": abs_path, "size": len(raw)}
+    return {"ok": True, "path": abs_path, "size": size}
 
 
 # ---- Fusion 360 Tool Library Import ----
