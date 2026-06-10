@@ -459,6 +459,7 @@ function render3DSurface(pts: [number, number, number][]) {
           if (Array.isArray(obj.material)) obj.material.forEach((m: any) => m.dispose());
           else obj.material.dispose();
         }
+        if (typeof obj.dispose === "function") obj.dispose();  // InstancedMesh.instanceMatrix
       }
       for (const lbl of _svLabels) { _svScene.remove(lbl); lbl.dispose(); }
       _svLabels = [];
@@ -517,36 +518,53 @@ function render3DSurface(pts: [number, number, number][]) {
       _svScene.add(mesh);
       _svItems.push(mesh);
 
-      // Add measured points as red spheres + Z value labels
+      // Measured points as ONE InstancedMesh (same fix as the main viewer, F7):
+      // one draw call instead of N scene meshes. With dense maps (the 5000-point
+      // test grid) per-point meshes made rotate/zoom visibly choppy here while
+      // the main viewer stayed fluent.
       const dotGeom = new THREE.SphereGeometry(Math.min(xRange, yRange) * 0.015, 8, 8);
       const dotMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
       const zScale = Math.min(xRange, yRange) * 0.3;
       const labelFs = Math.max(xRange, yRange) * 0.03;
-      for (const p of pts) {
-        const sx = p[0] - xMin - xRange / 2;
-        const sy = p[1] - yMin - yRange / 2;
-        const sz = (p[2] - zMin) / zRange * zScale;
-        const dot = new THREE.Mesh(dotGeom, dotMat);
-        dot.position.set(sx, sy, sz);
-        _svScene.add(dot);
-        _svItems.push(dot);
-
-        const lbl = new Text();
-        lbl.text = p[2].toFixed(3);
-        lbl.fontSize = labelFs;
-        lbl.color = fgColor;
-        lbl.anchorX = "center";
-        lbl.anchorY = "middle";
-        lbl.outlineWidth = "4%";
-        lbl.outlineColor = bgColor;
-        lbl.depthWrite = false;
-        lbl.position.set(sx, sy, sz + zScale * 0.08 + Math.min(xRange, yRange) * 0.025);
-        lbl.sync();
-        _svScene.add(lbl);
-        _svLabels.push(lbl);
+      const dots = new THREE.InstancedMesh(dotGeom, dotMat, pts.length);
+      const _m = new THREE.Matrix4();
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i]!;
+        _m.makeTranslation(p[0] - xMin - xRange / 2, p[1] - yMin - yRange / 2,
+                           (p[2] - zMin) / zRange * zScale);
+        dots.setMatrixAt(i, _m);
       }
-      // dotGeom/dotMat are shared across all dots; push sentinel so rebuild disposes them
-      _svItems.push({ geometry: dotGeom, material: dotMat });
+      dots.instanceMatrix.needsUpdate = true;
+      _svScene.add(dots);
+      _svItems.push(dots);
+
+      // Z-value labels: each is a separate GPU text object (own draw call) AND is
+      // billboarded per rendered frame — thousands are both unreadable and the
+      // dominant rotate/zoom cost. Real probe maps are tens-to-hundreds of points;
+      // past the threshold the numbers are visual noise, so skip them (loudly).
+      const LABELS_MAX = 250;
+      if (pts.length <= LABELS_MAX) {
+        for (const p of pts) {
+          const sx = p[0] - xMin - xRange / 2;
+          const sy = p[1] - yMin - yRange / 2;
+          const sz = (p[2] - zMin) / zRange * zScale;
+          const lbl = new Text();
+          lbl.text = p[2].toFixed(3);
+          lbl.fontSize = labelFs;
+          lbl.color = fgColor;
+          lbl.anchorX = "center";
+          lbl.anchorY = "middle";
+          lbl.outlineWidth = "4%";
+          lbl.outlineColor = bgColor;
+          lbl.depthWrite = false;
+          lbl.position.set(sx, sy, sz + zScale * 0.08 + Math.min(xRange, yRange) * 0.025);
+          lbl.sync();
+          _svScene.add(lbl);
+          _svLabels.push(lbl);
+        }
+      } else {
+        console.info(`[surface] ${pts.length} probe points > ${LABELS_MAX} — per-point Z labels hidden for readability/performance`);
+      }
 
       // Lighting
       const ambient = new THREE.AmbientLight(0xffffff, 0.5);
