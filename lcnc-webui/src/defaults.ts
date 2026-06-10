@@ -168,7 +168,14 @@ export function saveSection(key: string, data: any): void {
   clearTimeout(_saveTimers[key]);
   _saveTimers[key] = setTimeout(() => {
     _pendingSaves.delete(key);
-    _settingsSaver?.(key, data);  // registered by lcncWs (avoids the import cycle)
+    if (_settingsSaver) {
+      _settingsSaver(key, data);  // registered by lcncWs (avoids the import cycle)
+    } else {
+      // No silent drop: lcncWs registers at module load, so this "can't happen" —
+      // which is exactly why it must be loud if it does (the save would vanish).
+      // console.error is captured by the error.console telemetry hook → auditable.
+      console.error(`[settings] save DROPPED — no saver registered (section=${key})`);
+    }
   }, 300);
 }
 

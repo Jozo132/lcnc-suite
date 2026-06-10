@@ -328,29 +328,37 @@ async function enterEdit() {
   await nextTick();  // v-if mounts the host div
   if (!editorHost.value) return;
   const _t = performance.now();
-  // Dynamic import: CM6 stays out of the initial bundle (P6 pattern) — it loads
-  // only when someone actually edits.
-  const [{ EditorState }, { EditorView, keymap, lineNumbers }, { defaultKeymap, history, historyKeymap }, { gcodeEditorLanguage }] =
-    await Promise.all([
-      import("@codemirror/state"),
-      import("@codemirror/view"),
-      import("@codemirror/commands"),
-      import("./gcodeCmLanguage"),
-    ]);
-  if (!editing.value || !editorHost.value || _editorView) return;  // discarded while loading
-  const theme = EditorView.theme({
-    "&": { backgroundColor: "var(--bg)", color: "var(--fg)", height: "100%" },
-    ".cm-scroller": { fontFamily: "var(--font-mono)", overflow: "auto" },
-    ".cm-gutters": { backgroundColor: "var(--bg)", color: "var(--fg)", opacity: "var(--opacity-muted)", border: "none" },
-    "&.cm-focused": { outline: "none" },
-  }, { dark: true });
-  _editorView = new EditorView({
-    state: EditorState.create({
-      doc: props.gcodeContent,
-      extensions: [lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), theme, gcodeEditorLanguage],
-    }),
-    parent: editorHost.value,
-  });
+  try {
+    // Dynamic import: CM6 stays out of the initial bundle (P6 pattern) — it loads
+    // only when someone actually edits.
+    const [{ EditorState }, { EditorView, keymap, lineNumbers }, { defaultKeymap, history, historyKeymap }, { gcodeEditorLanguage }] =
+      await Promise.all([
+        import("@codemirror/state"),
+        import("@codemirror/view"),
+        import("@codemirror/commands"),
+        import("./gcodeCmLanguage"),
+      ]);
+    if (!editing.value || !editorHost.value || _editorView) return;  // discarded while loading
+    const theme = EditorView.theme({
+      "&": { backgroundColor: "var(--bg)", color: "var(--fg)", height: "100%" },
+      ".cm-scroller": { fontFamily: "var(--font-mono)", overflow: "auto" },
+      ".cm-gutters": { backgroundColor: "var(--bg)", color: "var(--fg)", opacity: "var(--opacity-muted)", border: "none" },
+      "&.cm-focused": { outline: "none" },
+    }, { dark: true });
+    _editorView = new EditorView({
+      state: EditorState.create({
+        doc: props.gcodeContent,
+        extensions: [lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), theme, gcodeEditorLanguage],
+      }),
+      parent: editorHost.value,
+    });
+  } catch (e: any) {
+    // No silent empty editor: a failed chunk load (offline, stale deploy) left
+    // edit mode open with nothing in it and no message. Surface in the banner.
+    saveError.value = `Editor failed to load: ${e?.message ?? e}`;
+    emitTelemetry("edit.editor_load_failed", { msg: String(e?.message ?? e) });
+    return;
+  }
   const _dt = performance.now() - _t;
   if (_dt > 250) emitTelemetry("edit.seed_blocked", { ms: Math.round(_dt), bytes: props.gcodeContent.length });
 }

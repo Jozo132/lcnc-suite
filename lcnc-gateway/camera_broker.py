@@ -100,9 +100,22 @@ class CameraBroker:
     async def _produce(self) -> None:
         fps = int(os.environ.get(self._fps_env, "15"))
         delay = 1.0 / max(1, fps)
+        grab_failing = False  # edge-triggered failure reporting — no silent spin
         while True:
             jpeg = await asyncio.to_thread(self._grab)
-            if jpeg is not None:
+            if jpeg is None:
+                # Device gone / read failing: without this, the loop would spin
+                # silently at FPS forever while every viewer hangs frame-less.
+                # Edge-triggered (log once + on recovery), like hal_reader's
+                # missing-pin reporting.
+                if not grab_failing:
+                    grab_failing = True
+                    print("[CAMERA] frame grab failing (device disconnected?) — "
+                          "viewers receive no frames until it recovers", flush=True)
+            else:
+                if grab_failing:
+                    grab_failing = False
+                    print("[CAMERA] frame grab recovered", flush=True)
                 async with self._cond:
                     self._latest = jpeg
                     self._seq += 1

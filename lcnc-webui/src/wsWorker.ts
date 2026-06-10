@@ -82,8 +82,14 @@ function startHeartbeat() {
       if (buffered > 0 || rxGap > HB_SLIP_THRESHOLD_MS) {
         post({ type: "hbdeliv", buffered, rxGapMs: Math.round(rxGap) });
       }
-      try { ws.send('{"cmd":"heartbeat"}'); } catch { /* socket closing */ }
-      post({ type: "hbsent" });
+      // hbsent only on a send that didn't throw — posting it after a swallowed
+      // exception recorded heartbeats as sent that never left (silent fallback).
+      try {
+        ws.send('{"cmd":"heartbeat"}');
+        post({ type: "hbsent" });
+      } catch (e) {
+        post({ type: "error", kind: "hb_send_failed", msg: String((e as Error)?.message ?? e) });
+      }
     }
   }, 1000);
 }
@@ -284,8 +290,12 @@ self.onmessage = (ev: MessageEvent<MainMsg>) => {
       // Fire one immediate heartbeat (e.g. tab just became visible) so the
       // gateway's last_hb is fresh without waiting up to 1 s for the timer.
       if (msg.fireHeartbeat && ws && ws.readyState === WebSocket.OPEN) {
-        try { ws.send('{"cmd":"heartbeat"}'); } catch { /* ignore */ }
-        post({ type: "hbsent" });
+        try {
+          ws.send('{"cmd":"heartbeat"}');
+          post({ type: "hbsent" });
+        } catch (e) {
+          post({ type: "error", kind: "hb_send_failed", msg: String((e as Error)?.message ?? e) });
+        }
       }
       break;
 
