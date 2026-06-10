@@ -464,9 +464,9 @@ export interface ViewerInit {
 }
 export interface ViewerGcode {
   file?: string | null;
-  feed?: number[][];               // legacy nested (WS path / fallback)
-  rapid?: number[][];
-  feed_lines?: number[] | Uint32Array;
+  feed?: number[][] | Uint8Array;  // wire: LE float32 bin (preferred) | legacy nested
+  rapid?: number[][] | Uint8Array;
+  feed_lines?: number[] | Uint32Array | Uint8Array;  // wire: LE uint32 bin | legacy list
   // P4.1: flat position buffers produced off-thread by previewWorker (preferred
   // over the nested arrays — ThreeViewer builds BufferAttributes directly).
   feedPos?: Float32Array;          // flat [x,y,z, ...]

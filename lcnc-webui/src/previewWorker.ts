@@ -31,10 +31,10 @@ self.onmessage = async (e: MessageEvent<Req>) => {
     if (ac.signal.aborted) return;  // superseded during the read — skip the decode
     const g = msgpackDecode(new Uint8Array(buf)) as Record<string, any>;
 
-    const feedPos = _flatten(g.feed);
-    const rapidPos = _flatten(g.rapid);
+    const feedPos = _toF32(g.feed);
+    const rapidPos = _toF32(g.rapid);
     const feedLines = _toU32(g.feed_lines);
-    const feedLineMap = _buildFeedLineMap(g.feed_lines);
+    const feedLineMap = _buildFeedLineMap(feedLines ?? g.feed_lines);
     const rapidDist = _lineDistances(rapidPos);  // dashed rapid line's lineDistance (P4.1)
 
     // Drop the nested arrays from the passthrough; the flat typed arrays replace
@@ -58,6 +58,18 @@ self.onmessage = async (e: MessageEvent<Req>) => {
   }
 };
 
+// Preferred wire shape: little-endian float32 bytes from the parse worker (msgpack
+// bin → Uint8Array VIEW into the fetch buffer). One buffer.slice gives an aligned,
+// independently-transferable Float32Array — a single memcpy instead of flattening
+// 1M+ per-point JS arrays. Legacy nested [[x,y,z],...] lists still fall back to
+// _flatten (old payloads / WS path).
+function _toF32(v: unknown): Float32Array {
+  if (v instanceof Uint8Array) {
+    return new Float32Array(v.buffer.slice(v.byteOffset, v.byteOffset + v.byteLength));
+  }
+  return _flatten(v);
+}
+
 // nested [[x,y,z],...] → flat Float32Array [x,y,z,x,y,z,...]. Point index i maps
 // to offset i*3, so feed_lines (one entry per point) stays index-aligned.
 function _flatten(pts: unknown): Float32Array {
@@ -71,6 +83,9 @@ function _flatten(pts: unknown): Float32Array {
 }
 
 function _toU32(a: unknown): Uint32Array | undefined {
+  if (a instanceof Uint8Array) {
+    return new Uint32Array(a.buffer.slice(a.byteOffset, a.byteOffset + a.byteLength));
+  }
   if (!Array.isArray(a)) return undefined;
   const out = new Uint32Array(a.length);
   for (let i = 0; i < a.length; i++) out[i] = a[i];
@@ -98,9 +113,9 @@ function _lineDistances(pos: Float32Array): Float32Array {
 // points), so cloning it is cheap while the O(points) build moves off the UI thread.
 function _buildFeedLineMap(feed_lines: unknown): Map<number, { start: number; end: number }> {
   const m = new Map<number, { start: number; end: number }>();
-  if (!Array.isArray(feed_lines)) return m;
+  if (!Array.isArray(feed_lines) && !(feed_lines instanceof Uint32Array)) return m;
   for (let i = 0; i < feed_lines.length; i++) {
-    const ln = feed_lines[i];
+    const ln = feed_lines[i]!;
     const entry = m.get(ln);
     if (entry) entry.end = i;
     else m.set(ln, { start: i, end: i });

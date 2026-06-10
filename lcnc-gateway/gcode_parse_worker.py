@@ -336,12 +336,23 @@ def parse(ctx: dict) -> dict:
         "fileSize": file_size,
     }
 
+    # Flat little-endian binaries for the wire (P4.1 end-state): feed/rapid as
+    # float32 xyz triplets, feed_lines as uint32 (msgspec encodes bytes as msgpack
+    # bin). vs nested [[x,y,z],...] lists this is ~12 B/point instead of ~28 B
+    # (44.5 MB → ~14 MB on a heavy file), gzip/encode/decode get proportionally
+    # cheaper at every hop, and the browser worker builds its Float32Array with
+    # one memcpy instead of flattening 1M+ per-point JS arrays. Index alignment
+    # is unchanged: point i ↔ feed_lines[i] ↔ float offset i*3.
+    feed_bin = np.asarray(feed, dtype="<f4").tobytes() if feed else b""
+    rapid_bin = np.asarray(rapid, dtype="<f4").tobytes() if rapid else b""
+    feed_lines_bin = np.asarray(feed_lines, dtype="<u4").tobytes() if feed_lines else b""
+
     # Include "file" so this dict is the EXACT GET /preview wire shape: the
     # gateway publishes these bytes verbatim (no decode + re-encode), which is
     # what keeps the multi-MB polyline from ever becoming Python objects on the
     # event-loop process (mmw#4 GC pressure).
-    return {"file": filename, "feed": feed, "feed_lines": feed_lines, "rapid": rapid,
-            "stats": stats, "bounds": bounds,
+    return {"file": filename, "feed": feed_bin, "feed_lines": feed_lines_bin,
+            "rapid": rapid_bin, "stats": stats, "bounds": bounds,
             "parse_error": parse_error, "error_line": error_line}
 
 
