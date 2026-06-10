@@ -107,16 +107,37 @@ const fileName = computed(() => {
   return props.activeFile.split("/").pop() || props.activeFile;
 });
 
-const lines = computed(() => {
-  if (!props.gcodeContent) return [];
+// Line-START offsets instead of materialized line strings: split("\n") on a 32 MB
+// file produced ~1.35 M permanently-retained string objects (≈100–150 MB with
+// per-object overhead, plus the 194 ms split itself). The offsets are ONE
+// Uint32Array (~5 MB) over the single source string; the virtualized viewer
+// renders ~40 lines and now also *stores* only those — visibleLines slices its
+// window on demand. Slice [offs[i], offs[i+1]-1) is byte-identical to the old
+// split("\n") entries (CRLF files keep their \r either way).
+const lineOffsets = computed(() => {
+  const text = props.gcodeContent;
+  if (!text) return new Uint32Array(0);
   const _t = performance.now();
-  const out = props.gcodeContent.split("\n");
+  let n = 1;  // pass 1: count lines (indexOf runs at C speed, no allocation)
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) n++;
+  const offs = new Uint32Array(n);
+  let line = 1;  // pass 2: fill starts (offs[0] = 0)
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) offs[line++] = i + 1;
   const _dt = performance.now() - _t;
-  if (_dt > 100) emitTelemetry("edit.split_blocked", { ms: Math.round(_dt), lines: out.length, bytes: props.gcodeContent.length });
-  return out;
+  if (_dt > 100) emitTelemetry("gcode.line_index_blocked", { ms: Math.round(_dt), lines: n, bytes: text.length });
+  return offs;
 });
 
-const lineCount = computed(() => lines.value.length);
+const lineCount = computed(() => (props.gcodeContent ? lineOffsets.value.length : 0));
+
+/** Line idx (0-based) sliced on demand from the source string. */
+function lineAt(idx: number): string {
+  const text = props.gcodeContent!;
+  const offs = lineOffsets.value;
+  const start = offs[idx]!;
+  const end = idx + 1 < offs.length ? offs[idx + 1]! - 1 : text.length;
+  return text.slice(start, end);
+}
 
 const progressPercent = computed(() => {
   if (!lineCount.value || props.currentLine == null) return 0;
@@ -141,7 +162,7 @@ const rangeStart = computed(() =>
 const rangeEnd = computed(() => {
   const viewportH = codeViewerRef.value?.clientHeight ?? 400;
   const count = Math.ceil(viewportH / LINE_HEIGHT) + BUFFER * 2;
-  return Math.min(lines.value.length, rangeStart.value + count);
+  return Math.min(lineCount.value, rangeStart.value + count);
 });
 
 // Tokenize only the visible window — never the full file — to avoid blocking the
@@ -149,13 +170,14 @@ const rangeEnd = computed(() => {
 const visibleLines = computed(() => {
   const start = rangeStart.value;
   const end = rangeEnd.value;
-  return lines.value.slice(start, end).map((line, i) => ({
-    lineNum: start + i + 1,
-    tokens: highlightGcode(line),
-  }));
+  const out = [];
+  for (let i = start; i < end; i++) {
+    out.push({ lineNum: i + 1, tokens: highlightGcode(lineAt(i)) });
+  }
+  return out;
 });
 
-const totalHeight = computed(() => lines.value.length * LINE_HEIGHT);
+const totalHeight = computed(() => lineCount.value * LINE_HEIGHT);
 const offsetY = computed(() => rangeStart.value * LINE_HEIGHT);
 
 function onCodeScroll(ev: Event) {
