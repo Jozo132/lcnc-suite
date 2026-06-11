@@ -9,6 +9,7 @@ top and is therefore unimportable under pytest without the binding.
 Keep this file pure: stdlib only, no side effects at import time.
 """
 
+import json
 import math
 import os
 import tempfile
@@ -239,3 +240,42 @@ def atomic_write_bytes(path: str, data: bytes, fsync: bool = False) -> None:
         except FileNotFoundError:
             pass  # safe-silent: best-effort temp cleanup, already-gone is fine
         raise
+
+
+# ---- Browser telemetry ingestion (M1: pure, bounded validation) ----
+
+TELEMETRY_BODY_MAX = 256 * 1024   # bytes — far above legit ~1 KB/s/tab batches
+TELEMETRY_EVENTS_MAX = 500        # events per batch
+
+
+def parse_telemetry_batch(raw: bytes, max_events: int = TELEMETRY_EVENTS_MAX):
+    """Parse an untrusted NDJSON telemetry batch into (kind, fields) pairs.
+
+    Pure and bounded: a malformed line is dropped (counted, not 500'd), a
+    non-object line is dropped, and events beyond ``max_events`` are rejected —
+    a hostile or buggy client can't expand one POST into unbounded parse work.
+    The caller owns transport concerns (body-size cap, peer labeling, trace
+    emission). Returns ``(events, rejected)`` with events as
+    ``list[(kind, fields_dict)]``; ``kind`` falls back tag → "event".
+    """
+    events = []
+    rejected = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if len(events) >= max_events:
+            rejected += 1
+            continue
+        try:
+            evt = json.loads(line)
+        except Exception:
+            rejected += 1
+            continue
+        if not isinstance(evt, dict):
+            rejected += 1
+            continue
+        kind = str(evt.get("kind") or evt.get("tag") or "event")
+        fields = {k: v for k, v in evt.items() if k not in ("kind", "tag")}
+        events.append((kind, fields))
+    return events, rejected

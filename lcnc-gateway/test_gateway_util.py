@@ -10,6 +10,7 @@ import os
 import tempfile
 import unittest
 
+import gateway_util
 from gateway_util import (
     sanitize_filename,
     validate_extension,
@@ -302,3 +303,33 @@ class TestEvaluateTripLatch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestParseTelemetryBatch(unittest.TestCase):
+    """M1: bounded, pure NDJSON telemetry ingestion."""
+
+    def test_valid_batch(self):
+        raw = b'{"kind":"ws.open","dt_ms":12}\n{"tag":"tab.visibility","hidden":true}\n'
+        events, rejected = gateway_util.parse_telemetry_batch(raw)
+        self.assertEqual(rejected, 0)
+        self.assertEqual(events[0], ("ws.open", {"dt_ms": 12}))
+        self.assertEqual(events[1], ("tab.visibility", {"hidden": True}))
+
+    def test_bad_lines_counted_not_fatal(self):
+        raw = b'not json\n{"kind":"ok"}\n[1,2,3]\n\n'
+        events, rejected = gateway_util.parse_telemetry_batch(raw)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(rejected, 2)  # bad json + non-dict; blank line ignored
+
+    def test_kind_falls_back_to_event(self):
+        events, _ = gateway_util.parse_telemetry_batch(b'{"x":1}\n')
+        self.assertEqual(events[0][0], "event")
+
+    def test_event_cap_enforced(self):
+        raw = b"\n".join(b'{"kind":"k"}' for _ in range(20))
+        events, rejected = gateway_util.parse_telemetry_batch(raw, max_events=5)
+        self.assertEqual(len(events), 5)
+        self.assertEqual(rejected, 15)
+
+    def test_empty(self):
+        self.assertEqual(gateway_util.parse_telemetry_batch(b""), ([], 0))
