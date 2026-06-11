@@ -13,6 +13,7 @@ from types import SimpleNamespace
 import fake_linuxcnc
 linuxcnc = fake_linuxcnc.install()   # MUST precede `import gateway`
 import gateway  # noqa: E402  (import after the fake is installed)
+import fusion_import  # noqa: E402
 
 
 def _run(coro):
@@ -312,7 +313,7 @@ class TestFusionDecode(unittest.TestCase):
         lib = ('{"data":[{"type":"flat end mill","unit":"millimeters",'
                '"post-process":{"number":3},"geometry":{"DC":6.0},'
                '"description":"6mm endmill"}]}')
-        parsed, skipped = gateway._decode_fusion_blob(lib.encode(), "mm")
+        parsed, skipped = fusion_import.decode_fusion_blob(lib.encode(), "mm")
         self.assertEqual(parsed[0]["T"], 3)
         self.assertEqual(parsed[0]["D"], 6.0)
         self.assertEqual(parsed[0]["type"], "endmill")
@@ -321,16 +322,16 @@ class TestFusionDecode(unittest.TestCase):
         # inch tool on an mm machine → DC scaled ×25.4 (no get_ini_config call)
         lib = ('{"data":[{"type":"drill","unit":"inches",'
                '"post-process":{"number":1},"geometry":{"DC":1.0}}]}')
-        parsed, _ = gateway._decode_fusion_blob(lib.encode(), "mm")
+        parsed, _ = fusion_import.decode_fusion_blob(lib.encode(), "mm")
         self.assertAlmostEqual(parsed[0]["D"], 25.4, places=3)
 
     def test_bad_json_raises_valueerror(self):
         with self.assertRaises(ValueError):
-            gateway._decode_fusion_blob(b"{ not json", "mm")
+            fusion_import.decode_fusion_blob(b"{ not json", "mm")
 
     def test_missing_data_array_raises_valueerror(self):
         with self.assertRaises(ValueError):
-            gateway._decode_fusion_blob(b'{"nope":1}', "mm")
+            fusion_import.decode_fusion_blob(b'{"nope":1}', "mm")
 
 
 class TestStreamUpload(unittest.TestCase):
@@ -599,3 +600,21 @@ class TestTerminateParseProc(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestFusionWorkerSubprocess(unittest.TestCase):
+    """The harness proved in-thread decode trips the watchdog at the cap — large
+    imports now run in a real subprocess (own GIL). Round-trip a blob through it."""
+
+    def test_worker_roundtrip(self):
+        lib = ('{"data":[{"type":"flat end mill","unit":"millimeters",'
+               '"post-process":{"number":3},"geometry":{"DC":6.0},'
+               '"description":"6mm endmill"}]}').encode()
+        parsed, skipped = gateway._run_fusion_worker_blocking(lib, "mm", timeout=30.0)
+        self.assertEqual(parsed[0]["T"], 3)
+        self.assertEqual(parsed[0]["D"], 6.0)
+        self.assertEqual(skipped, [])
+
+    def test_worker_invalid_library_maps_to_valueerror(self):
+        with self.assertRaises(ValueError):
+            gateway._run_fusion_worker_blocking(b'{"nope":1}', "mm", timeout=30.0)

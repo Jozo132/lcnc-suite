@@ -60,6 +60,7 @@ from tool_table import (
 from settings_store import SettingsStore, VALID_SECTIONS as _VALID_SETTINGS_SECTIONS
 from tool_store import ToolLibraryStore
 from camera_broker import CameraBroker
+from fusion_import import decode_fusion_blob
 
 
 # === LIFECYCLE DIAGNOSTICS (permanent — promoted from temp probe) ===
@@ -5041,6 +5042,7 @@ async def lifespan(app: "FastAPI"):
             print(f"[SHUTDOWN] {_elapsed()} WS close timed out", flush=True)
         print(f"[SHUTDOWN] {_elapsed()} closed {len(snapshot)} WS connection(s)", flush=True)
 
+    _shutdown_fusion_proc = _fusion_import_proc  # (fusion worker — same race as review #2)
     # Capture the in-flight parse handle BEFORE cancelling background tasks
     # (review #2): cancelling _refresh_gcode_preview runs its finally, which
     # clears _gcode_parse_proc — but the to_thread worker + subprocess keep
@@ -5088,6 +5090,12 @@ async def lifespan(app: "FastAPI"):
     # 6. Terminate the gcode parse subprocess if still alive, using the handle
     # captured before step 3 (review #2). _terminate_parse_proc bounds the wait
     # (to_thread); terminating the child unblocks the orphaned communicate() thread.
+    if _shutdown_fusion_proc is not None:
+        try:
+            await _terminate_parse_proc(_shutdown_fusion_proc)
+            print(f"[SHUTDOWN] {_elapsed()} fusion import worker handled", flush=True)
+        except Exception as e:
+            print(f"[SHUTDOWN] {_elapsed()} fusion worker terminate failed: {e}", flush=True)
     proc = _shutdown_parse_proc
     if proc is not None:
         try:
@@ -5395,163 +5403,53 @@ async def save_gcode(request: Request, path: str = Query(...)):
 
 # ---- Fusion 360 Tool Library Import ----
 
-_FUSION_TYPE_MAP = {
-    "flat end mill": "endmill",
-    "ball end mill": "ball",
-    "bull nose end mill": "bullnose",
-    "chamfer mill": "chamfer",
-    "drill": "drill",
-    "spot drill": "drill",
-    "counter bore": "endmill",
-    "reamer": "endmill",
-    "boring bar": "endmill",
-    "center drill": "centerdrill",
-    "counter sink": "countersink",
-    "dovetail mill": "dovetail",
-    "face mill": "facemill",
-    "lollipop mill": "lollipop",
-    "slot mill": "slotmill",
-    "thread mill": "threadmill",
-    "form mill": "formmill",
-    "radius mill": "radiusmill",
-    "tapered mill": "tapered",
-    "probe": "probe",
-    "tap right hand": "tap",
-    "tap left hand": "tap",
-    "engraving cutter": "engraver",
-}
+_FUSION_WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fusion_import.py")
+_FUSION_INLINE_MAX = 1 << 20   # <=1 MiB decodes in ~15 ms — a thread is fine
+_fusion_import_proc: Optional[subprocess.Popen] = None  # lifespan termination handle
 
 
-def _fusion_unit_scale(src: Optional[str], machine_unit: str) -> float:
-    """Multiplier to convert a Fusion `unit` field value to machine native units.
-    Fusion writes "millimeters" or "inches"; default to mm if missing/unknown.
-    """
-    src_mm = not (src or "millimeters").lower().startswith("in")
-    machine_mm = machine_unit == "mm"
-    if src_mm == machine_mm:
-        return 1.0
-    return 25.4 if (not src_mm and machine_mm) else (1.0 / 25.4)
+def _run_fusion_worker_blocking(raw: bytes, machine_unit: str, timeout: float):
+    """Run the fusion_import worker to completion in a SUBPROCESS (own GIL).
 
-
-def _opt_scale(v, scale: float):
-    return None if v is None else v * scale
-
-
-def _parse_fusion_library(data: dict, machine_unit: str) -> tuple[list, list]:
-    """Parse a Fusion 360 Library.json → (tools, skipped_duplicates).
-
-    Tools with duplicate numbers are excluded from the main list and returned
-    separately so the caller can warn about them.  The *first* occurrence of
-    each number is kept; later duplicates are skipped.
-
-    Linear dimensions are converted from each entry's `unit` (and each
-    holder's `unit`) into the machine's native linear unit. ``machine_unit`` is
-    passed in (resolved on the event loop, since get_ini_config() may STAT.poll)
-    so this stays NML-free and safe to run in an executor thread (B2).
-    """
-    tools: list[dict] = []
-    skipped: list[dict] = []
-    seen_nums: dict[int, int] = {}          # tool_num → index in tools[]
-    for entry in data.get("data", []):
-        pp = entry.get("post-process", {})
-        geom = entry.get("geometry", {})
-        presets = entry.get("start-values", {}).get("presets", [])
-        holder = entry.get("holder", {})
-
-        tool_num = pp.get("number")
-        if tool_num is None:
-            continue
-
-        fusion_type = entry.get("type", "")
-        our_type = _FUSION_TYPE_MAP.get(fusion_type, "other")
-
-        tool_scale = _fusion_unit_scale(entry.get("unit"), machine_unit)
-
-        tool = {
-            "T": int(tool_num),
-            "D": float(geom.get("DC", 0)) * tool_scale,
-            "description": entry.get("description", "").strip(),
-            "type": our_type,
-            "flutes": geom.get("NOF"),
-            "oal": _opt_scale(geom.get("OAL"), tool_scale),
-            "flute_length": _opt_scale(geom.get("LCF"), tool_scale),
-            "corner_radius": _opt_scale(geom.get("RE"), tool_scale),
-            "body_length": _opt_scale(geom.get("LB"), tool_scale),
-            "shaft_diameter": _opt_scale(geom.get("SFDM"), tool_scale),
-            "taper_angle": geom.get("TA"),
-            "point_angle": geom.get("SIG"),
-            "tip_diameter": _opt_scale(geom.get("tip-diameter"), tool_scale),
-            "shoulder_length": _opt_scale(geom.get("shoulder-length"), tool_scale),
-            "shoulder_diameter": _opt_scale(geom.get("shoulder-diameter"), tool_scale),
-            "assembly_gauge_length": _opt_scale(geom.get("assemblyGaugeLength"), tool_scale),
-            "material": entry.get("BMC"),
-            "holder": holder.get("description") if holder else None,
-            "fusion_type": fusion_type,
-        }
-        # ---- Per-type angle normalization (Fusion stores half-angles for some types) ----
-        # Source: FreeCAD Better Tool Library reverse-engineering of Fusion 360 geometry keys
-        if our_type in ("chamfer", "countersink", "centerdrill"):
-            # Fusion TA is half-angle for chamfer/countersink — double to get included angle
-            if tool.get("taper_angle"):
-                tool["taper_angle"] *= 2
-        if our_type in ("countersink", "centerdrill"):
-            # Fusion SIG is half-angle for countersink/centerdrill — double to get included angle
-            if tool.get("point_angle"):
-                tool["point_angle"] *= 2
-        # (drill/spot drill SIG is already the full included angle — no adjustment needed)
-
-        # Holders carry their own `unit` independent of the tool body.
-        holder_segs = holder.get("segments", []) if holder else []
-        if holder_segs:
-            holder_scale = _fusion_unit_scale(holder.get("unit"), machine_unit)
-            tool["holder_segments"] = [
-                {"height": s["height"] * holder_scale,
-                 "lower_diameter": s["lower-diameter"] * holder_scale,
-                 "upper_diameter": s["upper-diameter"] * holder_scale}
-                for s in holder_segs if "height" in s
-            ]
-        # Form-mill profile coords share the tool's unit; arcs add a `center` pair.
-        if our_type == "formmill":
-            raw_profile = geom.get("profile")
-            if raw_profile and isinstance(raw_profile, list):
-                scaled_profile = []
-                for seg in raw_profile:
-                    new_seg = dict(seg)
-                    if "end" in seg:
-                        new_seg["end"] = [seg["end"][0] * tool_scale,
-                                          seg["end"][1] * tool_scale]
-                    if "center" in seg:
-                        new_seg["center"] = [seg["center"][0] * tool_scale,
-                                             seg["center"][1] * tool_scale]
-                    scaled_profile.append(new_seg)
-                tool["profile"] = scaled_profile
-        # Preserve raw presets (speeds/feeds per material) for sidecar
-        if presets:
-            tool["presets"] = presets
-
-        t_int = int(tool_num)
-        if t_int in seen_nums:
-            skipped.append(tool)
-        else:
-            seen_nums[t_int] = len(tools)
-            tools.append(tool)
-    return tools, skipped
-
-
-def _decode_fusion_blob(raw: bytes, machine_unit: str) -> tuple[list, list]:
-    """Decode + parse a Fusion library blob → (parsed, skipped). CPU/GIL-bound,
-    so callers run it via an executor (B2): json.loads is one C call that holds
-    the GIL for its duration (fine for realistic KB–MB libraries — the 50 MB cap
-    is only a DoS bound), while the per-tool transform is a Python loop that
-    releases the GIL every few ms so the heartbeat keeps running. Raises
-    ValueError on malformed input (the caller maps it to HTTP 400)."""
+    The perf-matrix harness proved the in-thread path trips the HAL watchdog at
+    the size cap: decode+transform of a near-16 MB library is ~243 ms of
+    GIL-held CPU plus the GC pressure of ~60k fresh dicts — a thread cannot
+    isolate that from the event loop. Same lifecycle pattern as the gcode parse
+    worker (B7): Popen inside a to_thread, bounded communicate, handle published
+    for lifespan termination. Raises ValueError for an invalid library (HTTP
+    400 at the route), RuntimeError for worker failures (HTTP 500)."""
+    global _fusion_import_proc
+    import msgspec as _ms
+    proc = subprocess.Popen(
+        [sys.executable, _FUSION_WORKER_PATH],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _fusion_import_proc = proc
     try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise ValueError(f"Invalid JSON: {e}")
-    if not isinstance(data, dict) or "data" not in data or not isinstance(data["data"], list):
-        raise ValueError("Not a Fusion 360 tool library (missing 'data' array)")
-    return _parse_fusion_library(data, machine_unit)
+        ctx = _ms.msgpack.encode({"raw": raw, "unit": machine_unit})
+        try:
+            stdout, stderr = proc.communicate(input=ctx, timeout=timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.communicate()
+            raise RuntimeError(f"fusion import worker timeout after {timeout:.0f}s")
+        err_tail = (stderr or b"").decode(errors="replace").strip()[:500]
+        if proc.returncode == 4:
+            raise ValueError(err_tail or "Invalid tool library")
+        if proc.returncode != 0:
+            raise RuntimeError(f"fusion import worker rc={proc.returncode}: {err_tail}")
+        out = _ms.msgpack.decode(stdout)
+        return out["parsed"], out["skipped"]
+    finally:
+        _fusion_import_proc = None
+
+
+async def _decode_fusion_offloaded(raw: bytes, machine_unit: str):
+    """Size-routed offload: small blobs in a thread (cheap, common case); large
+    blobs in the subprocess worker (the only true GIL isolation)."""
+    if len(raw) <= _FUSION_INLINE_MAX:
+        return await asyncio.to_thread(decode_fusion_blob, raw, machine_unit)
+    _trace.emit("fusion.worker_offload", bytes=len(raw))
+    return await asyncio.to_thread(_run_fusion_worker_blocking, raw, machine_unit, 60.0)
 
 
 @app.post("/import-tool-library", dependencies=[Depends(require_token)])
@@ -5569,8 +5467,7 @@ async def import_tool_library(file: UploadFile = File(...)):
     loop = asyncio.get_event_loop()
     machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
     try:
-        parsed, skipped = await loop.run_in_executor(
-            None, _decode_fusion_blob, raw, machine_unit)
+        parsed, skipped = await _decode_fusion_offloaded(raw, machine_unit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not parsed and not skipped:
@@ -5607,8 +5504,7 @@ async def apply_tool_library_import(
     loop = asyncio.get_event_loop()
     machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
     try:
-        parsed, _skipped = await loop.run_in_executor(
-            None, _decode_fusion_blob, raw, machine_unit)
+        parsed, _skipped = await _decode_fusion_offloaded(raw, machine_unit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not parsed:
