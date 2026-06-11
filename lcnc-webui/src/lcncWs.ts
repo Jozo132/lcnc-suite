@@ -1,6 +1,6 @@
 import { ref, shallowRef, computed, markRaw } from "vue";
 import { decode as msgpackDecode } from "@msgpack/msgpack";
-import { type WsCommand, OPERATOR_ERROR, isQueueSafe } from "./lcnc";
+import { type WsCommand, OPERATOR_ERROR, OPERATOR_DISPLAY, isQueueSafe } from "./lcnc";
 import { updateServerCache, loadDisplayDefaults, registerSettingsSaver, type Vec3 } from "./defaults";
 import { enableWakeLock, disableWakeLock } from "./wakeLock";
 import { withToken } from "./auth";
@@ -635,6 +635,7 @@ let _rtSentAt = 0;           // used for round-trip latency (next status)
 // Status batching + one-shot tool_meta carry-over. Module scope so they
 // persist across the relay (previously closure-locals inside connectWs).
 let _pendingStatus: any = null;
+let _lastRflTs = 0;   // dedupe for rfl_status frames (same phase repeats per tick)
 let _flushScheduled = false;
 let _lastToolMeta: { num: number; meta: any } | null = null;
 
@@ -910,6 +911,30 @@ function onFrame(data: string | ArrayBuffer) {
       // Reader staleness — set when gateway flag present, clear otherwise.
       const stale = msg.reader_stale === true;
       if (readerStale.value !== stale) readerStale.value = stale;
+
+      // RFL guard progress (rfl_status rides the status fanout; ts dedupes —
+      // the same phase repeats on every frame until the next one). Failures →
+      // operator error; key progress phases → display message, so the operator
+      // sees what the machine is doing during the pre-measure sequence.
+      const rfl = msg.rfl_status;
+      if (rfl && rfl.ts !== _lastRflTs) {
+        _lastRflTs = rfl.ts;
+        const phaseText: Record<string, string> = {
+          measuring: "Run-from-line: measuring tool via MDI…",
+          safe_z: "Run-from-line: retracting to safe Z…",
+          starting: "Run-from-line: starting program…",
+        };
+        if (rfl.ok === false) {
+          messages.value = [...messages.value, { id: _nextMsgId++, kind: OPERATOR_ERROR,
+            text: `Run-from-line ${rfl.phase}: ${rfl.error || "failed"}`, ts: Date.now() }];
+          unreadCount.value++;
+          persistMessages(messages.value);
+        } else if (phaseText[rfl.phase]) {
+          messages.value = [...messages.value, { id: _nextMsgId++, kind: OPERATOR_DISPLAY,
+            text: phaseText[rfl.phase]!, ts: Date.now() }];
+          persistMessages(messages.value);
+        }
+      }
 
       const cw = msg.config_warning;
       if (cw) {

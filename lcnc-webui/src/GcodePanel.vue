@@ -2,7 +2,8 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
-import { loadMachineDefaults, STEP_RPM } from "./defaults";
+import { loadMachineDefaults, saveMachineDefaults, STEP_RPM } from "./defaults";
+import { scanToolchangesBefore, type RflToolchangeScan } from "./gcodeRfl";
 import { highlightGcode, type Token } from "./gcodeHighlight";
 import { emitTelemetry } from "./lcncWs";
 import { GCODE_LOOKUP, GCODE_REFERENCE } from "./gcodeReference";
@@ -54,7 +55,7 @@ const emit = defineEmits<{
   (e: "cycleStep"): void;
   (e: "toggleOptionalStop"): void;
   (e: "toggleBlockDelete"): void;
-  (e: "runFromLine", line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number): void;
+  (e: "runFromLine", line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number, preTool: number, safeZ: boolean): void;
   (e: "openGcodeRef", code: string): void;
   (e: "showStats"): void;
 }>();
@@ -325,11 +326,29 @@ const selectedLine = ref<number | null>(null);
 const showRunDialog = ref(false);
 const dialogSpindleDir = ref<"off" | "forward" | "reverse">("forward");
 const dialogSpindleSpeed = ref(10000);
+const dialogSafeZ = ref(true);
+// Toolchange scan for the RFL × M600 guard (see gcodeRfl.ts): refreshed each
+// time the dialog opens; drives the redirect notice / multi-change refusal.
+const rflScan = ref<RflToolchangeScan | null>(null);
+// Redirect case: exactly one toolchange with a known tool before the start
+// line — the gateway measures it via MDI first (pre_tool), the #3116 flag
+// skips the skim's re-entry.
+const rflPreTool = computed(() => {
+  const s = rflScan.value;
+  return s && s.count === 1 && s.lastTool != null && s.lastTool > 0 ? s.lastTool : 0;
+});
+// Unsupported: multiple toolchanges before N, an undetermined tool number, or
+// T0 (unload). The skim would probe each one with no offsets applied — refuse.
+const rflBlocked = computed(() => {
+  const s = rflScan.value;
+  return !!s && s.count > 0 && rflPreTool.value === 0;
+});
 
 onMounted(() => {
   const mach = loadMachineDefaults();
   dialogSpindleDir.value = mach.rflSpindleDir;
   dialogSpindleSpeed.value = mach.rflSpindleRpm;
+  dialogSafeZ.value = mach.rflSafeZ;
   window.addEventListener("blur", dismissTooltip);
   window.addEventListener("resize", dismissTooltip);
 });
@@ -354,6 +373,9 @@ watch(() => props.runFromLine, (on) => {
 
 function onStartClick() {
   if (props.runFromLine && selectedLine.value && selectedLine.value > 1) {
+    rflScan.value = props.gcodeContent
+      ? scanToolchangesBefore(props.gcodeContent, selectedLine.value)
+      : null;
     showRunDialog.value = true;
   } else {
     emit("cycleStart");
@@ -361,8 +383,13 @@ function onStartClick() {
 }
 
 function confirmRunFromLine() {
-  if (!selectedLine.value) return;
-  emit("runFromLine", selectedLine.value, dialogSpindleDir.value, dialogSpindleSpeed.value);
+  if (!selectedLine.value || rflBlocked.value) return;
+  const mach = loadMachineDefaults();
+  if (mach.rflSafeZ !== dialogSafeZ.value) {
+    saveMachineDefaults({ ...mach, rflSafeZ: dialogSafeZ.value });
+  }
+  emit("runFromLine", selectedLine.value, dialogSpindleDir.value, dialogSpindleSpeed.value,
+       rflPreTool.value, dialogSafeZ.value);
   showRunDialog.value = false;
   selectedLine.value = null;
 }
@@ -628,6 +655,29 @@ async function saveEdit() {
             radius errors and abort the run.
           </div>
 
+          <div v-if="rflPreTool > 0" class="dialogSection">
+            <div class="sub">Tool Change Before Start Line</div>
+            <div class="dialogBody">
+              T{{ rflPreTool }} (M600, line {{ rflScan?.lastLine }}) lies before the
+              start line. It will be executed and measured via MDI first — full
+              routine with retract and applied length offset — then the program
+              starts from line {{ selectedLine }} without re-probing.
+            </div>
+          </div>
+          <div v-else-if="rflBlocked" class="dialogSection">
+            <div class="sub">Unsupported Start Line</div>
+            <div class="dialogBody errorBanner">
+              {{ (rflScan?.count ?? 0) > 1
+                ? `${rflScan?.count} tool changes lie before this line — run-from-line across multiple tool changes is unsupported. Start before the first or after the last tool change.`
+                : `A tool change before this line has no determinable tool number (or is T0) — offsets cannot be guaranteed. Choose a different start line.` }}
+            </div>
+          </div>
+
+          <div class="dialogSection">
+            <MachineToggle gate="displaySetting" v-model="dialogSafeZ"
+                           label="Retract to safe Z (G53 Z0) before positioning" />
+          </div>
+
           <div class="dialogSection">
             <div class="sub">Spindle Preset</div>
             <div class="spindleBtnRow">
@@ -647,7 +697,7 @@ async function saveEdit() {
 
         <Gate gate="ready" class="dialogActions">
           <MachineBtn type="dialogCancel" @click="showRunDialog = false">Cancel</MachineBtn>
-          <MachineBtn type="dialogConfirm" @click="confirmRunFromLine">Run from Line {{ selectedLine }}</MachineBtn>
+          <MachineBtn type="dialogConfirm" :disabled="rflBlocked" @click="confirmRunFromLine">{{ rflPreTool > 0 ? `Measure T${rflPreTool} + Run from Line ${selectedLine}` : `Run from Line ${selectedLine}` }}</MachineBtn>
         </Gate>
       </div>
     </div>

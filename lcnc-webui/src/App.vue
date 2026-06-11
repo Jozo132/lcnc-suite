@@ -879,12 +879,16 @@ function cycleStart() {
   fire({ cmd: "cycle_start" }, 'ready');
 }
 
-function runFromLine(line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number) {
+function runFromLine(line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number, preTool: number, safeZ: boolean) {
   fire({
     cmd: "auto_run",
     line,
     spindle_dir: spindleDir !== "off" ? spindleDir : undefined,
     spindle_speed: spindleDir !== "off" ? spindleSpeed : undefined,
+    // RFL × M600 guard: measure this tool via MDI first (gateway bg sequence),
+    // and optionally retract to G53 Z0 before positioning.
+    pre_tool: preTool > 0 ? preTool : undefined,
+    safe_z: safeZ || undefined,
   }, 'ready');
 }
 

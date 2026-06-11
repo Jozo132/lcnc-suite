@@ -312,6 +312,7 @@ The `tool_touch_off.ngc` subroutine reads parameters from the LinuxCNC var file 
 | #3113  | finder_touch_x_coords  | Edge-finder X reference (G53)         |
 | #3114  | finder_touch_y_coords  | Edge-finder Y reference (G53)         |
 | #3115  | finder_diff_z          | Height diff probe vs reference        |
+| #3116  | rfl_skip_tool          | One-shot RFL guard: tool just measured via MDI — skip its in-program re-measurement once (set by gateway, self-cleared by routine) |
 | #3014  | finder_number          | Probe tool number (shared with probe tab) |
 
 ## Build Verification

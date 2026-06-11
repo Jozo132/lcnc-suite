@@ -1209,6 +1209,7 @@ _program_paused_last: bool = False                 # paused last tick
 # when the poller has not run yet.
 _shared_status_data_msgpack: Optional[bytes] = None
 _shared_errors: list = []
+_errors_total: int = 0   # monotonic count of drained NML errors (RFL guard abort-detection)
 _shared_probe_updates: dict = {}
 _shared_timing: dict = {}  # poll_ms, errors_ms, parse_ms, poller_ts
 # Per-cycle snapshot of connected clients — rebuilt once by the poller so
@@ -1482,7 +1483,7 @@ async def _status_poller():
     synchronously. We do the same, yielding to the event loop between
     blocking sections so heartbeats and sends can proceed.
     """
-    global _shared_status, _shared_status_dict, _shared_errors, _shared_probe_updates
+    global _shared_status, _shared_status_dict, _shared_errors, _shared_probe_updates, _errors_total
     global _status_gen, lcnc_connected, STAT, CMD, ERR, _reconnect_fails, _shared_timing
     global _surface_points_pending, _surface_points_version, _surface_initialized
     global _comp_grid_pending, _comp_grid_version, _comp_grid_initialized, _last_comp_hal_ver
@@ -1787,6 +1788,11 @@ async def _status_poller():
             ]
             t3 = time.monotonic()
             _shared_errors = errs
+            if errs:
+                # Monotonic error counter: lets long-running sequences (RFL guard)
+                # detect "did ANY error/abort surface during my window" even though
+                # _shared_errors itself is replaced per tick.
+                _errors_total += len(errs)
             _shared_probe_updates = probe_updates
             poll_ms = round((t1 - t0) * 1000, 2)
             errors_ms = round((t2 - t1) * 1000, 2)
@@ -3431,6 +3437,138 @@ def require_no_eoffset():
         raise PermissionError("Surface compensation active — clear the eoffset before editing work offsets")
 
 
+# ---- Run-from-line toolchange guard (RFL × M600) ----
+# LinuxCNC's run-from-line skim re-enters M600 remap bodies in lines 1..N-1:
+# G38 probes are queue-busters and execute for REAL while plain moves are
+# discarded, and the routine's G43 does not survive into the synthesized state
+# (no TLO at cycle start — Z-crash risk on hardware). Guard sequence: measure
+# the tool via MDI first (full routine: real retract + G43 applied), arm the
+# one-shot #3116 skip flag (tool_touch_off.ngc o<450> no-ops under the skim,
+# re-issuing only the modal G43), then AUTO_RUN. Runs as a BACKGROUND task:
+# the measurement takes minutes and handle_command holds _cmd_lock for its
+# whole body — running it inline would freeze every client's commands (incl.
+# Abort) and starve this client's heartbeat. Each CMD step takes the lock
+# individually; completion waits poll STAT lock-free. Progress is broadcast
+# via the status fanout (rfl_status field), single-flight via _rfl_active.
+_rfl_active: bool = False
+_rfl_status: Optional[dict] = None   # last guard-sequence phase, riding the status fanout
+
+
+async def _rfl_wait_interp_idle(timeout_s: float, grace_s: float = 2.0):
+    """Wait until the interpreter is idle again after a fire-and-forget MDI.
+
+    Completion = interp observed non-idle then idle again, OR never observed
+    non-idle within the grace window while idle (instant commands like
+    parameter assignments can finish between polls). Lock-free: only STAT
+    reads. Returns (ok, reason)."""
+    t0 = time.monotonic()
+    deadline = t0 + timeout_s
+    started = False
+    while time.monotonic() < deadline:
+        try:
+            STAT.poll()
+        except Exception as e:
+            return False, f"STAT.poll failed: {e}"
+        if safe_get("task_state", None) != linuxcnc.STATE_ON:
+            return False, "machine left ON state (estop/off)"
+        interp = safe_get("interp_state", None)
+        if interp != linuxcnc.INTERP_IDLE:
+            started = True
+        elif started or (time.monotonic() - t0) > grace_s:
+            return True, ""
+        await asyncio.sleep(0.1)
+    return False, f"timeout after {timeout_s:.0f}s"
+
+
+async def _rfl_mdi_step(text: str, timeout_s: float):
+    """One locked MDI dispatch + lock-free completion wait. Returns (ok, reason)."""
+    async with _get_cmd_lock():
+        blocked = reject_if_auto_running()
+        if blocked:
+            return False, blocked.get("error", "busy")
+        await set_mode(linuxcnc.MODE_MDI)
+        await _cmd_blocking(CMD.mdi, text, wait=None)
+    return await _rfl_wait_interp_idle(timeout_s)
+
+
+def _rfl_phase(phase: str, ok: bool = True, error: str = "") -> None:
+    global _rfl_status
+    _rfl_status = {"phase": phase, "ok": ok, "error": error, "ts": int(time.time() * 1000)}
+    _trace.emit("rfl.phase", level="info" if ok else "warn",
+                phase=phase, ok=ok, error=error)
+
+
+async def _rfl_sequence(start_line: int, pre_tool: int, safe_z: bool,
+                        spindle_dir: Optional[str], spindle_speed: int) -> None:
+    global _rfl_active
+    flag_armed = False
+    try:
+        if pre_tool:
+            _rfl_phase("measuring")
+            err_mark = _errors_total
+            ok, why = await _rfl_mdi_step(f"T{pre_tool} M600", timeout_s=240.0)
+            if not ok:
+                _rfl_phase("measure_failed", False, why)
+                return
+            STAT.poll()
+            tofs = safe_get("tool_offset", None)
+            applied = abs(float(tofs[2])) if tofs else 0.0
+            if safe_get("tool_in_spindle", None) != pre_tool or applied <= 1e-9:
+                _rfl_phase("measure_failed", False,
+                           f"verification failed (tool={safe_get('tool_in_spindle', None)}, applied Z={applied:.4f})")
+                return
+            if _errors_total != err_mark:
+                # An error (or operator abort → probe-interrupted error) surfaced
+                # during the measurement window — refuse to continue into motion.
+                _rfl_phase("measure_failed", False, "errors during measurement (aborted?)")
+                return
+            ok, why = await _rfl_mdi_step(f"#3116={pre_tool}", timeout_s=10.0)
+            if not ok:
+                _rfl_phase("flag_failed", False, why)
+                return
+            flag_armed = True
+        if safe_z:
+            _rfl_phase("safe_z")
+            ok, why = await _rfl_mdi_step("G53 G0 Z0", timeout_s=120.0)
+            if not ok:
+                _rfl_phase("safe_z_failed", False, why)
+                return
+            STAT.poll()
+            pos = safe_get("position", None)
+            if pos and abs(float(pos[2])) > 0.5:
+                # Move ended early (an abort mid-move leaves interp idle with no
+                # error text) — machine is NOT at safe height; refuse to start.
+                _rfl_phase("safe_z_failed", False,
+                           f"Z did not reach machine zero (at {float(pos[2]):.2f})")
+                return
+        if spindle_dir and spindle_speed > 0:
+            async with _get_cmd_lock():
+                await set_mode(linuxcnc.MODE_MANUAL)
+                if spindle_dir == "forward":
+                    await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_FORWARD, spindle_speed, wait=None)
+                elif spindle_dir == "reverse":
+                    await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_REVERSE, spindle_speed, wait=None)
+        _rfl_phase("starting")
+        async with _get_cmd_lock():
+            await set_mode(linuxcnc.MODE_AUTO)
+            await _cmd_blocking(CMD.auto, linuxcnc.AUTO_RUN, start_line, wait=None)
+        flag_armed = False  # consumed by the skim (o<450> self-clears #3116)
+        _rfl_phase("running")
+    except Exception as e:
+        _trace.emit_exc("rfl.sequence_failed", e)
+        _rfl_phase("failed", False, f"{type(e).__name__}: {e}")
+    finally:
+        if flag_armed:
+            # Never leave a stale skip flag behind — it could silently skip a
+            # legitimate future measurement. Best-effort clear, loud on failure.
+            ok, why = await _rfl_mdi_step("#3116=0", timeout_s=10.0)
+            if ok:
+                _trace.emit("rfl.flag_cleared")
+            else:
+                _trace.emit("rfl.flag_clear_failed", level="error", err=why)
+        _rfl_active = False
+
+
 async def handle_command(msg: Dict[str, Any], armed: bool):
     # Acquire the CMD lock before dispatching. Every path that touches CMD.*
     # must hold this lock; see _cmd_lock docstring.
@@ -3439,7 +3577,7 @@ async def handle_command(msg: Dict[str, Any], armed: bool):
 
 
 async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
-    global _estop_hold
+    global _estop_hold, _rfl_active
     cmd = msg.get("cmd")
     if not cmd:
         return {"ok": False, "error": "Missing cmd"}
@@ -3813,6 +3951,27 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             require_armed(armed)
             spindle_dir = msg.get("spindle_dir")
             spindle_speed = finite_int(msg.get("spindle_speed", 0), lo=0)
+            start_line = finite_int(msg.get("line", 0), lo=0)
+            pre_tool = finite_int(msg.get("pre_tool", 0), lo=0)
+            safe_z = bool(msg.get("safe_z", False))
+
+            if pre_tool or safe_z:
+                # RFL guard path (see _rfl_sequence): long-running — the
+                # measurement alone takes minutes — so it CANNOT run inside this
+                # handler (we hold _cmd_lock here and block this client's receive
+                # loop). Validate, spawn, return immediately; progress rides the
+                # status fanout as `rfl_status`.
+                if _rfl_active:
+                    return {"ok": False, "error": "Run-from-line sequence already in progress"}
+                blocked = reject_if_auto_running()
+                if blocked:
+                    return blocked
+                _rfl_active = True
+                _rfl_phase("queued")
+                register_bg_task(asyncio.create_task(_rfl_sequence(
+                    start_line, pre_tool, safe_z, spindle_dir, spindle_speed)))
+                return {"ok": True, "rfl": "started"}
+
             if spindle_dir and spindle_speed > 0:
                 await set_mode(linuxcnc.MODE_MANUAL)
                 if spindle_dir == "forward":
@@ -3820,7 +3979,6 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 elif spindle_dir == "reverse":
                     await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_REVERSE, spindle_speed, wait=None)
             await set_mode(linuxcnc.MODE_AUTO)
-            start_line = finite_int(msg.get("line", 0), lo=0)
             await _cmd_blocking(CMD.auto, linuxcnc.AUTO_RUN, start_line, wait=None)
             return {"ok": True}
 
@@ -6161,6 +6319,10 @@ async def ws_endpoint(ws: WebSocket):
                         }
                     if _probe_results:
                         status_msg["probe_results"] = _probe_results
+                    if _rfl_status is not None:
+                        # RFL guard progress (measuring / safe_z / starting / failures)
+                        # — top-level sibling of `data`, same pattern as safety_trip.
+                        status_msg["rfl_status"] = _rfl_status
 
                     # Inject tool_meta on tool_number change or library edit (for
                     # 3D rendering). Lives at top level — sibling of `data` — so

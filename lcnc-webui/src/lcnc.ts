@@ -41,7 +41,7 @@ export type WsCommand =
   | { cmd: "unhome_all" }
   // Program execution
   | { cmd: "cycle_start" }
-  | { cmd: "auto_run"; line: number; spindle_dir?: string; spindle_speed?: number }
+  | { cmd: "auto_run"; line: number; spindle_dir?: string; spindle_speed?: number; pre_tool?: number; safe_z?: boolean }
   | { cmd: "auto_step" }
   | { cmd: "cycle_pause" }
   | { cmd: "cycle_resume" }

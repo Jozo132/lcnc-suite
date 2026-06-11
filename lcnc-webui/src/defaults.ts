@@ -225,6 +225,7 @@ export interface MachineDefaults {
   runFromLine: boolean;
   rflSpindleDir: SpindleDir;
   rflSpindleRpm: number;
+  rflSafeZ: boolean;          // retract to G53 Z0 before a run-from-line start
   spindleFeedbackUnit: SpindleFeedbackUnit;
   spindleLoadPin: string;
 }
@@ -234,6 +235,7 @@ const MACHINE_FALLBACK: MachineDefaults = {
   runFromLine: false,
   rflSpindleDir: "forward",
   rflSpindleRpm: 10000,
+  rflSafeZ: true,
   spindleFeedbackUnit: "rps",
   spindleLoadPin: "",
 };
@@ -246,6 +248,7 @@ registerSection<MachineDefaults>("machine", MACHINE_FALLBACK, (saved, fb) => {
     ...saved,
     toolChangeMode: (saved.toolChangeMode === "m600" ? "m600" : "m6g43") as ToolChangeMode,
     rflSpindleDir: (dir === "off" || dir === "forward" || dir === "reverse" ? dir : fb.rflSpindleDir) as SpindleDir,
+    rflSafeZ: typeof (saved as any).rflSafeZ === "boolean" ? (saved as any).rflSafeZ : fb.rflSafeZ,
     spindleFeedbackUnit: (saved.spindleFeedbackUnit === "rpm" ? "rpm" : "rps") as SpindleFeedbackUnit,
   };
 });

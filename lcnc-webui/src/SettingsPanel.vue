@@ -159,7 +159,7 @@ function resetViewer() {
 function resetMachine() {
   saveMachineDefaults({
     toolChangeMode: "m6g43", runFromLine: false,
-    rflSpindleDir: "forward", rflSpindleRpm: 10000,
+    rflSpindleDir: "forward", rflSpindleRpm: 10000, rflSafeZ: true,
     spindleFeedbackUnit: "rps", spindleLoadPin: "",
   });
   const md = loadMachineDefaults();
@@ -309,6 +309,7 @@ function saveMachine() {
     runFromLine: runFromLine.value,
     rflSpindleDir: rflSpindleDir.value,
     rflSpindleRpm: rflSpindleRpm.value,
+    rflSafeZ: loadMachineDefaults().rflSafeZ,  // managed from the RFL dialog, preserved here
     spindleFeedbackUnit: spindleFeedbackUnit.value,
     spindleLoadPin: spindleLoadPin.value,
   });

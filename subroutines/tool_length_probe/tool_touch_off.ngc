@@ -34,6 +34,7 @@ o<400> if [#<_task> EQ 1]
 #<disable_pre_pos> = #3108                 ;Disable G30 pre-change positioning
 #<addreps> = #3109                         ;Extra retry count
 #<lasttry> = #3110                         ;If "1" last retry without tool table
+#<rfl_skip_tool> = #3116                   ;One-shot run-from-line guard (lcnc-suite): tool just measured via MDI; skip its in-program re-measurement once
 
 ;--Tool diameter--
 #<offset_diameter> = #3111                 ;Tool diameter threshold for offset. 0=OFF
@@ -131,6 +132,25 @@ M50 P0
 #<tool_selected> = #<_selected_tool>    ;Value from system variable
 (LOG, Old tool: #<tool_in_spindle> / New tool: #<tool_selected>)
 
+
+;-45- Run-from-line guard (lcnc-suite). LinuxCNC's run-from-line skim re-enters
+;M600 bodies in lines 1..N-1: G38 probes are queue-busters and execute for REAL
+;while plain moves (positioning, the final G53 Z0 retract) are discarded and the
+;G43 application does not survive into the synthesized state. The gateway
+;therefore measures the tool via MDI first (full routine, real retract, G43),
+;sets #3116 = tool number, then starts AUTO_RUN; this branch makes the skimmed
+;re-entry a no-op — except the bare G43, which is modal-only (no motion, legal
+;during skim) and carries the TLO into the synthesized run state. One-shot:
+;clears itself on first use, so a stale flag can never skip a legitimate
+;measurement; additionally requires the tool to ALREADY be mounted.
+o<450> if [#<rfl_skip_tool> GT 0 AND #<rfl_skip_tool> EQ #<tool_selected> AND #<tool_selected> EQ #<tool_in_spindle>]
+  #3116 = 0
+  G43
+  M50 P1
+  (LOG, RFL guard: tool #<tool_selected> already measured via MDI - skipping re-measurement)
+  (LOGCLOSE)
+  o<tool_touch_off> return
+o<450> endif
 
 ;-40- Compare new and old tool numbers
 ;If the tool in the spindle is the same as the one selected, no change is made. Except for manual measurement.
