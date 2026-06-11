@@ -435,7 +435,7 @@ async def run(args):
             direct = await fn(args)
         except Exception as e:
             direct = {"error": f"{type(e).__name__}: {e}"}
-        await asyncio.sleep(1.0)  # let trailing trace lines land
+        await asyncio.sleep(3.5)  # trailing pad: trip events land LATE via the reader pipeline (a 1 s pad produced a false pass)
         t1_ns = time.time_ns()
         entry = {
             "direct": direct,

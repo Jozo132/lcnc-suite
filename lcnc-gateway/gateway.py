@@ -5482,14 +5482,21 @@ async def import_tool_library(file: UploadFile = File(...)):
         except Exception as e:
             _trace.emit_exc("tool_tbl.recount_failed", e, tbl_path=tbl_path)
 
-    preview = [{**t} for t in parsed]
-    skipped_preview = [{"T": t["T"], "description": t.get("description", ""),
-                        "type": t.get("type", ""), "fusion_type": t.get("fusion_type", "")}
-                       for t in skipped]
+    # Build + JSON-encode the (potentially 60k-tool) response OFF the loop: the
+    # harness showed the post-decode work was still tripping the watchdog after
+    # the subprocess fix — the remaining ~600 ms was THIS: a 60k-dict copy loop
+    # (pointless — `parsed` is wholly ours) plus FastAPI JSON-encoding the lot on
+    # the event loop. One offloaded closure produces the final bytes.
+    def _build_preview_body() -> bytes:
+        skipped_preview = [{"T": t["T"], "description": t.get("description", ""),
+                            "type": t.get("type", ""), "fusion_type": t.get("fusion_type", "")}
+                           for t in skipped]
+        return json.dumps({"ok": True, "tools": parsed, "total": len(parsed),
+                           "existing_count": existing_count,
+                           "skipped_duplicates": skipped_preview}).encode()
 
-    return {"ok": True, "tools": preview, "total": len(parsed),
-            "existing_count": existing_count,
-            "skipped_duplicates": skipped_preview}
+    body = await asyncio.to_thread(_build_preview_body)
+    return Response(content=body, media_type="application/json")
 
 
 @app.post("/import-tool-library/apply", dependencies=[Depends(require_token)])
@@ -5514,29 +5521,32 @@ async def apply_tool_library_import(
     if not tbl_path:
         raise HTTPException(status_code=500, detail="Tool table path not available")
 
-    # Replace entire tool table and sidecar
-    tbl_tools = []
-    library: dict = {}
+    # Replace entire tool table and sidecar. The build loop is pure Python over
+    # up-to-60k tools — off the loop (same harness finding as the preview route).
+    def _build_apply_payload():
+        tbl_tools = []
+        library: dict = {}
+        for tool in parsed:
+            t_num = tool["T"]
+            z_init = tool.get("body_length") or tool.get("oal") or 0.0
+            tbl_tools.append({
+                "T": t_num,
+                "P": t_num,
+                "Z": float(z_init),
+                "D": tool["D"],
+                "remark": tool.get("description", ""),
+            })
+            key = str(t_num)
+            library[key] = {}
+            for field in _TOOL_META_FIELDS:
+                val = tool.get(field)
+                if val is not None:
+                    library[key][field] = val
+            if tool.get("presets"):
+                library[key]["presets"] = tool["presets"]
+        return tbl_tools, library
 
-    for tool in parsed:
-        t_num = tool["T"]
-        z_init = tool.get("body_length") or tool.get("oal") or 0.0
-        tbl_tools.append({
-            "T": t_num,
-            "P": t_num,
-            "Z": float(z_init),
-            "D": tool["D"],
-            "remark": tool.get("description", ""),
-        })
-
-        key = str(t_num)
-        library[key] = {}
-        for field in _TOOL_META_FIELDS:
-            val = tool.get(field)
-            if val is not None:
-                library[key][field] = val
-        if tool.get("presets"):
-            library[key]["presets"] = tool["presets"]
+    tbl_tools, library = await asyncio.to_thread(_build_apply_payload)
 
     # Serialize the whole replacement under _cmd_lock + off the event loop, so
     # it can't race the WS tool handlers or call into NML unlocked (issue #24).
