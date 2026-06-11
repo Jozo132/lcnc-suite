@@ -43,6 +43,8 @@ from gateway_util import (
     finite_int,
     atomic_write_bytes,
     evaluate_trip_latch,
+    parse_telemetry_batch,
+    TELEMETRY_BODY_MAX,
 )
 from command_policy import (
     MachineState as _PolicyMachineState,
@@ -5224,35 +5226,26 @@ async def telemetry(request: Request):
         return {"ok": False, "error": "body_read_failed"}
     if not raw:
         return {"ok": True, "events": 0}
+    if len(raw) > TELEMETRY_BODY_MAX:
+        # Bounded ingestion (M1): an arbitrary-size NDJSON body previously
+        # expanded into unbounded parse work on this handler. Loud, not silent.
+        _trace.emit("telemetry.body_oversized", level="warn", bytes=len(raw))
+        return {"ok": False, "error": "body_too_large"}
     peer = "?"
     try:
         if request.client is not None:
             peer = f"{request.client.host}:{request.client.port}"
     except Exception:
         pass  # safe-silent: peer label is cosmetic, "?" is a fine fallback
-    accepted = 0
-    rejected = 0
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            evt = json.loads(line)
-        except Exception:
-            rejected += 1
-            continue
-        if not isinstance(evt, dict):
-            rejected += 1
-            continue
-        kind = str(evt.get("kind") or evt.get("tag") or "event")
-        # Forward all fields as-is (strings/numbers/bools only after JSON
-        # decode anyway). Prefix tag with `browser.` so the merged trace
-        # makes the source obvious.
-        fields = {k: v for k, v in evt.items() if k not in ("kind", "tag")}
+    # Validation/parsing is pure + bounded (gateway_util.parse_telemetry_batch);
+    # this handler keeps only transport concerns and the trace emission. Tags are
+    # prefixed `browser.` so the merged trace makes the source obvious; fields
+    # arrive JSON-decoded (strings/numbers/bools), never executed or rendered raw.
+    events, rejected = parse_telemetry_batch(raw)
+    for kind, fields in events:
         fields["peer"] = peer
         _trace.emit(f"browser.{kind}", **fields)
-        accepted += 1
-    return {"ok": True, "events": accepted, "rejected": rejected}
+    return {"ok": True, "events": len(events), "rejected": rejected}
 
 
 def _safe_unlink(path: str) -> None:
