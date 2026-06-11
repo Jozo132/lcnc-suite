@@ -1249,7 +1249,15 @@ _gcode_refresh_running: bool = False            # single-flight guard
 # The parse worker's msgpack output, published verbatim (passthrough — never
 # decoded on the gateway). Served over HTTP by GET /preview so the 2.7 MB
 # polyline payload never touches the WS writer.
-_gcode_preview_bytes: Optional[bytes] = None
+_gcode_preview_bytes: Optional[bytes] = None   # raw copy kept ONLY when no gz exists (<4 KiB payloads)
+_gcode_preview_raw_len: int = 0                # uncompressed size (for traces; raw copy usually dropped)
+
+
+def _preview_available() -> bool:
+    """A preview is servable when either variant exists — the raw copy is
+    dropped once the gz exists (every real browser sends Accept-Encoding: gzip;
+    a rare non-gzip client gets an on-demand decompress in get_preview)."""
+    return _gcode_preview_bytes is not None or _gcode_preview_bytes_gz is not None
 # Same payload pre-compressed once per parse so each client doesn't pay the
 # gzip cost on every fetch. /preview picks one based on Accept-Encoding.
 _gcode_preview_bytes_gz: Optional[bytes] = None
@@ -4879,7 +4887,12 @@ async def _refresh_gcode_preview(filepath: str):
         # Publish metadata + bytes together before bumping the version so
         # GET /preview readers never see stale bytes under a new version.
         _gcode_preview_pending = {"file": filepath}
-        _gcode_preview_bytes = stdout
+        global _gcode_preview_raw_len
+        _gcode_preview_raw_len = len(stdout)
+        # Keep the raw copy ONLY when no gz exists: every real browser accepts
+        # gzip, so holding raw + gz resident (~22 MB on a heavy file) paid for a
+        # variant that was practically never served.
+        _gcode_preview_bytes = None if preview_bytes_gz is not None else stdout
         _gcode_preview_bytes_gz = preview_bytes_gz
         _gcode_preview_version += 1
         _gcode_last_file = filepath
@@ -5745,14 +5758,24 @@ def get_preview(request: Request, v: Optional[int] = None):
     accepts gzip and a pre-compressed copy exists, serve that instead — both
     variants are produced once per parse, so per-fetch CPU stays at zero.
     """
-    if _gcode_preview_bytes is None:
+    if not _preview_available():
         raise HTTPException(status_code=404, detail="No preview cached")
     t_start = time.monotonic()
     peak = _fanout_enter("preview")
     try:
         accept_enc = request.headers.get("accept-encoding", "")
         use_gzip = "gzip" in accept_enc and _gcode_preview_bytes_gz is not None
-        body = _gcode_preview_bytes_gz if use_gzip else _gcode_preview_bytes
+        if use_gzip:
+            body = _gcode_preview_bytes_gz
+        elif _gcode_preview_bytes is not None:
+            body = _gcode_preview_bytes
+        else:
+            # Non-gzip client and the raw copy was dropped: decompress on demand.
+            # This is a SYNC endpoint (threadpool), so the loop is untouched.
+            # Loud, not silent — exotic clients paying ~100 ms is auditable.
+            body = gzip.decompress(_gcode_preview_bytes_gz)  # type: ignore[arg-type]
+            _trace.emit("preview.raw_decompress", level="info",
+                        bytes=len(body), peer=str(request.client.host if request.client else "?"))
         headers = {
             "Cache-Control": "public, max-age=31536000, immutable",
             "X-Preview-Version": str(_gcode_preview_version),
@@ -5771,7 +5794,7 @@ def get_preview(request: Request, v: Optional[int] = None):
         if peak > 1 or handler_ms > 50:
             print(
                 f"[FANOUT] preview peak={peak} handler_ms={handler_ms:.0f} "
-                f"bytes={len(_gcode_preview_bytes)}B v={_gcode_preview_version}",
+                f"bytes={_gcode_preview_raw_len}B v={_gcode_preview_version}",
                 flush=True,
             )
 
@@ -6211,7 +6234,7 @@ async def ws_endpoint(ws: WebSocket):
                 cache_hit = (
                     _gcode_preview_pending is not None
                     and _gcode_preview_pending.get("file") == initial_file
-                    and _gcode_preview_bytes is not None
+                    and _preview_available()
                 )
                 if cache_hit:
                     await ws_send_json(ws, {
@@ -6540,7 +6563,7 @@ async def ws_endpoint(ws: WebSocket):
                     if _gcode_preview_version != _last_gcode_preview_version:
                         _last_gcode_preview_version = _gcode_preview_version
                         pending = _gcode_preview_pending
-                        if _gcode_preview_bytes is not None and pending is not None:
+                        if _preview_available() and pending is not None:
                             try:
                                 await ws_send_json(ws, {
                                     "type": "viewer_gcode_ready",
