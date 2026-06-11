@@ -3,7 +3,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
 import { loadMachineDefaults, saveMachineDefaults, STEP_RPM } from "./defaults";
-import { scanToolchangesBefore, type RflToolchangeScan } from "./gcodeRfl";
+import { scanToolchangesBefore, scanEntryPositionBefore, type RflToolchangeScan, type RflEntryScan, type RflRunOptions } from "./gcodeRfl";
 import { highlightGcode, type Token } from "./gcodeHighlight";
 import { emitTelemetry } from "./lcncWs";
 import { GCODE_LOOKUP, GCODE_REFERENCE } from "./gcodeReference";
@@ -55,7 +55,7 @@ const emit = defineEmits<{
   (e: "cycleStep"): void;
   (e: "toggleOptionalStop"): void;
   (e: "toggleBlockDelete"): void;
-  (e: "runFromLine", line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number, preTool: number, safeZ: boolean): void;
+  (e: "runFromLine", opts: RflRunOptions): void;
   (e: "openGcodeRef", code: string): void;
   (e: "showStats"): void;
 }>();
@@ -330,6 +330,12 @@ const dialogSafeZ = ref(true);
 // Toolchange scan for the RFL × M600 guard (see gcodeRfl.ts): refreshed each
 // time the dialog opens; drives the redirect notice / multi-change refusal.
 const rflScan = ref<RflToolchangeScan | null>(null);
+const rflEntry = ref<RflEntryScan | null>(null);
+// Position preamble available: scan clean AND at least one derivable axis.
+const rflEntryAvailable = computed(() => {
+  const e = rflEntry.value;
+  return !!e && e.blockers.length === 0 && (e.x != null || e.y != null);
+});
 // Redirect case: exactly one toolchange with a known tool before the start
 // line — the gateway measures it via MDI first (pre_tool), the #3116 flag
 // skips the skim's re-entry.
@@ -376,6 +382,9 @@ function onStartClick() {
     rflScan.value = props.gcodeContent
       ? scanToolchangesBefore(props.gcodeContent, selectedLine.value)
       : null;
+    rflEntry.value = props.gcodeContent
+      ? scanEntryPositionBefore(props.gcodeContent, selectedLine.value)
+      : null;
     showRunDialog.value = true;
   } else {
     emit("cycleStart");
@@ -388,8 +397,14 @@ function confirmRunFromLine() {
   if (mach.rflSafeZ !== dialogSafeZ.value) {
     saveMachineDefaults({ ...mach, rflSafeZ: dialogSafeZ.value });
   }
-  emit("runFromLine", selectedLine.value, dialogSpindleDir.value, dialogSpindleSpeed.value,
-       rflPreTool.value, dialogSafeZ.value);
+  emit("runFromLine", {
+    line: selectedLine.value,
+    spindleDir: dialogSpindleDir.value,
+    spindleSpeed: dialogSpindleSpeed.value,
+    preTool: rflPreTool.value,
+    safeZ: dialogSafeZ.value,
+    entry: rflEntryAvailable.value ? rflEntry.value : null,
+  });
   showRunDialog.value = false;
   selectedLine.value = null;
 }
@@ -653,6 +668,26 @@ async function saveEdit() {
             Lines 1–{{ (selectedLine ?? 1) - 1 }} will be interpreted but motion suppressed.
             Arc commands (G2/G3) before the start line may cause
             radius errors and abort the run.
+            Axes not commanded at or before the start line keep their current
+            position — prefer a start line that commands all axes (e.g. a
+            G0 X.. Y.. rapid). Z descends from safe height per the program's own
+            words: make sure material above the start point is already cleared.
+          </div>
+
+          <div v-if="rflEntryAvailable" class="dialogSection">
+            <div class="sub">Start Position</div>
+            <div class="dialogBody">
+              Will rapid to{{ rflEntry?.x != null ? ` X${rflEntry?.x}` : "" }}{{ rflEntry?.y != null ? ` Y${rflEntry?.y}` : "" }}{{ rflEntry?.wcs ? ` (${rflEntry?.wcs})` : "" }}
+              at safe Z before starting, so entry moves run at the position the
+              program expects.
+            </div>
+          </div>
+          <div v-else-if="rflEntry && rflEntry.blockers.length" class="dialogSection">
+            <div class="sub">Start Position Preamble Unavailable</div>
+            <div class="dialogBody">
+              {{ rflEntry.blockers.join("; ") }} — entry will follow modal words
+              from the machine's current position. Choose the start line with care.
+            </div>
           </div>
 
           <div v-if="rflPreTool > 0" class="dialogSection">

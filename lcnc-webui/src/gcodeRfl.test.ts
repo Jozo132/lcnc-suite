@@ -65,3 +65,64 @@ describe("scanToolchangesBefore (RFL × M600 guard)", () => {
     expect(r.lastTool).toBe(0);
   });
 });
+
+import { scanEntryPositionBefore } from "./gcodeRfl";
+
+describe("scanEntryPositionBefore (RFL position preamble)", () => {
+  it("tracks last plain X/Y values, WCS and units", () => {
+    const text = "G21 G54 G90\nG0 X10 Y20\nG1 X15.5\nG1 Y-2.25 Z-1\nG1 X30 Z-2\nG1 Y5\n";
+    const r = scanEntryPositionBefore(text, 6);
+    expect(r).toEqual({ x: 30, y: -2.25, wcs: "G54", units: "G21", blockers: [] });
+  });
+
+  it("blocks on G91 incremental mode", () => {
+    const r = scanEntryPositionBefore("G91\nG0 X1\n", 3);
+    expect(r.blockers).toContain("G91 incremental mode");
+  });
+
+  it("does NOT block on G91.1 (arc mode)", () => {
+    const r = scanEntryPositionBefore("G91.1\nG0 X1 Y1\n", 3);
+    expect(r.blockers).toEqual([]);
+    expect(r.x).toBe(1);
+  });
+
+  it("blocks on G92, G10, G28 and O-word flow", () => {
+    const text = "G92 X0\nG10 L2 P1 X0\nG28\no<sub1> call\nG0 X1\n";
+    const r = scanEntryPositionBefore(text, 6);
+    expect(r.blockers).toEqual(expect.arrayContaining([
+      "G92 offset", "G10 offset/table write", "G28/G30 home move", "O-word subroutine flow",
+    ]));
+  });
+
+  it("blocks on non-numeric coordinates", () => {
+    const r = scanEntryPositionBefore("G0 X#<width> Y[#<h>+2]\n.\n", 3);
+    expect(r.blockers).toEqual(expect.arrayContaining([
+      "non-numeric X coordinate", "non-numeric Y coordinate",
+    ]));
+  });
+
+  it("blocks on rotary axis words and TCP (5-axis: preamble is XY-only)", () => {
+    const r = scanEntryPositionBefore("G0 A45 X1\nG43.4 H1\n.\n", 4);
+    expect(r.blockers).toEqual(expect.arrayContaining([
+      "rotary/secondary axis words (preamble is XY-only)", "G43.4 TCP mode",
+    ]));
+  });
+
+  it("blocks on multiple distinct work offsets", () => {
+    const r = scanEntryPositionBefore("G54\nG0 X1\nG55\nG0 X2\n.\n", 6);
+    expect(r.blockers.some(b => b.startsWith("multiple work offsets"))).toBe(true);
+  });
+
+  it("returns nulls when no X/Y words precede the start line", () => {
+    const r = scanEntryPositionBefore("G21 G90\nM3 S1000\nF200\n.\n", 5);
+    expect(r.x).toBeNull();
+    expect(r.y).toBeNull();
+    expect(r.blockers).toEqual([]);
+  });
+
+  it("ignores commented coordinates", () => {
+    const r = scanEntryPositionBefore("(G0 X99)\n; X88\nG0 X7 Y8\n.\n", 5);
+    expect(r.x).toBe(7);
+    expect(r.y).toBe(8);
+  });
+});

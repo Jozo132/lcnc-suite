@@ -3498,8 +3498,57 @@ def _rfl_phase(phase: str, ok: bool = True, error: str = "") -> None:
                 phase=phase, ok=ok, error=error)
 
 
+_RFL_WCS_OK = {"G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"}
+
+
+def _rfl_entry_mdi(entry: dict) -> str:
+    """Compose the position-preamble MDI line: optional units + WCS prefixes
+    (matching what the program will use at line N), forced G90, rapid to the
+    derived XY. Axes the scan couldn't determine are simply omitted (modal)."""
+    parts = []
+    if entry.get("units"):
+        parts.append(entry["units"])
+    if entry.get("wcs"):
+        parts.append(entry["wcs"])
+    parts.append("G90 G0")
+    if entry.get("x") is not None:
+        parts.append(f"X{entry['x']:.4f}")
+    if entry.get("y") is not None:
+        parts.append(f"Y{entry['y']:.4f}")
+    return " ".join(parts)
+
+
+def _rfl_entry_reached(entry: dict):
+    """Verify the preamble move actually landed (an abort mid-move leaves the
+    interp idle with no error text). Compares machine position against the WCS
+    target + active g5x/g92 offsets — valid because the scan REFUSES rotation/
+    G92-mutating programs. Returns (ok, reason)."""
+    STAT.poll()
+    g5x = safe_get("g5x_offset", None) or (0.0,) * 9
+    g92 = safe_get("g92_offset", None) or (0.0,) * 9
+    pos = safe_get("position", None)
+    if not pos:
+        return False, "no position from STAT"
+    mu = get_machine_units()
+    scale = 1.0
+    if entry.get("units") == "G20" and mu == "mm":
+        scale = 25.4
+    elif entry.get("units") == "G21" and mu == "in":
+        scale = 1.0 / 25.4
+    tol = 0.5 if mu == "mm" else 0.02
+    for key, i in (("x", 0), ("y", 1)):
+        val = entry.get(key)
+        if val is None:
+            continue
+        expected = float(val) * scale + float(g5x[i]) + float(g92[i])
+        if abs(float(pos[i]) - expected) > tol:
+            return False, f"{key.upper()} at {float(pos[i]):.3f}, expected {expected:.3f}"
+    return True, ""
+
+
 async def _rfl_sequence(start_line: int, pre_tool: int, safe_z: bool,
-                        spindle_dir: Optional[str], spindle_speed: int) -> None:
+                        spindle_dir: Optional[str], spindle_speed: int,
+                        entry: Optional[dict] = None) -> None:
     global _rfl_active
     flag_armed = False
     try:
@@ -3540,6 +3589,20 @@ async def _rfl_sequence(start_line: int, pre_tool: int, safe_z: bool,
                 # error text) — machine is NOT at safe height; refuse to start.
                 _rfl_phase("safe_z_failed", False,
                            f"Z did not reach machine zero (at {float(pos[2]):.2f})")
+                return
+        if entry and (entry.get("x") is not None or entry.get("y") is not None):
+            # Position preamble: rapid to the XY the program expects at line N
+            # (at safe height — the handler forces safe_z on whenever entry is
+            # given), so the RFL entry's modal Y/Z moves run at the RIGHT X/Y
+            # instead of wherever the machine happens to stand.
+            _rfl_phase("positioning")
+            ok, why = await _rfl_mdi_step(_rfl_entry_mdi(entry), timeout_s=120.0)
+            if not ok:
+                _rfl_phase("positioning_failed", False, why)
+                return
+            ok, why = _rfl_entry_reached(entry)
+            if not ok:
+                _rfl_phase("positioning_failed", False, why)
                 return
         if spindle_dir and spindle_speed > 0:
             async with _get_cmd_lock():
@@ -3954,8 +4017,18 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             start_line = finite_int(msg.get("line", 0), lo=0)
             pre_tool = finite_int(msg.get("pre_tool", 0), lo=0)
             safe_z = bool(msg.get("safe_z", False))
+            entry = None
+            _ex, _ey = msg.get("entry_x"), msg.get("entry_y")
+            if _ex is not None or _ey is not None:
+                entry = {
+                    "x": finite_float(_ex) if _ex is not None else None,
+                    "y": finite_float(_ey) if _ey is not None else None,
+                    "wcs": msg.get("entry_wcs") if msg.get("entry_wcs") in _RFL_WCS_OK else None,
+                    "units": msg.get("entry_units") if msg.get("entry_units") in ("G20", "G21") else None,
+                }
+                safe_z = True  # the XY preamble only ever moves at safe height
 
-            if pre_tool or safe_z:
+            if pre_tool or safe_z or entry:
                 # RFL guard path (see _rfl_sequence): long-running — the
                 # measurement alone takes minutes — so it CANNOT run inside this
                 # handler (we hold _cmd_lock here and block this client's receive
@@ -3969,7 +4042,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 _rfl_active = True
                 _rfl_phase("queued")
                 register_bg_task(asyncio.create_task(_rfl_sequence(
-                    start_line, pre_tool, safe_z, spindle_dir, spindle_speed)))
+                    start_line, pre_tool, safe_z, spindle_dir, spindle_speed, entry)))
                 return {"ok": True, "rfl": "started"}
 
             if spindle_dir and spindle_speed > 0:

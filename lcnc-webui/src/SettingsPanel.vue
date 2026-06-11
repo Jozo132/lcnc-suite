@@ -595,7 +595,14 @@ function resetMachineColor(id: string) {
           <div class="stack-controls">
             <div class="sub">Run from Line</div>
             <div class="settingDesc">Allow starting program execution from a selected line in the code viewer.</div>
-            <MachineToggle gate="displaySetting" v-model="runFromLine" @update:modelValue="emit('setRunFromLine', runFromLine); saveMachine()" label="Enable run from line" />
+            <MachineToggle gate="displaySetting" v-model="runFromLine" @update:modelValue="emit('setRunFromLine', runFromLine); saveMachine()" label="Enable run from line (advanced — use with care)" />
+            <div v-if="runFromLine" class="dialogBody">
+              ⚠ Run-from-line is inherently risky: LinuxCNC reconstructs program
+              state by skimming, entry moves follow modal axis words, and skipped
+              passes may leave uncut material. The dialog guards tool changes and
+              start position where it can, but it cannot cover every program —
+              not recommended for unattended use.
+            </div>
             <div v-if="runFromLine" class="rflDefaults">
               <div class="settingDesc">Default spindle preset for run-from-line dialog.</div>
               <div class="rflRow">

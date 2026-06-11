@@ -879,16 +879,20 @@ function cycleStart() {
   fire({ cmd: "cycle_start" }, 'ready');
 }
 
-function runFromLine(line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number, preTool: number, safeZ: boolean) {
+function runFromLine(opts: import("./gcodeRfl").RflRunOptions) {
   fire({
     cmd: "auto_run",
-    line,
-    spindle_dir: spindleDir !== "off" ? spindleDir : undefined,
-    spindle_speed: spindleDir !== "off" ? spindleSpeed : undefined,
+    line: opts.line,
+    spindle_dir: opts.spindleDir !== "off" ? opts.spindleDir : undefined,
+    spindle_speed: opts.spindleDir !== "off" ? opts.spindleSpeed : undefined,
     // RFL × M600 guard: measure this tool via MDI first (gateway bg sequence),
-    // and optionally retract to G53 Z0 before positioning.
-    pre_tool: preTool > 0 ? preTool : undefined,
-    safe_z: safeZ || undefined,
+    // retract to G53 Z0, and rapid to the derived start XY before AUTO_RUN.
+    pre_tool: opts.preTool > 0 ? opts.preTool : undefined,
+    safe_z: opts.safeZ || undefined,
+    entry_x: opts.entry?.x ?? undefined,
+    entry_y: opts.entry?.y ?? undefined,
+    entry_wcs: opts.entry?.wcs ?? undefined,
+    entry_units: opts.entry?.units ?? undefined,
   }, 'ready');
 }
 

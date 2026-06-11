@@ -196,3 +196,55 @@ class TestWaitInterpIdle(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRflEntry(unittest.TestCase):
+    """Position-preamble helpers: MDI composition + landed-position verification."""
+
+    def test_mdi_composition_full(self):
+        mdi = gateway._rfl_entry_mdi({"x": 12.5, "y": -3.0, "wcs": "G55", "units": "G21"})
+        self.assertEqual(mdi, "G21 G55 G90 G0 X12.5000 Y-3.0000")
+
+    def test_mdi_composition_partial_axes(self):
+        self.assertEqual(gateway._rfl_entry_mdi({"x": 7.0, "y": None}), "G90 G0 X7.0000")
+        self.assertEqual(gateway._rfl_entry_mdi({"x": None, "y": 2.0}), "G90 G0 Y2.0000")
+
+    def test_reached_with_g5x_offset(self):
+        orig = gateway.STAT
+        try:
+            gateway.STAT = _Stat()
+            gateway.STAT.g5x_offset = (100.0, 50.0) + (0.0,) * 7
+            gateway.STAT.g92_offset = (0.0,) * 9
+            gateway.STAT.position = (112.5, 47.0, 0.0)
+            ok, why = gateway._rfl_entry_reached({"x": 12.5, "y": -3.0})
+            self.assertTrue(ok, why)
+            # off by 5mm in Y → refused
+            gateway.STAT.position = (112.5, 42.0, 0.0)
+            ok, why = gateway._rfl_entry_reached({"x": 12.5, "y": -3.0})
+            self.assertFalse(ok)
+            self.assertIn("Y", why)
+        finally:
+            gateway.STAT = orig
+
+
+class TestRflSequenceEntry(_SeqHarness):
+    async def test_entry_positions_then_runs(self):
+        gateway.STAT.position = (12.5, -3.0, 0.0)
+        gateway.STAT.g5x_offset = (0.0,) * 9
+        gateway.STAT.g92_offset = (0.0,) * 9
+        await gateway._rfl_sequence(50, pre_tool=0, safe_z=True,
+                                    spindle_dir=None, spindle_speed=0,
+                                    entry={"x": 12.5, "y": -3.0, "wcs": None, "units": None})
+        self.assertEqual(self.mdi_calls, ["G53 G0 Z0", "G90 G0 X12.5000 Y-3.0000"])
+        self.assertEqual(len(self.auto_run_calls), 1)
+        self.assertEqual(gateway._rfl_status["phase"], "running")
+
+    async def test_entry_position_mismatch_blocks_start(self):
+        gateway.STAT.position = (99.0, -3.0, 0.0)   # abort left X short
+        gateway.STAT.g5x_offset = (0.0,) * 9
+        gateway.STAT.g92_offset = (0.0,) * 9
+        await gateway._rfl_sequence(50, pre_tool=0, safe_z=True,
+                                    spindle_dir=None, spindle_speed=0,
+                                    entry={"x": 12.5, "y": -3.0, "wcs": None, "units": None})
+        self.assertEqual(self.auto_run_calls, [])
+        self.assertEqual(gateway._rfl_status["phase"], "positioning_failed")
