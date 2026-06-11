@@ -219,7 +219,11 @@ if _WIRE_FORMAT not in ("json", "msgpack"):
 # 0.2 s leaves ~300 ms of remaining budget for the rest of the cycle.
 # See plan in /home/cnc/.claude/plans/can-you-plan-for-jolly-leaf.md.
 _WS_SEND_TIMEOUT_S = 0.2
-_STATUS_DELTA_ENABLED = os.environ.get("WEBUI_STATUS_DELTA") == "1"
+# Delta status frames are the DEFAULT (experiment closed, June 2026): proven through
+# weeks of daily sim use including the full #35 verification load matrix. Set
+# WEBUI_STATUS_DELTA=0 to fall back to full frames + the shared-encode splice —
+# the encode-optimal path for fanout-heavy setups (~6+ simultaneous viewers).
+_STATUS_DELTA_ENABLED = os.environ.get("WEBUI_STATUS_DELTA", "1") == "1"
 _ADAPTIVE_POLL_ENABLED = os.environ.get("WEBUI_ADAPTIVE_POLL") == "1"
 try:
     _IDLE_POLL_HZ = max(1, int(os.environ.get("WEBUI_IDLE_POLL_HZ") or "5"))

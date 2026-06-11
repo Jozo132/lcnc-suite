@@ -101,7 +101,7 @@ esac
 [[ -n "$CAM_RES" ]] && export LCNC_CAMERA_RESOLUTION="$CAM_RES"
 [[ -n "$CAM_FPS" ]] && export LCNC_CAMERA_FPS="$CAM_FPS"
 
-# Perf experiment flags (all optional — unset = default OFF)
+# Perf/behavior flags (optional; unset = gateway defaults: delta ON, msgpack, adaptive-poll OFF)
 [[ -n "$WIRE_FORMAT"   ]] && export WEBUI_WIRE_FORMAT="$WIRE_FORMAT"
 [[ -n "$STATUS_DELTA"  ]] && export WEBUI_STATUS_DELTA="$STATUS_DELTA"
 [[ -n "$ADAPTIVE_POLL" ]] && export WEBUI_ADAPTIVE_POLL="$ADAPTIVE_POLL"
