@@ -26,6 +26,15 @@ interface ViewerDiag {
   boundsValid?: boolean;
   timestamp?: number;
   error?: string;
+  // Snapshot of THREE.WebGLRenderer.info — set when the renderer exists.
+  // Returns null when there is no renderer yet (pre-init or after teardown).
+  getRenderInfo?: () => {
+    geometries: number;
+    textures: number;
+    programs: number;
+    calls: number;
+    triangles: number;
+  } | null;
 }
 
 interface Window {

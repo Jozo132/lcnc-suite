@@ -35,6 +35,7 @@ const points = computed(() => {
     case 'up-left':    return '2,2 98,50 50,98';
     case 'down-right': return '50,2 98,98 2,50';
     case 'down-left':  return '50,2 2,98 98,50';
+    default:           return '';
   }
 });
 

@@ -9,15 +9,17 @@ Two responsibilities, both over a single Unix socket:
 
 1. Push a snapshot of the pins the gateway needs to render the UI (tool
    change request, spindle RPM, eoffset, probe input, comp method/version,
-   safety trip-count) at 30 Hz to the connected gateway.
+   safety trip-latch state) at 30 Hz to the connected gateway.
 
 2. Serve on-demand requests from the gateway:
      - "set_p"          → hal.set_p(pin, value)   (compensation reload bumps)
      - "halshow_dump"   → hal.get_info_pins/signals/params for the diag tab
 
 Why split this from hal_watchdog.py?  hal_watchdog is the safety-supervisor
-process — it owns trip detection and the trip-latch.  Keeping it small and
-single-purpose makes it easier to audit.  hal_reader is pure observation
+process — it generates the gateway heartbeat and pulses the HAL trip-latch's
+reset (the latch itself is a servo-thread estop_latch, webui-hb-latch, #34).
+Keeping it small and single-purpose makes it easier to audit.  hal_reader is
+pure observation
 (plus a couple of writes); its failure mode is "display values stale, comp
 reload skipped" — never a safety regression.
 
@@ -35,6 +37,7 @@ import hal
 
 import lcnc_trace as _trace
 _trace.init("hal_reader")
+_trace.install_crash_hooks("hal_reader")
 
 COMP_NAME = "webui-reader"
 SOCK_PATH = "/tmp/webui-reader.sock"
@@ -51,7 +54,14 @@ SNAPSHOT_PINS = [
     ("motion.probe-input",           "probe_input",       bool),
     ("compensation.method",          "comp_method",       int),
     ("compensation.grid-version",    "comp_grid_version", int),
-    ("webui-safety.trip-count",      "trip_count",        int),
+    # Servo-thread heartbeat trip latch (issue #34): fault-out is TRUE while the
+    # chain is latched open. Read the latch LEVEL — sticky, so it survives a
+    # frozen poller and is the authoritative source for the operator trip banner.
+    ("webui-hb-latch.fault-out",     "trip_latched",      bool),
+    # Safety-chain truth — STAT.estop / STAT.enabled go through iocontrol's
+    # edge-triggered NML pump and can silently disagree with the actual pin
+    # level (issue #14). Sole HAL input that gates task_state transitions.
+    ("iocontrol.0.emc-enable-in",    "emc_enable_in",     bool),
 ]
 
 # Gateway-configurable extra pins, keyed by snapshot field name. Always
@@ -78,6 +88,7 @@ if os.path.exists(SOCK_PATH):
 
 server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
 server.bind(SOCK_PATH)
+os.chmod(SOCK_PATH, 0o600)  # owner-only: no other local user may connect
 server.listen(1)
 server.setblocking(False)
 
@@ -99,7 +110,7 @@ def _drop_client(c) -> None:
     try:
         c.close()
     except Exception:
-        pass
+        pass  # safe-silent: socket close, already-broken pipe is the common case
 
 
 def _halshow_dump():
@@ -152,20 +163,49 @@ def _send(sock, obj: dict):
     sock.sendall((json.dumps(obj) + "\n").encode())
 
 
+# P0.2: edge-trigger missing-pin warnings instead of printing every 30 Hz tick.
+# Log on the transition into failure and on recovery, with a slow periodic
+# reminder while a pin stays missing — a real fault stays visible without 30 log
+# lines/sec drowning the trace. The gateway still sees the field absent from the
+# snapshot and surfaces that honestly regardless of logging.
+_pin_fail_logged: set = set()
+_pin_fail_last_reminder = 0.0
+_PIN_FAIL_REMINDER_S = 30.0
+
+
+def _note_pin_fail(key: str, detail: str) -> None:
+    if key not in _pin_fail_logged:
+        print(f"[READER] read {detail} (logged once until recovery)", flush=True)
+        _pin_fail_logged.add(key)
+
+
+def _note_pin_ok(key: str) -> None:
+    if key in _pin_fail_logged:
+        print(f"[READER] read '{key}' recovered", flush=True)
+        _pin_fail_logged.discard(key)
+
+
 def _build_snapshot() -> dict:
+    global _pin_fail_last_reminder
     snap = {"type": "snapshot", "ts": int(time.time() * 1000)}
     for source, field, coerce in SNAPSHOT_PINS:
         try:
             snap[field] = coerce(hal.get_value(source))
+            _note_pin_ok(source)
         except Exception as e:
-            # Pin missing right now — log every tick. The gateway will see
-            # the field absent from the snapshot and surface that honestly.
-            print(f"[READER] read '{source}' failed: {e}", flush=True)
+            _note_pin_fail(source, f"'{source}' failed: {e}")
     for field, pin in _extra_pins.items():
         try:
             snap[field] = float(hal.get_value(pin))
+            _note_pin_ok(pin)
         except Exception as e:
-            print(f"[READER] read extra pin '{pin}' (field={field}) failed: {e}", flush=True)
+            _note_pin_fail(pin, f"extra pin '{pin}' (field={field}) failed: {e}")
+    if _pin_fail_logged:
+        now = time.monotonic()
+        if now - _pin_fail_last_reminder >= _PIN_FAIL_REMINDER_S:
+            _pin_fail_last_reminder = now
+            print(f"[READER] {len(_pin_fail_logged)} pin(s) still missing: "
+                  f"{sorted(_pin_fail_logged)}", flush=True)
     return snap
 
 
@@ -208,7 +248,12 @@ try:
             elif sock is client:
                 try:
                     data = client.recv(65536)
-                except Exception:
+                except Exception as _re:
+                    # Surface the error rather than masking it as a clean
+                    # disconnect — a transient recv failure is diagnostically
+                    # different from the gateway closing the socket.
+                    print(f"[READER] recv error, dropping client: {_re}", flush=True)
+                    _trace.emit("reader.recv_error", level="warn", err=str(_re))
                     data = b""
                 if not data:
                     _drop_client(client)
@@ -262,7 +307,7 @@ try:
                         send_ms=round(send_ms, 2),
                     )
 except KeyboardInterrupt:
-    pass
+    pass  # safe-silent: Ctrl-C → graceful shutdown via finally
 finally:
     if client:
         _drop_client(client)

@@ -21,9 +21,9 @@ msgspec>=0.18
 # CLI
 click>=8.1
 
-# Optional: faster event loop, enabled via WEBUI_UVLOOP=1
-uvloop>=0.19
-
 # Optional: camera streaming — only imported when LCNC_CAMERA_SOURCE is set.
 # The gateway degrades gracefully (try/except ImportError) if missing.
 opencv-python-headless>=4.8
+
+# test-only: starlette TestClient transport (test_ws_smoke.py)
+httpx

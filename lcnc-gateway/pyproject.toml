@@ -1,0 +1,11 @@
+# Off-machine test config (issue #26).
+#
+# The fake linuxcnc is installed via conftest.py before any test imports the
+# gateway, so the command dispatch / policy / validation run deterministically
+# without the real binding. test_viewer_init.py is a SUBPROCESS integration test
+# that launches a real gateway over websockets — excluded here; run it
+# separately when a launchable gateway is available.
+[tool.pytest.ini_options]
+addopts = "-q --ignore=test_viewer_init.py"
+testpaths = ["."]
+python_files = ["test_*.py"]

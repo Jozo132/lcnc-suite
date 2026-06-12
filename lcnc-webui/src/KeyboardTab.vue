@@ -161,8 +161,11 @@ onUnmounted(() => {
               </tr>
             </template>
             <tr class="kbSep"><td colspan="3"></td></tr>
-            <tr v-for="action in COMMAND_ACTIONS" :key="action" :class="{ inactive: !kbConfig.buttonsEnabled }">
-              <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}</td>
+            <!-- E-Stop is NEVER dimmed: it fires regardless of the master toggle
+                 (useKeyboardShortcuts bypasses it by design) — dimming it here showed
+                 a safety control as disabled while it was actually active. -->
+            <tr v-for="action in COMMAND_ACTIONS" :key="action" :class="{ inactive: !kbConfig.buttonsEnabled && action !== 'estop' }">
+              <td class="kbMapAction">{{ KEYBOARD_ACTION_LABELS[action] }}<span v-if="action === 'estop'" class="kbAlways"> — always active</span></td>
               <td class="kbKeyCell"
                   :class="{ listening: listeningAction === action }"
                   @click="startCapture(action)">
@@ -190,6 +193,10 @@ onUnmounted(() => {
   padding: 4px 8px;
   font-size: var(--fs-sm);
   border-bottom: 1px solid var(--border);
+}
+
+.kbAlways {
+  opacity: var(--opacity-muted);
 }
 
 .kbMapAction {

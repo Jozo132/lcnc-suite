@@ -4,6 +4,7 @@ import { send, lastReply, connected, toolTableVersion } from "./lcncWs";
 import { loadMachineDefaults, STEP_DEFAULT, type ToolChangeMode } from "./defaults";
 import { TOOL_TYPE_LABELS, toolTypeLabel } from "./toolTypes";
 import { fmtCell } from "./format";
+import { authHeaders } from "./auth";
 import { Pencil, Trash2 } from "lucide-vue-next";
 import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
@@ -14,7 +15,6 @@ import ToolPreview from "./ToolPreview.vue";
 const FETCH_DELAY_MS = 500;
 const REFETCH_AFTER_SAVE_MS = 400;
 const REFETCH_AFTER_DELETE_MS = 300;
-const TOOL_RENUMBER_DELAY_MS = 200;
 
 const props = defineProps<{
   currentTool: number | null;
@@ -49,6 +49,10 @@ interface Tool {
 const tools = ref<Tool[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
+// Renumber is one transactional command (issue #30) — keep the modal open until
+// its reply so a rejection is shown rather than leaving partial state.
+const saving = ref(false);
+const editError = ref<string | null>(null);
 const filterType = ref("");
 const searchText = ref("");
 const sortKey = ref<"T" | "D" | "Z">("T");
@@ -95,7 +99,11 @@ function fetchTools() {
 // Handle replies from gateway
 watch(lastReply, (reply) => {
   if (!reply || !loading.value) return;
-  if (Array.isArray(reply.tools) && reply.ok) {
+  // Only consume the reply to OUR get_tool_table request. The gateway echoes
+  // the command name (issue #28), so an unrelated failed command no longer
+  // poisons this panel's error/loading state.
+  if (reply.cmd !== "get_tool_table") return;
+  if (reply.ok && Array.isArray(reply.tools)) {
     tools.value = reply.tools;
     loading.value = false;
   } else if (reply.ok === false && reply.error) {
@@ -142,6 +150,8 @@ const editForm = ref({
 const isNewTool = ref(false);
 
 function openEdit(tool: Tool) {
+  editError.value = null;
+  saving.value = false;
   editTool.value = tool;
   editForm.value = {
     T: tool.T,
@@ -166,6 +176,8 @@ function openEdit(tool: Tool) {
 }
 
 function openAdd() {
+  editError.value = null;
+  saving.value = false;
   const maxT = tools.value.reduce((m, t) => Math.max(m, t.T), 0);
   editTool.value = { T: 0, P: 0, Z: 0, D: 0, remark: "", type: "", description: "",
     flutes: null, oal: null, flute_length: null, corner_radius: null,
@@ -208,13 +220,19 @@ function saveEdit() {
   const orig = editTool.value;
   const form = editForm.value;
 
+  if (!isNewTool.value && form.T !== orig.T) {
+    // Renumber: one transactional backend command (issue #30). Keep the modal
+    // open until its reply so a rejection (duplicate target, tool in spindle)
+    // is shown instead of silently leaving a duplicate / lost tool, which the
+    // old add_tool+delete_tool client sequence could do on a dropped send.
+    editError.value = null;
+    saving.value = true;
+    send({ cmd: "renumber_tool", old_tool_number: orig.T, ...buildToolMsg(form) });
+    return;
+  }
+
   if (isNewTool.value) {
     send({ cmd: "add_tool", ...buildToolMsg(form) });
-  } else if (form.T !== orig.T) {
-    send({ cmd: "delete_tool", tool_number: orig.T });
-    setTimeout(() => {
-      send({ cmd: "add_tool", ...buildToolMsg(form) });
-    }, TOOL_RENUMBER_DELAY_MS);
   } else {
     send({ cmd: "save_tool", ...buildToolMsg(form) });
   }
@@ -223,8 +241,23 @@ function saveEdit() {
   setTimeout(fetchTools, REFETCH_AFTER_SAVE_MS);
 }
 
+// Renumber reply (issue #30): close the modal on success, surface the error and
+// keep it open on failure. Correlated by the echoed cmd name (issue #28).
+watch(lastReply, (reply) => {
+  if (!reply || !saving.value || reply.cmd !== "renumber_tool") return;
+  saving.value = false;
+  if (reply.ok) {
+    editTool.value = null;
+    fetchTools();
+  } else {
+    editError.value = reply.error || "Renumber failed";
+  }
+});
+
 function cancelEditModal() {
   editTool.value = null;
+  saving.value = false;
+  editError.value = null;
 }
 
 // ---- Tool change ----
@@ -286,7 +319,7 @@ async function onImportFileSelect(e: Event) {
   try {
     const form = new FormData();
     form.append("file", file);
-    const resp = await fetch("/import-tool-library", { method: "POST", body: form });
+    const resp = await fetch("/import-tool-library", { method: "POST", headers: authHeaders(), body: form });
     if (!resp.ok) {
       let body: any = null;
       try {
@@ -315,7 +348,7 @@ async function confirmImport() {
   try {
     const form = new FormData();
     form.append("file", importFile.value);
-    const resp = await fetch("/import-tool-library/apply", { method: "POST", body: form });
+    const resp = await fetch("/import-tool-library/apply", { method: "POST", headers: authHeaders(), body: form });
     if (!resp.ok) {
       let body: any = null;
       try {
@@ -499,10 +532,11 @@ defineExpose({ openAdd, fetchTools, triggerImport });
           </div>
 
           <!-- Footer -->
+          <div v-if="editError" class="errorBanner">{{ editError }}</div>
           <div class="sep"></div>
           <Gate gate="setup" class="editFooter">
             <MachineBtn type="dialogCancel" @click="cancelEditModal">Cancel</MachineBtn>
-            <MachineBtn type="fileSave" @click="saveEdit">{{ isNewTool ? "Add" : "Save" }}</MachineBtn>
+            <MachineBtn type="fileSave" :disabled="saving" @click="saveEdit">{{ isNewTool ? "Add" : "Save" }}</MachineBtn>
           </Gate>
         </div>
       </div>
@@ -823,7 +857,7 @@ defineExpose({ openAdd, fetchTools, triggerImport });
   width: 50px;
   white-space: nowrap;
   font-weight: var(--fw-semibold);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   position: sticky;
   left: 0;
   z-index: 1;

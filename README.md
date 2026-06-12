@@ -23,6 +23,7 @@ A modern, UI-agnostic WebSocket gateway for LinuxCNC with a reference Vue 3 web 
 - [Development](#development)
 - [LinuxCNC Configuration](#linuxcnc-configuration)
 - [Project Structure](#project-structure)
+- [Changelog](#changelog)
 - [Contributing](#contributing)
 - [License](#license)
 
@@ -280,16 +281,39 @@ The message panel shows a persistent log of all LinuxCNC errors and operator mes
 
 ## Installation
 
-### Option A: Automated
+### Option A: One-line bootstrap (recommended)
+
+Run this on a fresh machine — no prior clone needed. The installer fetches
+dependencies, clones the repo into `~/lcnc-suite/`, sets up the Python venv
+and npm packages, and drops a sample sim config into
+`~/linuxcnc/configs/lcnc_suite_sim/` so you can boot LinuxCNC immediately.
+
+```bash
+wget -O install.sh https://raw.githubusercontent.com/bildobodo/lcnc-suite/main/install.sh && bash install.sh
+```
+
+After it finishes:
+
+```bash
+cd ~/lcnc-suite/lcnc-webui && npm run build       # build frontend for production
+linuxcnc ~/linuxcnc/configs/lcnc_suite_sim/lcnc_suite_sim.ini   # try the sim
+```
+
+Pass a positional arg to override the clone location:
+`bash install.sh /opt/lcnc-suite`.
+
+### Option B: Inside an existing clone
+
+If you've already cloned the repo, run the installer from inside it:
 
 ```bash
 git clone https://github.com/bildobodo/lcnc-suite.git
 cd lcnc-suite
-./install.sh          # checks dependencies, creates venv, installs npm packages
-cd lcnc-webui && npm run build && cd ..   # build frontend for production
+./install.sh          # detects the clone, skips git-clone, sets up venv + npm + sim config
+cd lcnc-webui && npm run build && cd ..
 ```
 
-### Option B: Manual
+### Option C: Manual
 
 **Prerequisites:** LinuxCNC 2.8+ with Python bindings, Python 3.9+, Node.js 18+ (22.x LTS recommended), npm, git-lfs
 
@@ -312,20 +336,46 @@ npm install
 # 4. Build frontend for production
 npm run build
 cd ..
+
+# 5. (Optional) Drop the sample sim config so you can boot LinuxCNC immediately
+cp -r examples/sim_config ~/linuxcnc/configs/lcnc_suite_sim
 ```
 
-### Configure LinuxCNC
+### Run the sim
 
-After installing (either option), configure your machine. `install.sh`
-already symlinks the launcher and the three HAL helpers (`hal_watchdog.py`,
-`hal_reader.py`, `compensation.py`) into `~/.local/bin/` so that LinuxCNC's
-DISPLAY launcher and halcmd/haltcl find them via PATH — no path
-substitution in HAL files. Make sure `~/.local/bin` is on your `$PATH`
-(most shells include it by default; if not, add `export PATH="$HOME/.local/bin:$PATH"` to your shell rc).
+If you used Option A or B, **everything is already wired** — INI,
+`lcnc_webui.hal` (with the HAL heartbeat / e-stop safety chain), seeded
+`sim.var`, plus `~/.local/bin/` symlinks for the launcher and HAL helpers
+(`hal_watchdog.py`, `hal_reader.py`, `compensation.py`) so LinuxCNC's
+DISPLAY launcher and halcmd/haltcl find them via PATH. No further
+configuration needed:
+
+```bash
+linuxcnc ~/linuxcnc/configs/lcnc_suite_sim/lcnc_suite_sim.ini
+```
+
+Sanity check the PATH symlink (most shells include `~/.local/bin` by
+default; if not, add `export PATH="$HOME/.local/bin:$PATH"` to your shell
+rc):
 
 ```bash
 which lcnc-suite    # should print ~/.local/bin/lcnc-suite
 ```
+
+### Adapting the sample for a real machine
+
+To use lcnc-suite with your own machine config, copy the sample as a
+starting point and edit axis limits, kinematics, and HAL files:
+
+```bash
+cp -r ~/linuxcnc/configs/lcnc_suite_sim ~/linuxcnc/configs/my_machine
+# then edit my_machine/lcnc_suite_sim.ini (rename if you like)
+```
+
+The two reference sections below describe what the `[DISPLAY]` keys do
+and how the HAL safety chain is wired — both are already present in the
+sample, so you only need them if you're tearing the config apart or
+integrating into a pre-existing custom INI/HAL setup.
 
 #### 1. INI `[DISPLAY]` section
 
@@ -360,6 +410,7 @@ WEBUI_WS_INIT_CONCURRENCY = 20
 | `WEBUI_PORT` | `8000` | HTTP and WebSocket port |
 | `WEBUI_BROWSER` | `1` | Auto-open browser on start (`0` to disable) |
 | `WEBUI_DEV` | `0` | `1` = Vite dev server on :5173 with hot-reload |
+| `LOG_DIR` | `<install-dir>/runlogs` | **Optional.** Where all four suite processes write logs. Unset = next to the launcher (recommended). Set only to relocate; unwritable = launcher aborts (no `/tmp` fallback) |
 | `DEBUG` | `0` | Subroutine debug logging — `0` = off, `1` = write `logfile.txt` to config folder (read by `tool_touch_off.ngc`) |
 | `CAMERA_SOURCE` | *(disabled)* | USB device index (`0`, `1`) or URL (`rtsp://host/live`, `http://host/mjpeg`) |
 | `CAMERA_RESOLUTION` | `1280x720` | Capture resolution `WxH` (USB cameras only) |
@@ -376,7 +427,7 @@ WEBUI_WS_INIT_CONCURRENCY = 20
 | `WEBUI_WIRE_FORMAT` | `msgpack` | WS encoding. `msgpack` (default) sends binary frames via `msgspec` — smaller payloads, C-accelerated encode, and when `WEBUI_STATUS_DELTA=0` unlocks a one-encode-per-tick fan-out path (each client splices the shared bytes via `msgspec.Raw`). `json` produces text frames readable directly in browser DevTools. | Set to `json` only when actively debugging status frames in DevTools. |
 | `WEBUI_WS_INIT_CONCURRENCY` | `20` | Caps the number of WebSocket clients allowed to run their initialization handshake (`ws.accept` + viewer_init send + settings load) in parallel. The lever for cold-start CPU smoothing in multi-tab setups: each handshake is ~30 ms of work, so without a cap N=12 simultaneous tabs can spike the asyncio loop into kernel-TCP saturation and starve the heartbeat task → HAL safety chain trips on a healthy gateway. | Lower (typical: `2`–`4`) when expecting 5+ tabs to cold-start in lockstep — multi-monitor deployments, shop-floor kiosks, automated test scenarios. Trade-off: ~30 ms per queued tab; at concurrency=2 the 12th tab is fully ready ~300 ms after the 1st. |
 
-Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. `WEBUI_*` flags can also be set as environment variables (same name) and take precedence over the INI. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
+Environment variables `LCNC_WEBUI_HOST`, `LCNC_WEBUI_PORT`, `LCNC_WEBUI_BROWSER`, `LCNC_WEBUI_DEV` override INI values. `WEBUI_*` flags can also be set as environment variables (same name) and take precedence over the INI. Log directory: `LCNC_LOG_DIR` (env) overrides `LOG_DIR` (INI), both default to `<install-dir>/runlogs`. Camera variables: `LCNC_CAMERA_SOURCE`, `LCNC_CAMERA_RESOLUTION`, `LCNC_CAMERA_FPS`.
 
 #### 2. HAL safety chain
 
@@ -407,7 +458,11 @@ All three must be TRUE for the machine to stay enabled. See [Setting Up the HAL 
 ### Production
 
 ```bash
-linuxcnc your_machine.ini    # single command — starts everything
+# Sim (installed by install.sh)
+linuxcnc ~/linuxcnc/configs/lcnc_suite_sim/lcnc_suite_sim.ini
+
+# Or your own machine
+linuxcnc your_machine.ini
 ```
 
 The launcher serves the built frontend at `http://localhost:8000` (or your configured port). Other devices on the LAN can connect at `http://<machine-ip>:8000`.
@@ -866,6 +921,7 @@ All velocity values are in **machine units per second** (mm/s or in/s). The gate
 | `MAX_SPINDLE_OVERRIDE` | recommended | Spindle override upper limit (e.g. `2.0` = 200%) |
 | `PROGRAM_PREFIX` | recommended | Root directory for the G-code file browser |
 | `DEBUG` | required | Subroutine debug logging — must be present or `tool_touch_off.ngc` aborts with "not defined". Set `0` to disable, `1` to write `logfile.txt` |
+| `LOG_DIR` | optional | Suite log directory for all four processes. Default `<install-dir>/runlogs` (next to the launcher) — leave unset unless relocating. Unwritable dir → launcher aborts; no `/tmp` fallback. Env override: `LCNC_LOG_DIR` |
 | `CAMERA_SOURCE` | optional | USB device index (`0`, `1`) or URL (`rtsp://host/live`) — empty = disabled |
 | `CAMERA_RESOLUTION` | optional | Capture resolution `WxH` (default: `1280x720`, USB only) |
 | `CAMERA_FPS` | optional | MJPEG stream frame rate (default: `15`) |
@@ -1197,6 +1253,12 @@ lcnc-suite/
 ├── runlogs/                   # Application logs
 └── README.md
 ```
+
+## Changelog
+
+Notable changes — including **breaking** changes that need action on upgrade —
+are recorded in [CHANGELOG.md](CHANGELOG.md). Check it before updating a
+configured machine.
 
 ## Contributing
 

@@ -1,9 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 import { listFiles, uploadFile, saveFile, type FileEntry } from "./lcncApi";
 import { usePermissions } from "./permissions";
-import { loadMachineDefaults, STEP_RPM } from "./defaults";
+import { loadMachineDefaults, saveMachineDefaults, STEP_RPM } from "./defaults";
+import { scanToolchangesBefore, scanEntryPositionBefore, type RflToolchangeScan, type RflEntryScan, type RflRunOptions } from "./gcodeRfl";
 import { highlightGcode, type Token } from "./gcodeHighlight";
+import { emitTelemetry } from "./lcncWs";
 import { GCODE_LOOKUP, GCODE_REFERENCE } from "./gcodeReference";
 import { Play, SkipForward, Pause } from "lucide-vue-next";
 import Gate from "./Gate.vue";
@@ -53,7 +55,7 @@ const emit = defineEmits<{
   (e: "cycleStep"): void;
   (e: "toggleOptionalStop"): void;
   (e: "toggleBlockDelete"): void;
-  (e: "runFromLine", line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number): void;
+  (e: "runFromLine", opts: RflRunOptions): void;
   (e: "openGcodeRef", code: string): void;
   (e: "showStats"): void;
 }>();
@@ -106,12 +108,37 @@ const fileName = computed(() => {
   return props.activeFile.split("/").pop() || props.activeFile;
 });
 
-const lines = computed(() => {
-  if (!props.gcodeContent) return [];
-  return props.gcodeContent.split("\n");
+// Line-START offsets instead of materialized line strings: split("\n") on a 32 MB
+// file produced ~1.35 M permanently-retained string objects (≈100–150 MB with
+// per-object overhead, plus the 194 ms split itself). The offsets are ONE
+// Uint32Array (~5 MB) over the single source string; the virtualized viewer
+// renders ~40 lines and now also *stores* only those — visibleLines slices its
+// window on demand. Slice [offs[i], offs[i+1]-1) is byte-identical to the old
+// split("\n") entries (CRLF files keep their \r either way).
+const lineOffsets = computed(() => {
+  const text = props.gcodeContent;
+  if (!text) return new Uint32Array(0);
+  const _t = performance.now();
+  let n = 1;  // pass 1: count lines (indexOf runs at C speed, no allocation)
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) n++;
+  const offs = new Uint32Array(n);
+  let line = 1;  // pass 2: fill starts (offs[0] = 0)
+  for (let i = text.indexOf("\n"); i !== -1; i = text.indexOf("\n", i + 1)) offs[line++] = i + 1;
+  const _dt = performance.now() - _t;
+  if (_dt > 100) emitTelemetry("gcode.line_index_blocked", { ms: Math.round(_dt), lines: n, bytes: text.length });
+  return offs;
 });
 
-const lineCount = computed(() => lines.value.length);
+const lineCount = computed(() => (props.gcodeContent ? lineOffsets.value.length : 0));
+
+/** Line idx (0-based) sliced on demand from the source string. */
+function lineAt(idx: number): string {
+  const text = props.gcodeContent!;
+  const offs = lineOffsets.value;
+  const start = offs[idx]!;
+  const end = idx + 1 < offs.length ? offs[idx + 1]! - 1 : text.length;
+  return text.slice(start, end);
+}
 
 const progressPercent = computed(() => {
   if (!lineCount.value || props.currentLine == null) return 0;
@@ -126,37 +153,75 @@ const BUFFER = 10;
 
 const scrollTop = ref(0);
 
-const visibleRange = computed(() => {
+// Split into primitive computeds so a sub-line scroll (which leaves the integer
+// start/end unchanged) does NOT re-run visibleLines. During a running program
+// currentLine advances 5–50×/s, each nudging scrollTop; keying retokenization
+// off the integer bounds avoids redundant work on every sub-LINE_HEIGHT delta.
+const rangeStart = computed(() =>
+  Math.max(0, Math.floor(_scrollToContent(scrollTop.value) / LINE_HEIGHT) - BUFFER)
+);
+const rangeEnd = computed(() => {
   const viewportH = codeViewerRef.value?.clientHeight ?? 400;
-  const start = Math.max(0, Math.floor(scrollTop.value / LINE_HEIGHT) - BUFFER);
   const count = Math.ceil(viewportH / LINE_HEIGHT) + BUFFER * 2;
-  const end = Math.min(lines.value.length, start + count);
-  return { start, end };
+  return Math.min(lineCount.value, rangeStart.value + count);
 });
 
 // Tokenize only the visible window — never the full file — to avoid blocking the
 // main thread (and delaying heartbeat) when a large G-code file is opened.
 const visibleLines = computed(() => {
-  const { start, end } = visibleRange.value;
-  return lines.value.slice(start, end).map((line, i) => ({
-    lineNum: start + i + 1,
-    tokens: highlightGcode(line),
-  }));
+  const start = rangeStart.value;
+  const end = rangeEnd.value;
+  const out = [];
+  for (let i = start; i < end; i++) {
+    out.push({ lineNum: i + 1, tokens: highlightGcode(lineAt(i)) });
+  }
+  return out;
 });
 
-const totalHeight = computed(() => lines.value.length * LINE_HEIGHT);
-const offsetY = computed(() => visibleRange.value.start * LINE_HEIGHT);
+// Scaled spacer: browsers clamp element heights (Firefox ≈17.9M px), so a
+// 1.35M-line file's true 31M px spacer silently truncates and the scrollbar
+// can't reach the bottom. Cap the spacer and linearly map scrollbar-space ↔
+// content-space; at scale 1 (files under ~520k lines) every formula reduces
+// exactly to the unscaled originals.
+const SPACER_MAX_PX = 12_000_000;
+const contentHeight = computed(() => lineCount.value * LINE_HEIGHT);
+const totalHeight = computed(() => Math.min(contentHeight.value, SPACER_MAX_PX));
+
+function _viewH(): number {
+  return codeViewerRef.value?.clientHeight ?? 400;
+}
+/** scrollbar position → content y */
+function _scrollToContent(s: number): number {
+  const ch = contentHeight.value, sh = totalHeight.value, vh = _viewH();
+  if (sh >= ch || sh <= vh) return s;
+  return (s * (ch - vh)) / (sh - vh);
+}
+/** content y → scrollbar position */
+function _contentToScroll(y: number): number {
+  const ch = contentHeight.value, sh = totalHeight.value, vh = _viewH();
+  if (sh >= ch || ch <= vh) return y;
+  return (y * (sh - vh)) / (ch - vh);
+}
+
+// Pin the rendered window under the scrollbar thumb: place it at scrollTop,
+// backed off by how far rangeStart's content position sits above the mapped
+// viewport top. At scale 1 this is exactly rangeStart * LINE_HEIGHT.
+const offsetY = computed(() => {
+  const y = _scrollToContent(scrollTop.value);
+  return Math.max(0, scrollTop.value + rangeStart.value * LINE_HEIGHT - y);
+});
 
 function onCodeScroll(ev: Event) {
   scrollTop.value = (ev.target as HTMLElement).scrollTop;
   tooltip.value = null;
 }
 
-// Scroll to current line (mathematical — no DOM search)
+// Scroll to current line (mathematical — no DOM search). Target is computed in
+// content space, then mapped to scrollbar space (identity at scale 1).
 watch(() => props.currentLine, (newLine) => {
   if (newLine != null && codeViewerRef.value) {
-    const targetTop = (newLine - 1) * LINE_HEIGHT - codeViewerRef.value.clientHeight / 2 + LINE_HEIGHT / 2;
-    codeViewerRef.value.scrollTop = Math.max(0, targetTop);
+    const targetY = (newLine - 1) * LINE_HEIGHT - codeViewerRef.value.clientHeight / 2 + LINE_HEIGHT / 2;
+    codeViewerRef.value.scrollTop = Math.max(0, _contentToScroll(targetY));
   }
 });
 
@@ -261,11 +326,35 @@ const selectedLine = ref<number | null>(null);
 const showRunDialog = ref(false);
 const dialogSpindleDir = ref<"off" | "forward" | "reverse">("forward");
 const dialogSpindleSpeed = ref(10000);
+const dialogSafeZ = ref(true);
+// Toolchange scan for the RFL × M600 guard (see gcodeRfl.ts): refreshed each
+// time the dialog opens; drives the redirect notice / multi-change refusal.
+const rflScan = ref<RflToolchangeScan | null>(null);
+const rflEntry = ref<RflEntryScan | null>(null);
+// Position preamble available: scan clean AND at least one derivable axis.
+const rflEntryAvailable = computed(() => {
+  const e = rflEntry.value;
+  return !!e && e.blockers.length === 0 && (e.x != null || e.y != null);
+});
+// Redirect case: exactly one toolchange with a known tool before the start
+// line — the gateway measures it via MDI first (pre_tool), the #3116 flag
+// skips the skim's re-entry.
+const rflPreTool = computed(() => {
+  const s = rflScan.value;
+  return s && s.count === 1 && s.lastTool != null && s.lastTool > 0 ? s.lastTool : 0;
+});
+// Unsupported: multiple toolchanges before N, an undetermined tool number, or
+// T0 (unload). The skim would probe each one with no offsets applied — refuse.
+const rflBlocked = computed(() => {
+  const s = rflScan.value;
+  return !!s && s.count > 0 && rflPreTool.value === 0;
+});
 
 onMounted(() => {
   const mach = loadMachineDefaults();
   dialogSpindleDir.value = mach.rflSpindleDir;
   dialogSpindleSpeed.value = mach.rflSpindleRpm;
+  dialogSafeZ.value = mach.rflSafeZ;
   window.addEventListener("blur", dismissTooltip);
   window.addEventListener("resize", dismissTooltip);
 });
@@ -280,8 +369,22 @@ function onLineClick(lineNum: number) {
   selectedLine.value = selectedLine.value === lineNum ? null : lineNum;
 }
 
+// A selection is only meaningful while run-from-line mode is ON: clicks can't
+// deselect once the mode is off (onLineClick guards on it), so a stale selection
+// would silently hijack Start into the run-from-line dialog forever. Clear it on
+// disable, and gate Start on the mode as well (belt and braces).
+watch(() => props.runFromLine, (on) => {
+  if (!on) selectedLine.value = null;
+});
+
 function onStartClick() {
-  if (selectedLine.value && selectedLine.value > 1) {
+  if (props.runFromLine && selectedLine.value && selectedLine.value > 1) {
+    rflScan.value = props.gcodeContent
+      ? scanToolchangesBefore(props.gcodeContent, selectedLine.value)
+      : null;
+    rflEntry.value = props.gcodeContent
+      ? scanEntryPositionBefore(props.gcodeContent, selectedLine.value)
+      : null;
     showRunDialog.value = true;
   } else {
     emit("cycleStart");
@@ -289,37 +392,103 @@ function onStartClick() {
 }
 
 function confirmRunFromLine() {
-  if (!selectedLine.value) return;
-  emit("runFromLine", selectedLine.value, dialogSpindleDir.value, dialogSpindleSpeed.value);
+  if (!selectedLine.value || rflBlocked.value) return;
+  const mach = loadMachineDefaults();
+  if (mach.rflSafeZ !== dialogSafeZ.value) {
+    saveMachineDefaults({ ...mach, rflSafeZ: dialogSafeZ.value });
+  }
+  emit("runFromLine", {
+    line: selectedLine.value,
+    spindleDir: dialogSpindleDir.value,
+    spindleSpeed: dialogSpindleSpeed.value,
+    preTool: rflPreTool.value,
+    safeZ: dialogSafeZ.value,
+    entry: rflEntryAvailable.value ? rflEntry.value : null,
+  });
   showRunDialog.value = false;
   selectedLine.value = null;
 }
 
 /** ---------- Edit mode ---------- */
+// Virtualized editor (CodeMirror 6), lazy-loaded on first edit. The previous raw
+// <textarea> natively re-laid-out the ENTIRE document on keystrokes — on a ~32 MB
+// file that jams the browser main thread for seconds, and Firefox (and WebKit)
+// route a worker's WebSocket I/O THROUGH the main thread, so the jam froze the
+// client heartbeat → hb_stall disarms (delivery probe caught 6 heartbeats stuck
+// in ws.bufferedAmount while typing, inbound silent too). CM6 is rope-backed and
+// renders only the viewport, so the main thread stays free regardless of file
+// size — the same virtualization principle as the read-only viewer above.
 const editing = ref(false);
-const editBuffer = ref("");
+const editorHost = ref<HTMLDivElement | null>(null);
 const saving = ref(false);
 const saveError = ref<string | null>(null);
+let _editorView: any = null;
 
-function enterEdit() {
+async function enterEdit() {
   if (!props.gcodeContent || !props.activeFile) return;
-  editBuffer.value = props.gcodeContent;
   saveError.value = null;
   editing.value = true;
+  await nextTick();  // v-if mounts the host div
+  if (!editorHost.value) return;
+  const _t = performance.now();
+  try {
+    // Dynamic import: CM6 stays out of the initial bundle (P6 pattern) — it loads
+    // only when someone actually edits.
+    const [{ EditorState }, { EditorView, keymap, lineNumbers }, { defaultKeymap, history, historyKeymap }, { gcodeEditorLanguage }] =
+      await Promise.all([
+        import("@codemirror/state"),
+        import("@codemirror/view"),
+        import("@codemirror/commands"),
+        import("./gcodeCmLanguage"),
+      ]);
+    if (!editing.value || !editorHost.value || _editorView) return;  // discarded while loading
+    const theme = EditorView.theme({
+      "&": { backgroundColor: "var(--bg)", color: "var(--fg)", height: "100%" },
+      ".cm-scroller": { fontFamily: "var(--font-mono)", overflow: "auto" },
+      ".cm-gutters": { backgroundColor: "var(--bg)", color: "var(--fg)", opacity: "var(--opacity-muted)", border: "none" },
+      "&.cm-focused": { outline: "none" },
+    }, { dark: true });
+    _editorView = new EditorView({
+      state: EditorState.create({
+        doc: props.gcodeContent,
+        extensions: [lineNumbers(), history(), keymap.of([...defaultKeymap, ...historyKeymap]), theme, gcodeEditorLanguage],
+      }),
+      parent: editorHost.value,
+    });
+  } catch (e: any) {
+    // No silent empty editor: a failed chunk load (offline, stale deploy) left
+    // edit mode open with nothing in it and no message. Surface in the banner.
+    saveError.value = `Editor failed to load: ${e?.message ?? e}`;
+    emitTelemetry("edit.editor_load_failed", { msg: String(e?.message ?? e) });
+    return;
+  }
+  const _dt = performance.now() - _t;
+  if (_dt > 250) emitTelemetry("edit.seed_blocked", { ms: Math.round(_dt), bytes: props.gcodeContent.length });
+}
+
+function _destroyEditor() {
+  _editorView?.destroy();
+  _editorView = null;
 }
 
 function discardEdit() {
   editing.value = false;
   saveError.value = null;
+  _destroyEditor();
 }
 
+onUnmounted(_destroyEditor);
+
 async function saveEdit() {
-  if (!props.activeFile) return;
+  if (!props.activeFile || !_editorView) return;
   saving.value = true;
   saveError.value = null;
   try {
-    await saveFile(props.activeFile, editBuffer.value);
+    // doc.toString() materializes the full text once at save — a one-off cost,
+    // sent as a raw body (no JSON.stringify pass).
+    await saveFile(props.activeFile, _editorView.state.doc.toString());
     editing.value = false;
+    _destroyEditor();
     emit("loadFile", props.activeFile);
   } catch (e: any) {
     saveError.value = `Save failed: ${e.message}`;
@@ -437,7 +606,7 @@ async function saveEdit() {
           <span>{{ saveError }}</span>
           <MachineBtn type="close" @click="saveError = null">&times;</MachineBtn>
         </div>
-        <textarea class="editTextarea" v-model="editBuffer" spellcheck="false"></textarea>
+        <div ref="editorHost" class="editorHost"></div>
         <div class="editActions">
           <MachineBtn type="fileSave" class="actionBtn" @click="saveEdit" :disabled="saving">{{ saving ? 'Saving...' : 'Save' }}</MachineBtn>
           <MachineBtn type="fileOp" class="actionBtn" @click="discardEdit" :disabled="saving">Discard</MachineBtn>
@@ -499,6 +668,49 @@ async function saveEdit() {
             Lines 1–{{ (selectedLine ?? 1) - 1 }} will be interpreted but motion suppressed.
             Arc commands (G2/G3) before the start line may cause
             radius errors and abort the run.
+            Axes not commanded at or before the start line keep their current
+            position — prefer a start line that commands all axes (e.g. a
+            G0 X.. Y.. rapid). Z descends from safe height per the program's own
+            words: make sure material above the start point is already cleared.
+          </div>
+
+          <div v-if="rflEntryAvailable" class="dialogSection">
+            <div class="sub">Start Position</div>
+            <div class="dialogBody">
+              Will rapid to{{ rflEntry?.x != null ? ` X${rflEntry?.x}` : "" }}{{ rflEntry?.y != null ? ` Y${rflEntry?.y}` : "" }}{{ rflEntry?.wcs ? ` (${rflEntry?.wcs})` : "" }}
+              at safe Z before starting, so entry moves run at the position the
+              program expects.
+            </div>
+          </div>
+          <div v-else-if="rflEntry && rflEntry.blockers.length" class="dialogSection">
+            <div class="sub">Start Position Preamble Unavailable</div>
+            <div class="dialogBody">
+              {{ rflEntry.blockers.join("; ") }} — entry will follow modal words
+              from the machine's current position. Choose the start line with care.
+            </div>
+          </div>
+
+          <div v-if="rflPreTool > 0" class="dialogSection">
+            <div class="sub">Tool Change Before Start Line</div>
+            <div class="dialogBody">
+              T{{ rflPreTool }} (M600, line {{ rflScan?.lastLine }}) lies before the
+              start line. It will be executed and measured via MDI first — full
+              routine with retract and applied length offset — then the program
+              starts from line {{ selectedLine }} without re-probing.
+            </div>
+          </div>
+          <div v-else-if="rflBlocked" class="dialogSection">
+            <div class="sub">Unsupported Start Line</div>
+            <div class="dialogBody errorBanner">
+              {{ (rflScan?.count ?? 0) > 1
+                ? `${rflScan?.count} tool changes lie before this line — run-from-line across multiple tool changes is unsupported. Start before the first or after the last tool change.`
+                : `A tool change before this line has no determinable tool number (or is T0) — offsets cannot be guaranteed. Choose a different start line.` }}
+            </div>
+          </div>
+
+          <div class="dialogSection">
+            <MachineToggle gate="displaySetting" v-model="dialogSafeZ"
+                           label="Retract to safe Z (G53 Z0) before positioning" />
           </div>
 
           <div class="dialogSection">
@@ -520,7 +732,7 @@ async function saveEdit() {
 
         <Gate gate="ready" class="dialogActions">
           <MachineBtn type="dialogCancel" @click="showRunDialog = false">Cancel</MachineBtn>
-          <MachineBtn type="dialogConfirm" @click="confirmRunFromLine">Run from Line {{ selectedLine }}</MachineBtn>
+          <MachineBtn type="dialogConfirm" :disabled="rflBlocked" @click="confirmRunFromLine">{{ rflPreTool > 0 ? `Measure T${rflPreTool} + Run from Line ${selectedLine}` : `Run from Line ${selectedLine}` }}</MachineBtn>
         </Gate>
       </div>
     </div>
@@ -588,14 +800,14 @@ async function saveEdit() {
 
 .progressLabel {
   font-size: var(--fs-md);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
 }
 
 .elapsedLabel {
   font-size: var(--fs-md);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   flex-shrink: 0;
   margin-left: auto;
@@ -610,7 +822,6 @@ async function saveEdit() {
 
 
 .fileName {
-  font-family: var(--font-mono);
   font-size: var(--fs-md);
   font-weight: var(--fw-medium);
   white-space: nowrap;
@@ -673,7 +884,6 @@ async function saveEdit() {
   font-size: var(--fs-sm);
   padding: 2px 8px;
   border-radius: var(--radius-md);
-  font-family: var(--font-mono);
 }
 
 .backBtn:hover {
@@ -681,7 +891,6 @@ async function saveEdit() {
 }
 
 .browserPath {
-  font-family: var(--font-mono);
   font-size: var(--fs-sm);
 }
 
@@ -713,7 +922,6 @@ async function saveEdit() {
 }
 
 .fileIcon {
-  font-family: var(--font-mono);
   opacity: var(--opacity-muted);
   width: 10px;
   text-align: center;
@@ -832,13 +1040,14 @@ async function saveEdit() {
   min-height: 0;
 }
 
-.editTextarea {
+.editorHost {
   flex: 1;
   min-height: 0;
-  resize: none;
-  white-space: pre;
-  tab-size: 4;
-  overflow: auto;
+  overflow: hidden;  /* CM6 owns scrolling via .cm-scroller */
+}
+/* Layout-only deep override (CM6 mounts inside the host): fill the host. */
+.editorHost :deep(.cm-editor) {
+  height: 100%;
 }
 
 .editActions {

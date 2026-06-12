@@ -40,12 +40,16 @@ import numpy as np
 import linuxcnc
 import gcode
 
+import lcnc_trace as _trace
+_trace.init("gcode_parse_worker")
+
 # Ensure local-dir imports resolve when invoked from anywhere
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from gcode_canon import PreviewCanon, apply_var_patches
 
 
-_EMPTY = {"feed": [], "feed_lines": [], "rapid": [], "stats": None}
+_EMPTY = {"feed": [], "feed_lines": [], "rapid": [], "stats": None,
+          "parse_error": None, "error_line": None}
 
 # RDP decimation tolerance in machine units (mm or in — caller passes the
 # scaled epsilon). 0.005 mm is sub-pixel at typical viewport zoom (~0.2
@@ -135,6 +139,8 @@ def parse(ctx: dict) -> dict:
     canon = PreviewCanon(s, random_tc)
 
     parameter = ini.find("RS274NGC", "PARAMETER_FILE")
+    parse_error = None  # set if the interpreter errors partway through
+    error_line = None
     td = tempfile.mkdtemp()
     try:
         temp_param = os.path.join(td, os.path.basename(parameter or "linuxcnc.var"))
@@ -154,7 +160,15 @@ def parse(ctx: dict) -> dict:
         result, seq = gcode.parse(filename, canon, initcodes, "")
         t1 = time.monotonic()
         if result > gcode.MIN_ERROR:
-            print(f"parse error at line {seq}: {gcode.strerror(result)}", file=sys.stderr, flush=True)
+            # The interpreter hit an error partway through. We still return the
+            # polyline collected so far, but flag it so the gateway/UI can badge
+            # the preview as PARTIAL instead of presenting a truncated path as a
+            # complete one (silent partial-success was the bug).
+            parse_error = gcode.strerror(result)
+            error_line = seq
+            # Machine-readable marker so the gateway can raise the structured
+            # parse_partial event WITHOUT decoding the (multi-MB) stdout payload.
+            print(f"__PARTIAL__\t{seq}\t{parse_error}", file=sys.stderr, flush=True)
         print(f"gcode.parse feed={len(canon.feed)} rapid={len(canon.rapid)} parse_ms={(t1-t0)*1000:.0f}", file=sys.stderr, flush=True)
     finally:
         shutil.rmtree(td, ignore_errors=True)
@@ -243,8 +257,8 @@ def parse(ctx: dict) -> dict:
                 v_scaled = float(v)
                 if rapid_vel is None or v_scaled < rapid_vel:
                     rapid_vel = v_scaled
-    except (ValueError, TypeError):
-        pass
+    except (ValueError, TypeError) as e:
+        _trace.emit_exc("ini.axis_max_vel_parse_failed", e)
     total_rapid_time = (total_rapid_dist / rapid_vel) if rapid_vel else 0.0
 
     arc_dist_scaled = canon.arc_dist * unit_scale
@@ -280,6 +294,24 @@ def parse(ctx: dict) -> dict:
         file=sys.stderr, flush=True,
     )
 
+    # Bounding box over the rendered (post-RDP) polyline, in the same raw-program
+    # coords as the points — so the frontend uses it directly instead of re-scanning
+    # every point on the UI thread per load (P4.1). `null` when there are no points.
+    bounds = None
+    _mn = [float("inf"), float("inf"), float("inf")]
+    _mx = [float("-inf"), float("-inf"), float("-inf")]
+    _any = False
+    for _poly in (feed, rapid):
+        for _p in _poly:
+            _any = True
+            for _k in range(3):
+                if _p[_k] < _mn[_k]:
+                    _mn[_k] = _p[_k]
+                if _p[_k] > _mx[_k]:
+                    _mx[_k] = _p[_k]
+    if _any:
+        bounds = {"min": _mn, "max": _mx}
+
     try:
         file_size = os.path.getsize(filename)
     except OSError:
@@ -304,7 +336,24 @@ def parse(ctx: dict) -> dict:
         "fileSize": file_size,
     }
 
-    return {"feed": feed, "feed_lines": feed_lines, "rapid": rapid, "stats": stats}
+    # Flat little-endian binaries for the wire (P4.1 end-state): feed/rapid as
+    # float32 xyz triplets, feed_lines as uint32 (msgspec encodes bytes as msgpack
+    # bin). vs nested [[x,y,z],...] lists this is ~12 B/point instead of ~28 B
+    # (44.5 MB → ~14 MB on a heavy file), gzip/encode/decode get proportionally
+    # cheaper at every hop, and the browser worker builds its Float32Array with
+    # one memcpy instead of flattening 1M+ per-point JS arrays. Index alignment
+    # is unchanged: point i ↔ feed_lines[i] ↔ float offset i*3.
+    feed_bin = np.asarray(feed, dtype="<f4").tobytes() if feed else b""
+    rapid_bin = np.asarray(rapid, dtype="<f4").tobytes() if rapid else b""
+    feed_lines_bin = np.asarray(feed_lines, dtype="<u4").tobytes() if feed_lines else b""
+
+    # Include "file" so this dict is the EXACT GET /preview wire shape: the
+    # gateway publishes these bytes verbatim (no decode + re-encode), which is
+    # what keeps the multi-MB polyline from ever becoming Python objects on the
+    # event-loop process (mmw#4 GC pressure).
+    return {"file": filename, "feed": feed_bin, "feed_lines": feed_lines_bin,
+            "rapid": rapid_bin, "stats": stats, "bounds": bounds,
+            "parse_error": parse_error, "error_line": error_line}
 
 
 def main() -> None:

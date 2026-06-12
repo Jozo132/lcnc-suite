@@ -4,6 +4,7 @@ import * as THREE from "three";
 import { STLLoader } from "three/examples/jsm/loaders/STLLoader.js";
 import { buildToolProfile, splitProfileAt, buildToolGeometry, buildHolderGeometry, type ToolMeta } from "./toolGeometry";
 import { loadGeometryFromIDB, storeGeometryInIDB, pruneStaleVersions } from "./geometryCache";
+import { AXIS_HEX, AXIS_CSS } from "./axisColors";
 
 
 // ---- Central caches (shared across ALL ThreeViewer instances) ----
@@ -116,6 +117,7 @@ import { Text } from "troika-three-text";
 import { viewerInit, viewerGcode, gcodeContent, status, type ViewerInit, type ViewerGcode } from "./lcncWs";
 import { loadViewerDefaults, loadCameraDefaults, saveCameraDefaults, ALL_LAYERS, settingsVersion, type Vec3, type Layer } from "./defaults";
 import { fmtCoord } from "./format";
+import { recordApply, recordRender, setViewerPerfContext } from "./viewerPerf";
 import ViewCube from "./ViewCube.vue";
 import MachineBtn from "./MachineBtn.vue";
 import CameraPip from "./CameraPip.vue";
@@ -261,6 +263,18 @@ function normalizeKinematics(kin: ViewerInit["kinematics"]): KinEntry[] {
   }));
 }
 
+// applyState() runs per animate frame; the legacy object-form path above allocated
+// a fresh array every call (P4.3). init.kinematics is stable across frames, so cache
+// the normalized result by source identity and recompute only when init changes.
+let _kinCacheSrc: ViewerInit["kinematics"] | null = null;
+let _kinCacheVal: KinEntry[] = [];
+function normalizeKinematicsCached(kin: ViewerInit["kinematics"]): KinEntry[] {
+  if (kin === _kinCacheSrc) return _kinCacheVal;
+  _kinCacheSrc = kin;
+  _kinCacheVal = normalizeKinematics(kin);
+  return _kinCacheVal;
+}
+
 // Visual objects
 let toolMarker: THREE.Group | null = null;
 let toolCutterMesh: THREE.Mesh | null = null;
@@ -304,7 +318,29 @@ let trackingMode: "none" | "tool" | "wcs" = "none";
 // flight and a non-zero tracking delta force a frame.
 let _needsRender = true;
 function requestRender() { _needsRender = true; }
-let _lastStateSig = "";
+
+// Render-on-demand change detection. Replaces a per-tick JSON.stringify of all
+// visually-relevant fields (~30 Hz) with cheap field-wise comparison against
+// the last applied values. Arrays are copied only when they actually change.
+const _pv: {
+  jointPos: number[] | null; machinePos: number[] | null;
+  g5x: number[] | null; g92: number[] | null; toolOffset: number[] | null;
+  toolNum: number | null; toolDiam: number | null; toolLen: number | null;
+  toolMeta: unknown; motionLine: number | null; rotationXy: number | null;
+} = {
+  jointPos: null, machinePos: null, g5x: null, g92: null, toolOffset: null,
+  toolNum: NaN as unknown as number, toolDiam: NaN, toolLen: NaN,
+  toolMeta: undefined, motionLine: NaN, rotationXy: NaN,
+};
+// Returns true if `next` differs from `prev`; when it differs, writes a fresh
+// copy back into the owner so subsequent ticks compare against the new value.
+function _numArrChanged(prev: number[] | null, next: unknown): boolean {
+  const arr = Array.isArray(next) ? (next as number[]) : null;
+  if (arr === null) return prev !== null;
+  if (prev === null || prev.length !== arr.length) return true;
+  for (let i = 0; i < arr.length; i++) if (prev[i] !== arr[i]) return true;
+  return false;
+}
 
 // ---- Path rendering ----
 let pathAlwaysOnTop = true; // default; overridden by setPathAlwaysOnTop()
@@ -317,10 +353,18 @@ let _unitScale = 1;
 let backplotLine: THREE.Line | null = null;
 let backplotGeom: THREE.BufferGeometry | null = null;
 let backplotPos: Float32Array | null = null;
-let backplotCount = 0;
+let backplotCount = 0;            // valid points in the window, 0..BACKPLOT_MAX
+let backplotHead = 0;             // next write slot, 0..BACKPLOT_MAX-1
 const BACKPLOT_MAX = 20000;   // points (10 Hz -> ~33 min)
 const BACKPLOT_EPS = 0.01;    // mm; min distance before adding a point
-let lastBackplotPt: THREE.Vector3 | null = null;
+// Scalar dedup anchor (no retained Vector3 → no per-point allocation).
+let lastBx = 0, lastBy = 0, lastBz = 0, hasLastBackplotPt = false;
+// Reused scratch vectors for the per-tick backplot append — avoids allocating
+// two Vector3 every status tick (GC churn → motion-animation hiccups).
+const _bpWorld = new THREE.Vector3();
+const _bpLocal = new THREE.Vector3();
+// Reused scratch for camera tracking — runs every rAF frame while tracking.
+const _trackTarget = new THREE.Vector3();
 
 let machineBoundsMesh: THREE.LineSegments | null = null;
 let toolpathBoundsBox: THREE.LineSegments | null = null;
@@ -355,16 +399,16 @@ function mkTextLabel(text: string, color: string, fontSize: number): Text {
 function buildGizmo() {
   _gizmoScene = new THREE.Scene();
   const al = 60, ah = al * 0.15, aw = al * 0.08;
-  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), al, 0xff4444, ah, aw));
-  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), al, 0x44ff44, ah, aw));
-  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), al, 0x4488ff, ah, aw));
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(), al, AXIS_HEX.x, ah, aw));
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), new THREE.Vector3(), al, AXIS_HEX.y, ah, aw));
+  _gizmoScene.add(new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), new THREE.Vector3(), al, AXIS_HEX.z, ah, aw));
 
   const fs = al * 0.35;
   const lblOff = al * 1.15;
   for (const [text, color, pos] of [
-    ["X", "#ff4444", [lblOff, 0, 0]],
-    ["Y", "#44ff44", [0, lblOff, 0]],
-    ["Z", "#4488ff", [0, 0, lblOff]],
+    ["X", AXIS_CSS.x, [lblOff, 0, 0]],
+    ["Y", AXIS_CSS.y, [0, lblOff, 0]],
+    ["Z", AXIS_CSS.z, [0, 0, lblOff]],
   ] as [string, string, number[]][]) {
     const lbl = mkTextLabel(text, color, fs);
     lbl.position.set(pos[0]!, pos[1]!, pos[2]!);
@@ -377,7 +421,8 @@ function buildGizmo() {
 
 function resetBackplot() {
   backplotCount = 0;
-  lastBackplotPt = null;
+  backplotHead = 0;
+  hasLastBackplotPt = false;
 
   if (backplotGeom && backplotPos) {
     // Keep allocation, just “empty” it
@@ -739,38 +784,34 @@ function setTrackingMode(mode: "none" | "tool" | "wcs") {
   requestRender();
 }
 
-function pushBackplotPoint(p: [number, number, number]) {
+function pushBackplotPoint(x: number, y: number, z: number) {
   if (!backplotGeom || !backplotPos || !backplotLine) return;
 
-
-  const x = p[0] ?? 0;
-  const y = p[1] ?? 0;
-  const z = p[2] ?? 0;
-
-  const v = new THREE.Vector3(x, y, z);
-
-  if (lastBackplotPt) {
-    if (v.distanceTo(lastBackplotPt) < BACKPLOT_EPS) return;
+  if (hasLastBackplotPt) {
+    const dx = x - lastBx, dy = y - lastBy, dz = z - lastBz;
+    if (dx * dx + dy * dy + dz * dz < BACKPLOT_EPS * BACKPLOT_EPS) return;
   }
 
-  // Ensure objects exist (created in ensureCoreGroups)
-  if (!backplotGeom || !backplotPos || !backplotLine) return;
+  // Linearized circular buffer: the backing array is 2×BACKPLOT_MAX long, and
+  // every point is written to BOTH `slot` and `slot+BACKPLOT_MAX`. That keeps
+  // the most-recent BACKPLOT_MAX points contiguous and in chronological order
+  // at indices [head, head+BACKPLOT_MAX) once full — a single setDrawRange with
+  // zero per-point memmove (the old copyWithin shifted ~60 KB on every point).
+  const N = BACKPLOT_MAX;
+  const slot = backplotHead;
+  const a = slot * 3;
+  const b = (slot + N) * 3;
+  backplotPos[a + 0] = x; backplotPos[a + 1] = y; backplotPos[a + 2] = z;
+  backplotPos[b + 0] = x; backplotPos[b + 1] = y; backplotPos[b + 2] = z;
 
-  // If full, shift left by one (simple & robust)
-  if (backplotCount >= BACKPLOT_MAX) {
-    backplotPos.copyWithin(0, 3, BACKPLOT_MAX * 3);
-    backplotCount = BACKPLOT_MAX - 1;
-  }
+  backplotHead = (slot + 1) % N;
+  if (backplotCount < N) backplotCount++;
 
-  const i = backplotCount * 3;
-  backplotPos[i + 0] = v.x;
-  backplotPos[i + 1] = v.y;
-  backplotPos[i + 2] = v.z;
+  lastBx = x; lastBy = y; lastBz = z; hasLastBackplotPt = true;
 
-  backplotCount++;
-  lastBackplotPt = v;
-
-  backplotGeom.setDrawRange(0, backplotCount);
+  // Not yet wrapped: points fill [0, count). Full: window starts at head.
+  const start = backplotCount < N ? 0 : backplotHead;
+  backplotGeom.setDrawRange(start, backplotCount);
   backplotGeom.attributes.position!.needsUpdate = true;
 }
 
@@ -847,12 +888,14 @@ function rebuildOverflowEdges(size: Vec3, offset: Vec3): THREE.LineSegments | nu
   return lines;
 }
 
-function makeLine(points: number[][], colorHex: number | string, dashed = false, opacity = 1.0) {
+function makeLine(points: number[][] | Float32Array, colorHex: number | string, dashed = false, opacity = 1.0, lineDist?: Float32Array) {
   const geom = new THREE.BufferGeometry();
   // Shared with overflow (and position-attr shared with highlight).
   // Disposal is owned by applyGcode; disposeObject() skips _shared geometries.
   geom.userData._shared = true;
-  const flat = new Float32Array(points.flat());
+  // Prefer the flat Float32Array produced off-thread by previewWorker (P4.1);
+  // fall back to flattening nested points (WS path / older payloads).
+  const flat = points instanceof Float32Array ? points : new Float32Array(points.flat());
   geom.setAttribute("position", new THREE.BufferAttribute(flat, 3));
 
   // Important: stable bounds so Three doesn't cull it incorrectly
@@ -884,7 +927,16 @@ function makeLine(points: number[][], colorHex: number | string, dashed = false,
   // don't require recomputation. Culling skips draw work when zoomed in.
   line.frustumCulled = true;
 
-  if (dashed) (line as any).computeLineDistances?.();
+  if (dashed) {
+    if (lineDist) {
+      // Worker-precomputed (P4.1) — set the attribute directly instead of scanning
+      // every point on the main thread. The overflow line shares this geometry, so
+      // it reuses the attribute too (see makeOverflowLine).
+      geom.setAttribute("lineDistance", new THREE.Float32BufferAttribute(lineDist, 1));
+    } else {
+      (line as any).computeLineDistances?.();
+    }
+  }
   return line;
 }
 
@@ -970,16 +1022,17 @@ function ensureCoreGroups(init: ViewerInit) {
   workAxes = new THREE.Group();
   const _al = 60 * _unitScale;
   const _ah = _al * 0.15, _aw = _al * 0.08;
-  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(), _al, 0xff4444, _ah, _aw));
-  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(), _al, 0x44ff44, _ah, _aw));
-  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(), _al, 0x4488ff, _ah, _aw));
+  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(1,0,0), new THREE.Vector3(), _al, AXIS_HEX.x, _ah, _aw));
+  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,1,0), new THREE.Vector3(), _al, AXIS_HEX.y, _ah, _aw));
+  workAxes.add(new THREE.ArrowHelper(new THREE.Vector3(0,0,1), new THREE.Vector3(), _al, AXIS_HEX.z, _ah, _aw));
 
   workRotGroup.add(workAxes);
 
   // ---- Backplot line (tool history in WORK coordinates) ----
 {
   backplotGeom = new THREE.BufferGeometry();
-  backplotPos = new Float32Array(BACKPLOT_MAX * 3);
+  // 2× length: linearized circular buffer (see pushBackplotPoint). +480 KB.
+  backplotPos = new Float32Array(BACKPLOT_MAX * 2 * 3);
   backplotGeom.setAttribute("position", new THREE.BufferAttribute(backplotPos, 3));
   backplotGeom.setDrawRange(0, 0);
 
@@ -1119,7 +1172,7 @@ async function buildFromInit(init: ViewerInit) {
     if (myToken !== buildToken) return;
 
     // Build group → material map from kinematics direction
-    const kinEntries = normalizeKinematics(init.kinematics);
+    const kinEntries = normalizeKinematicsCached(init.kinematics);
     const dirMat: Record<string, THREE.MeshStandardMaterial> = { x: MAT.axisX, y: MAT.axisY, z: MAT.axisZ };
     const groupMat: Record<string, THREE.MeshStandardMaterial> = {};
     _groupDirMap = {};
@@ -1181,8 +1234,36 @@ async function buildFromInit(init: ViewerInit) {
         meshCount: machineMeshes.length,
         boundsValid: !autoBox.isEmpty(),
         timestamp: Date.now(),
+        getRenderInfo: () => {
+          if (!renderer) return null;
+          const m = renderer.info.memory;
+          const r = renderer.info.render;
+          return {
+            geometries: m.geometries,
+            textures: m.textures,
+            programs: renderer.info.programs?.length ?? 0,
+            calls: r.calls,
+            triangles: r.triangles,
+          };
+        },
       };
     }
+
+    // Per-emit context for the frame-timing probe (viewerPerf). Closes over
+    // module-level state so it always reads live values; invoked once per
+    // summary window, not per frame. Lets the trace correlate hiccups with
+    // toolpath size and the backplot-ring-full memmove regime.
+    setViewerPerfContext(() => ({
+      feed_segs: feedSharedGeom?.getAttribute("position")?.count ?? 0,
+      rapid_segs: rapidSharedGeom?.getAttribute("position")?.count ?? 0,
+      backplot_pts: backplotCount,
+      backplot_full: backplotCount >= BACKPLOT_MAX,
+      // Three.js resource counts — monotonic growth over a long run is a
+      // geometry/texture leak (the "~1 hr in" stutter suspect). Ride the 3 s
+      // probe so leak detection shares one event line with heap + gap.
+      geometries: renderer?.info.memory.geometries ?? 0,
+      textures: renderer?.info.memory.textures ?? 0,
+    }));
 
     // Apply any layer visibility that was requested before objects existed
     if (pendingLayers) {
@@ -1225,7 +1306,7 @@ function applyState(init: ViewerInit, st: ViewerState) {
 
   if (!_workGrp || !_toolGrp) return;
 
-  const kinEntries = normalizeKinematics(init.kinematics);
+  const kinEntries = normalizeKinematicsCached(init.kinematics);
   const ax = (idx: number) => (idx >= 0 && idx < jp.length ? jp[idx]! : 0);
 
   // Apply kinematics: each entry drives a group's position or rotation
@@ -1286,7 +1367,10 @@ function applyState(init: ViewerInit, st: ViewerState) {
 
     // Determine if we need a rebuild
     const needsRebuild = (toolNum !== _currentToolNum && _toolGrp)
-      || (meta && JSON.stringify(meta) !== JSON.stringify(_lastToolMeta))
+      // Reference compare, not JSON.stringify×2 per status (P4.3): lcncWs carries
+      // over the SAME meta object while unchanged and produces a NEW one on an
+      // actual tool/library change, so identity is the exact change signal.
+      || (meta != null && meta !== _lastToolMeta)
       || (() => {
         // Same tool, same meta — check if diam/length changed
         const visMesh = toolBodyMesh ?? toolCutterMesh;
@@ -1328,11 +1412,11 @@ function applyState(init: ViewerInit, st: ViewerState) {
   // Append the actual rendered tool tip position, expressed in work group local space.
   // This guarantees the backplot starts exactly at the tooltip (independent of joint_pos vs machine_pos nuances).
   if (toolMarker && _workGrp) {
-    const w = new THREE.Vector3();
-    toolMarker.getWorldPosition(w);
-
-    const xl = _workGrp.worldToLocal(w.clone());
-    pushBackplotPoint([xl.x, xl.y, xl.z]);
+    toolMarker.getWorldPosition(_bpWorld);
+    // worldToLocal mutates its argument in place, so convert a copy.
+    _bpLocal.copy(_bpWorld);
+    _workGrp.worldToLocal(_bpLocal);
+    pushBackplotPoint(_bpLocal.x, _bpLocal.y, _bpLocal.z);
   }
 
   // ---- Highlight current motion line in toolpath ----
@@ -1353,24 +1437,29 @@ function applyState(init: ViewerInit, st: ViewerState) {
   // Render-on-demand: detect whether anything visually changed since the last
   // applied state. Status broadcasts arrive at ~30 Hz; without this diff we'd
   // render every status arrival even when joints are still and motion_line is
-  // unchanged. Fields included cover everything applyState mutates visually.
-  const sig = JSON.stringify([
-    st.joint_pos,
-    st.machine_pos,
-    st.g5x_offset,
-    st.g92_offset,
-    st.tool_offset,
-    st.tool_number,
-    st.tool_diameter,
-    st.tool_length,
-    st.tool_meta,
-    st.motion_line,
-    st.rotation_xy,
-  ]);
-  if (sig !== _lastStateSig) {
-    _lastStateSig = sig;
-    _needsRender = true;
-  }
+  // unchanged. Fields checked cover everything applyState mutates visually.
+  // Cheap field-wise compare (no per-tick allocation) replaces JSON.stringify.
+  const toolNum = st.tool_number ?? null;
+  const toolDiam = st.tool_diameter ?? null;
+  const toolLen = st.tool_length ?? null;
+  const motionLine = st.motion_line ?? null;
+  const rotationXy = st.rotation_xy ?? null;
+  const toolMeta = st.tool_meta ?? null;
+  let changed = false;
+  if (_numArrChanged(_pv.jointPos, st.joint_pos)) { _pv.jointPos = st.joint_pos ? [...st.joint_pos] : null; changed = true; }
+  if (_numArrChanged(_pv.machinePos, st.machine_pos)) { _pv.machinePos = st.machine_pos ? [...st.machine_pos] : null; changed = true; }
+  if (_numArrChanged(_pv.g5x, st.g5x_offset)) { _pv.g5x = st.g5x_offset ? [...st.g5x_offset] : null; changed = true; }
+  if (_numArrChanged(_pv.g92, st.g92_offset)) { _pv.g92 = st.g92_offset ? [...st.g92_offset] : null; changed = true; }
+  if (_numArrChanged(_pv.toolOffset, st.tool_offset)) { _pv.toolOffset = st.tool_offset ? [...st.tool_offset] : null; changed = true; }
+  if (toolNum !== _pv.toolNum) { _pv.toolNum = toolNum; changed = true; }
+  if (toolDiam !== _pv.toolDiam) { _pv.toolDiam = toolDiam; changed = true; }
+  if (toolLen !== _pv.toolLen) { _pv.toolLen = toolLen; changed = true; }
+  if (motionLine !== _pv.motionLine) { _pv.motionLine = motionLine; changed = true; }
+  if (rotationXy !== _pv.rotationXy) { _pv.rotationXy = rotationXy; changed = true; }
+  // tool_meta is null on the vast majority of ticks; the gateway sends a fresh
+  // object only on a real change, so a reference compare is sufficient + cheap.
+  if (toolMeta !== _pv.toolMeta) { _pv.toolMeta = toolMeta; changed = true; }
+  if (changed) _needsRender = true;
 }
 
 /** Check if stored toolpath bbox exceeds machine bounds (in current WCS). */
@@ -1467,9 +1556,9 @@ function rebuildToolpathBounds() {
                viewerInit.value?.units === "inch" ? "in" : "mm";
   const ox = toolpathBBox.min[0], oy = toolpathBBox.min[1], oz = toolpathBBox.min[2];
   const axes: [string, number, THREE.Vector3, string][] = [
-    ["X", sx, new THREE.Vector3(ox + sx / 2, oy, oz), "#ff4444"],
-    ["Y", sy, new THREE.Vector3(ox, oy + sy / 2, oz), "#44ff44"],
-    ["Z", sz, new THREE.Vector3(ox, oy, oz + sz / 2), "#4488ff"],
+    ["X", sx, new THREE.Vector3(ox + sx / 2, oy, oz), AXIS_CSS.x],
+    ["Y", sy, new THREE.Vector3(ox, oy + sy / 2, oz), AXIS_CSS.y],
+    ["Z", sz, new THREE.Vector3(ox, oy, oz + sz / 2), AXIS_CSS.z],
   ];
   for (const [name, size, pos, c] of axes) {
     const lbl = mkTextLabel(`${name}: ${size.toFixed(0)} ${unit}`, c, fs);
@@ -1484,9 +1573,16 @@ function rebuildToolpathBounds() {
 function applyGcode(g: ViewerGcode) {
   if (!scene || !workOrigin) return;
 
-  // Remove old lines from scene graph
+  // Remove old lines from scene graph and dispose their per-line materials.
+  // disposeObject() intentionally skips materials (to protect shared MAT.*),
+  // so ad-hoc materials created in makeLine/makeOverflowLine + the highlight
+  // material below must be released here or they accumulate in GPU memory.
   for (const old of [feedLine, rapidLine, feedOverflow, rapidOverflow, highlightLine]) {
-    if (old) workRotGroup?.remove(old);
+    if (!old) continue;
+    workRotGroup?.remove(old);
+    const m = old.material as THREE.Material | THREE.Material[] | undefined;
+    if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+    else m?.dispose();
   }
   // Dispose shared geometries explicitly (disposeObject skips _shared)
   if (feedSharedGeom) feedSharedGeom.dispose();
@@ -1494,35 +1590,48 @@ function applyGcode(g: ViewerGcode) {
   if (highlightGeom) highlightGeom.dispose();
   feedLine = rapidLine = feedOverflow = rapidOverflow = highlightLine = null;
   feedSharedGeom = rapidSharedGeom = highlightGeom = null;
-  feedLineMap = new Map();
 
-  const feedPts = g.feed ?? [];
-  const feedLines = g.feed_lines ?? [];
-  const rapidPts = g.rapid ?? [];
+  // Prefer the flat Float32Array buffers from previewWorker (P4.1); fall back to
+  // the nested arrays (WS path / older payloads). The wire's raw Uint8Array form
+  // never reaches here — previewWorker always converts it to feedPos/rapidPos —
+  // so the fallback accepts only the nested-list shape. feed_lines is
+  // index-aligned to the point index either way.
+  const _legacyPts = (v: unknown): number[][] => (Array.isArray(v) ? (v as number[][]) : []);
+  const feedData: number[][] | Float32Array = g.feedPos ?? _legacyPts(g.feed);
+  const rapidData: number[][] | Float32Array = g.rapidPos ?? _legacyPts(g.rapid);
+  const feedLines = (Array.isArray(g.feed_lines) || g.feed_lines instanceof Uint32Array) ? g.feed_lines : [];
+  const _pointCount = (d: number[][] | Float32Array) =>
+    d instanceof Float32Array ? d.length / 3 : d.length;
 
-  // Build line-number → point-index range map
-  for (let i = 0; i < feedLines.length; i++) {
-    const ln = feedLines[i]!;
-    const entry = feedLineMap.get(ln);
-    if (entry) {
-      entry.end = i;
-    } else {
-      feedLineMap.set(ln, { start: i, end: i });
+  // Prefer the line→point-range map built off-thread by previewWorker (P4.1); fall
+  // back to building it here for the WS/legacy path that carries no worker map.
+  if (g.feedLineMap instanceof Map) {
+    feedLineMap = g.feedLineMap;
+  } else {
+    feedLineMap = new Map();
+    for (let i = 0; i < feedLines.length; i++) {
+      const ln = feedLines[i]!;
+      const entry = feedLineMap.get(ln);
+      if (entry) entry.end = i;
+      else feedLineMap.set(ln, { start: i, end: i });
     }
   }
 
   // Feed + Rapid toolpath lines — geometry is shared with the overflow overlay.
   const feedColor = viewerDefaults.colors.feed ?? "#22b8cf";
   const rapidColor = viewerDefaults.colors.rapid ?? "#f5a623";
-  if (feedPts.length >= 2) {
-    feedLine = makeLine(feedPts, feedColor, false);
+  if (_pointCount(feedData) >= 2) {
+    feedLine = makeLine(feedData, feedColor, false);
     feedSharedGeom = feedLine.geometry as THREE.BufferGeometry;
     workRotGroup!.add(feedLine);
     feedOverflow = makeOverflowLine(feedSharedGeom);
     if (feedOverflow) workRotGroup!.add(feedOverflow);
   }
-  if (rapidPts.length >= 2) {
-    rapidLine = makeLine(rapidPts, rapidColor, true);
+  if (_pointCount(rapidData) >= 2) {
+    // Pass the worker-precomputed lineDistance when the flat buffer is in use (P4.1);
+    // undefined on the WS/legacy path → makeLine falls back to computeLineDistances.
+    const _rapidDist = rapidData === g.rapidPos ? g.rapidDist : undefined;
+    rapidLine = makeLine(rapidData, rapidColor, true, 1.0, _rapidDist);
     rapidSharedGeom = rapidLine.geometry as THREE.BufferGeometry;
     workRotGroup!.add(rapidLine);
     rapidOverflow = makeOverflowLine(rapidSharedGeom);
@@ -1547,18 +1656,42 @@ function applyGcode(g: ViewerGcode) {
     workRotGroup!.add(highlightLine);
   }
 
-  // Compute toolpath bounding box (work coordinates) for overflow detection
+  // Toolpath bounding box (work coordinates) for overflow detection. Prefer the
+  // bounds the parse worker computed over the same decimated polyline (P4.1) so we
+  // don't re-scan every point on the UI thread; fall back to a main-thread pass for
+  // the WS/legacy path that carries no bounds.
   toolpathBBox = null;
-  const allPts = [...feedPts, ...rapidPts];
-  if (allPts.length > 0) {
+  const _wb = g.bounds;
+  if (_wb && Array.isArray(_wb.min) && Array.isArray(_wb.max) && _wb.min.length === 3) {
+    toolpathBBox = {
+      min: [_wb.min[0]!, _wb.min[1]!, _wb.min[2]!],
+      max: [_wb.max[0]!, _wb.max[1]!, _wb.max[2]!],
+    };
+  } else {
     const mn: [number, number, number] = [Infinity, Infinity, Infinity];
     const mx: [number, number, number] = [-Infinity, -Infinity, -Infinity];
-    for (const p of allPts) {
-      if (p[0]! < mn[0]) mn[0] = p[0]!; if (p[0]! > mx[0]) mx[0] = p[0]!;
-      if (p[1]! < mn[1]) mn[1] = p[1]!; if (p[1]! > mx[1]) mx[1] = p[1]!;
-      if (p[2]! < mn[2]) mn[2] = p[2]!; if (p[2]! > mx[2]) mx[2] = p[2]!;
-    }
-    toolpathBBox = { min: mn, max: mx };
+    let _bboxAny = false;
+    const _scanBBox = (d: number[][] | Float32Array) => {
+      if (d instanceof Float32Array) {
+        for (let i = 0; i + 2 < d.length; i += 3) {
+          _bboxAny = true;
+          const x = d[i]!, y = d[i + 1]!, z = d[i + 2]!;
+          if (x < mn[0]) mn[0] = x; if (x > mx[0]) mx[0] = x;
+          if (y < mn[1]) mn[1] = y; if (y > mx[1]) mx[1] = y;
+          if (z < mn[2]) mn[2] = z; if (z > mx[2]) mx[2] = z;
+        }
+      } else {
+        for (const p of d) {
+          _bboxAny = true;
+          if (p[0]! < mn[0]) mn[0] = p[0]!; if (p[0]! > mx[0]) mx[0] = p[0]!;
+          if (p[1]! < mn[1]) mn[1] = p[1]!; if (p[1]! > mx[1]) mx[1] = p[1]!;
+          if (p[2]! < mn[2]) mn[2] = p[2]!; if (p[2]! > mx[2]) mx[2] = p[2]!;
+        }
+      }
+    };
+    _scanBBox(feedData);
+    _scanBBox(rapidData);
+    if (_bboxAny) toolpathBBox = { min: mn, max: mx };
   }
   updateOverflowCheck();
   rebuildToolpathBounds();
@@ -1623,7 +1756,9 @@ function animate() {
   // state changes — so a steady 30 Hz status flood with no joint motion does
   // not force a render.
   if (pendingState && viewerInit.value) {
+    const _tApply = performance.now();
     applyState(viewerInit.value, pendingState as ViewerState);
+    recordApply(performance.now() - _tApply);
     pendingState = null;
 
     // Re-frame after first status update so camera accounts for actual axis positions
@@ -1638,13 +1773,17 @@ function animate() {
   // Only flags a render if the tracked point actually moved this tick;
   // otherwise tracking-mode would force every frame even at machine idle.
   if (trackingMode !== "none" && controls && camera) {
-    const target = new THREE.Vector3();
+    // getWorldPosition overwrites _trackTarget each frame; .sub() then turns it
+    // into the delta in place — safe because we re-fetch before every use.
+    // Reset first so a non-matching mode falls back to origin (as the old
+    // fresh-Vector3 did) rather than reusing last frame's stale delta.
+    _trackTarget.set(0, 0, 0);
     if (trackingMode === "tool" && toolMarker) {
-      toolMarker.getWorldPosition(target);
+      toolMarker.getWorldPosition(_trackTarget);
     } else if (trackingMode === "wcs" && workOrigin) {
-      workOrigin.getWorldPosition(target);
+      workOrigin.getWorldPosition(_trackTarget);
     }
-    const delta = target.sub(controls.target);
+    const delta = _trackTarget.sub(controls.target);
     if (delta.lengthSq() > 1e-12) {
       controls.target.add(delta);
       camera.position.add(delta);
@@ -1689,7 +1828,9 @@ function animate() {
   // bottom transitions. The tween writes camera.position/quaternion directly
   // each frame; controls.update() runs once at tween completion to re-sync.
   if (!_tweenRaf) controls?.update();
+  const _tRender = performance.now();
   renderer?.render(scene!, camera!);
+  recordRender(performance.now() - _tRender);
 
   // Orientation gizmo — always ortho, render into bottom-right viewport
   // (top-left is the HUD, top-right is the ViewCube + quick-grid).
@@ -1819,6 +1960,7 @@ function applyViewerDefaults(opts: { initialMount?: boolean } = {}) {
 
 onUnmounted(() => {
   document.removeEventListener("visibilitychange", _onVisibilityChange);
+  setViewerPerfContext(null);
   resizeObs?.disconnect();
   resizeObs = null;
   cancelAnimationFrame(raf);
@@ -1975,7 +2117,11 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
   // Remove previous
   if (surfaceGroup) {
     surfaceGroup.parent?.remove(surfaceGroup);
-    surfaceGroup.traverse((o: any) => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); });
+    surfaceGroup.traverse((o: any) => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+      if (typeof o.dispose === "function") o.dispose();  // InstancedMesh.instanceMatrix
+    });
     surfaceGroup = null;
   }
 
@@ -1999,28 +2145,25 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
   const gyRange = grid.y[ny - 1]! - grid.y[0]!;
   const geom = new THREE.PlaneGeometry(gxRange || 1, gyRange || 1, nx - 1, ny - 1);
   const posArr = geom.attributes.position!;
-  const colors: number[] = [];
+  const colors = new Float32Array(nx * ny * 3);  // pre-allocated, set by vertex index (P4.2)
 
   for (let iy = 0; iy < ny; iy++) {
     for (let ix = 0; ix < nx; ix++) {
       const vi = iy * nx + ix;
       const gx = grid.x[ix]!, gy = grid.y[iy]!;
       let z = grid.zi[ix]?.[iy];
-      if (z == null || !isFinite(z)) {
-        // Outside convex hull — nearest raw point
-        let bestD2 = Infinity, bestZ = 0;
-        for (const p of pts) {
-          const d2 = (gx - p[0]) ** 2 + (gy - p[1]) ** 2;
-          if (d2 < bestD2) { bestD2 = d2; bestZ = p[2]; }
-        }
-        z = bestZ;
-      }
+      // Complete grid expected — out-of-hull cells are filled server-side now
+      // (compensation.py nearest backfill; a95fc7d "no IDW fallback"). A residual
+      // null only means a stale/pre-fix grid file → render flat, no main-thread scan.
+      if (z == null || !isFinite(z)) z = 0;
       posArr.setX(vi, gx);
       posArr.setY(vi, gy);
       posArr.setZ(vi, z);
       const t = (z - zMin) / zRange;
       const [r, g, b] = viridis(t);
-      colors.push(r / 255, g / 255, b / 255);
+      colors[vi * 3] = r / 255;
+      colors[vi * 3 + 1] = g / 255;
+      colors[vi * 3 + 2] = b / 255;
     }
   }
   geom.setAttribute("color", new THREE.Float32BufferAttribute(colors, 3));
@@ -2034,15 +2177,21 @@ function buildSurfaceLayer(pts: [number, number, number][]) {
   });
   surfaceGroup.add(new THREE.Mesh(geom, mat));
 
-  // Add probe point dots
+  // Probe-point dots as a single InstancedMesh (P4.2): one geometry + one draw call
+  // instead of N separate Mesh objects, which each added scene-graph + per-frame
+  // cull/draw overhead for as long as the surface stayed visible.
   const dotR = Math.min(gxRange || 1, gyRange || 1) * 0.012;
   const dotGeom = new THREE.SphereGeometry(dotR, 8, 8);
   const dotMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
-  for (const p of pts) {
-    const dot = new THREE.Mesh(dotGeom, dotMat);
-    dot.position.set(p[0], p[1], p[2]);
-    surfaceGroup.add(dot);
+  const dots = new THREE.InstancedMesh(dotGeom, dotMat, pts.length);
+  const _dotM = new THREE.Matrix4();
+  for (let i = 0; i < pts.length; i++) {
+    const p = pts[i]!;
+    _dotM.makeTranslation(p[0], p[1], p[2]);
+    dots.setMatrixAt(i, _dotM);
   }
+  dots.instanceMatrix.needsUpdate = true;
+  surfaceGroup.add(dots);
 
   workRotGroup!.add(surfaceGroup);
   surfaceGroup.visible = surfaceVisible;
@@ -2341,7 +2490,6 @@ defineExpose({
   background: color-mix(in oklab, var(--warn) 20%, var(--panel));
   border: 1px solid var(--warn);
   color: var(--warn);
-  font-family: var(--font-mono);
   font-size: var(--fs-base);
   pointer-events: auto;
 }
@@ -2374,7 +2522,7 @@ defineExpose({
   padding: var(--gap-controls) var(--gap-section);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   font-size: var(--fs-base);
   line-height: 1.4;
 }

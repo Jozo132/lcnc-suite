@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
-import { evaluatePermissions, PERMISSIONS_KEY, type Permissions } from "./permissions";
-import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, gcodeContent, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, safetyTrip, acknowledgeSafetyTrip, readerStale, previewLoadError, serverShuttingDown, type LcncMessage } from "./lcncWs";
-import ThreeViewer from "./ThreeViewer.vue";
+import { computed, defineAsyncComponent, onMounted, onUnmounted, provide, reactive, ref, watch } from "vue";
+import { applyClientOverlay, PERMISSIONS_KEY, type Permissions } from "./permissions";
+import { connectWs, connected, status, send, armed, lastReply, viewerGcode, viewerInit, gcodeContent, lcncError, latency, networkLatency, messages, unreadCount, dismissMessage, clearAllMessages, markMessagesRead, safetyTrip, acknowledgeSafetyTrip, readerStale, configWarning, previewLoadError, serverShuttingDown, type LcncMessage } from "./lcncWs";
+// Lazy-load the 3D viewer so Three.js (~866 KB) + troika load as a separate async
+// chunk after first paint instead of blocking the initial bundle (P6). The viewerRef
+// methods are all `?.`-guarded, so calls during the brief load gap safely no-op.
+const ThreeViewer = defineAsyncComponent(() => import("./ThreeViewer.vue"));
 import TabPanel from "./TabPanel.vue";
 import GcodePanel from "./GcodePanel.vue";
 import SafetyStrip from "./SafetyStrip.vue";
@@ -19,7 +22,7 @@ import Gate from "./Gate.vue";
 import MachineBtn from "./MachineBtn.vue";
 import MachineInput from "./MachineInput.vue";
 import { highlightGcode } from "./gcodeHighlight";
-import { fmtElapsed, fmtDuration, fmtDist, fmtSize, fmtTimestamp } from "./format";
+import { fmtElapsed, fmtDuration, fmtDist, fmtSize } from "./format";
 import type { GcodeStats } from "./GcodePanel.vue";
 import { Settings, MessageSquare, PowerOff, Gamepad2, Keyboard, BookOpen, ClipboardCopy, Expand, Shrink } from "lucide-vue-next";
 import GcodeReferenceDialog from "./GcodeReferenceDialog.vue";
@@ -166,6 +169,7 @@ const machineStateColor = computed(() => {
   if (safetyTrip.value) return '--state-danger';
   if (serverShuttingDown.value) return '--state-warn';
   if (readerStale.value) return '--state-warn';
+  if (configWarning.value) return '--state-warn';
   if (previewLoadError.value) return '--state-warn';
   return STATE_COLORS[machineState.value];
 });
@@ -186,6 +190,13 @@ const machineStateLabel = computed(() => {
   const state = machineState.value;
   if (state === 'disconnected') {
     return lcncError.value ? `${label} — ${lcncError.value}` : `${label} — reconnecting…`;
+  }
+  // Distinguish "operator pressed E-Stop" (STAT.estop true) from "HAL chain
+  // open while STAT thinks we're cleared" (issue #14). The operator already
+  // knows why if STAT.estop is the visible cause; the chain-open subtitle
+  // only adds noise in that case.
+  if (state === 'estop' && !st.value.estop && safetyChainOpen.value) {
+    return `${label} — Safety chain open`;
   }
   if (state === 'running' || state === 'paused') {
     const file = activeFile.value;
@@ -211,6 +222,7 @@ const bannerFlashMode = computed<'none' | 'pulse' | 'flash'>(() => {
   if (s === 'estop' || s === 'disconnected') return 'flash';
   if (serverShuttingDown.value) return 'pulse';
   if (readerStale.value) return 'pulse';
+  if (configWarning.value) return 'pulse';
   if (previewLoadError.value) return 'pulse';
   if (s === 'unhomed' || s === 'toolchange' || s === 'idle') return 'pulse';
   return 'none';
@@ -326,8 +338,18 @@ const lcncLabel = computed(() => {
   return "LCNC: -";
 });
 
-const isEstop = computed(() => !!st.value.estop);
-const isEnabled = computed(() => !!st.value.enabled);
+// HAL safety chain (iocontrol.0.emc-enable-in) is the *truth* about whether the
+// machine can move; STAT.estop / STAT.enabled go through iocontrol's edge-
+// triggered NML pump and can lie when the chain was already LOW at command
+// time (issue #14). `=== false` (not falsy) so reader-stale (null/undefined)
+// is treated as "unknown" and falls back to STAT, matching backend semantics.
+// estop/enabled "merged truth" (issue #14) is computed ONCE on the backend
+// (_policy_state_from_payload) and broadcast as is_estop/is_enabled; the banner
+// and DRO consume it here (review #5). safetyChainOpen stays local — it's the
+// raw chain pin, used only for the "safety chain open" banner text.
+const safetyChainOpen = computed(() => st.value.emc_enable_in === false);
+const isEstop = computed(() => !!st.value.is_estop);
+const isEnabled = computed(() => !!st.value.is_enabled);
 
 
 
@@ -353,20 +375,11 @@ const canResetEstop = computed(() => armed.value && isEstop.value);
 /** Centralized permissions — single source of truth for all button enable/disable.
  *  Memoized: returns the same object reference when values haven't changed,
  *  so child components using usePermissions() don't re-render on every status update. */
-let _prevPerms: ReturnType<typeof evaluatePermissions> | null = null;
+let _prevPerms: Permissions | null = null;
 const permissions = computed(() => {
-  const next = evaluatePermissions({
-    armed: armed.value,
-    isEstop: isEstop.value,
-    isEnabled: isEnabled.value,
-    isHomed: isHomed.value,
-    isIdle: isIdle.value,
-    isRunning: isRunning.value,
-    isPaused: isPaused.value,
-    busy: busy.value,
-    hasFile: !!activeFile.value,
-    eoffsetEnabled: !!st.value.eoffset_enabled,
-  });
+  // Policy lives on the backend now (issue #19): consume the broadcast
+  // permission classes and overlay only the client-local armed + busy terms.
+  const next = applyClientOverlay(st.value.permissions, armed.value, busy.value);
   const keys = Object.keys(next) as (keyof typeof next)[];
   if (_prevPerms && keys.every(k => _prevPerms![k] === next[k])) return _prevPerms;
   _prevPerms = next;
@@ -392,51 +405,13 @@ const isTeleop = computed(() => motionMode.value === TRAJ_MODE_TELEOP);
 const interpState = computed(() => st.value.interp_state ?? INTERP_IDLE);
 const isPaused = computed(() => st.value.paused ?? interpState.value === INTERP_PAUSED);
 const isRunning = computed(() => !isPaused.value && (interpState.value === INTERP_READING || interpState.value === INTERP_WAITING));
-const isIdle = computed(() => interpState.value === INTERP_IDLE);
 
-/** ---------- program elapsed timer ---------- */
-let _timerStartMs: number | null = null;
-let _timerAccMs = 0;
-let _timerHandle: ReturnType<typeof setInterval> | null = null;
-const programElapsed = ref(0); // seconds
-
-function _startTimer() {
-  _timerStartMs = Date.now();
-  if (_timerHandle) clearInterval(_timerHandle);
-  _timerHandle = setInterval(() => {
-    programElapsed.value = Math.floor((_timerAccMs + Date.now() - (_timerStartMs ?? Date.now())) / 1000);
-  }, 1000);
-}
-function _stopTimer() {
-  if (_timerHandle) { clearInterval(_timerHandle); _timerHandle = null; }
-}
-
-watch([isRunning, isPaused], ([running, paused], [wasRunning, wasPaused]) => {
-  if (running && !wasRunning && !wasPaused) {
-    // IDLE → RUNNING: reset and start
-    _timerAccMs = 0;
-    programElapsed.value = 0;
-    _startTimer();
-  } else if (running && !wasRunning && wasPaused) {
-    // PAUSED → RUNNING: resume
-    _startTimer();
-  } else if (paused && wasRunning) {
-    // RUNNING → PAUSED: accumulate and stop
-    _timerAccMs += Date.now() - (_timerStartMs ?? Date.now());
-    programElapsed.value = Math.floor(_timerAccMs / 1000);
-    _stopTimer();
-  } else if (!running && !paused) {
-    // → IDLE: stop, keep final value
-    if (wasRunning && _timerStartMs) {
-      _timerAccMs += Date.now() - _timerStartMs;
-      programElapsed.value = Math.floor(_timerAccMs / 1000);
-    }
-    _stopTimer();
-  }
-});
-
-onUnmounted(() => _stopTimer());
-
+/** ---------- program elapsed timer ----------
+ * Server-authoritative: gateway tracks the anchor across pause/resume and
+ * broadcasts the accumulated elapsed time each status tick. Mid-program
+ * reconnects see the true value because the first status snapshot already
+ * carries it. */
+const programElapsed = computed(() => Math.floor((st.value.program_elapsed_ms ?? 0) / 1000));
 const elapsedDisplay = computed(() => fmtElapsed(programElapsed.value));
 
 /** ---------- system clock ---------- */
@@ -505,7 +480,9 @@ const activeMcodes = computed(() => {
 // Tool change dialog (global — tool changes can happen from any context)
 const toolChangeRequested = computed(() => !!st.value.tool_change_requested);
 const toolChangeTool = computed(() => st.value.tool_change_tool ?? null);
-function confirmToolChange() { send({ cmd: "confirm_tool_change" }); }
+// Discrete confirm action — route through fire() so an accidental double-click
+// is debounced (issue #31). No gate: it happens mid tool-change, not at idle.
+function confirmToolChange() { fire({ cmd: "confirm_tool_change" }); }
 
 const feedSlider = ref(100);
 const spindleSlider = ref(100);
@@ -620,6 +597,11 @@ function toggleMist() {
 const optionalStopOn = computed(() => !!st.value.optional_stop);
 const blockDeleteOn = computed(() => !!st.value.block_delete);
 
+// These two are server-authoritative toggles (state comes from st.value), and
+// they're inside the permission-gated program controls. They intentionally use
+// raw send() rather than fire() (issue #31): fire()'s 200 ms busy-gate/cooldown
+// is for debouncing motion, and would make a flag toggle feel laggy / drop a
+// click. Backend require_armed still applies.
 function toggleOptionalStop() {
   send({ cmd: "set_optional_stop", value: !optionalStopOn.value });
 }
@@ -709,15 +691,49 @@ function msgFormatTime(ts: number): string {
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" }) + " " + d.toLocaleTimeString();
 }
 
+// navigator.clipboard is only exposed in secure contexts (HTTPS or
+// localhost). The gateway binds 0.0.0.0 by design so the UI is reached
+// over LAN HTTP from another machine — a non-secure context. The
+// execCommand path is the LAN-HTTP fallback, not legacy cruft. Do NOT
+// strip without an HTTPS plan; the failure mode is a runtime TypeError
+// on every copy click. See commits e4fdd63 (removal) and the follow-up.
+function copyToClipboard(text: string): void {
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(err => {
+      if (!fallbackCopy(text)) console.error("clipboard copy failed:", err);
+    });
+    return;
+  }
+  if (!fallbackCopy(text)) {
+    console.error("clipboard copy failed: no API available");
+  }
+}
+
+function fallbackCopy(text: string): boolean {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.opacity = "0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;  // a clipboard fallback must not throw to the caller
+  } finally {
+    document.body.removeChild(ta);
+  }
+}
+
 function copyMessage(msg: LcncMessage) {
-  navigator.clipboard.writeText(`[${msgKindLabel(msg.kind)}] ${msgFormatTime(msg.ts)} — ${msg.text}`);
+  copyToClipboard(`[${msgKindLabel(msg.kind)}] ${msgFormatTime(msg.ts)} — ${msg.text}`);
 }
 
 function copyAllMessages() {
   const text = [...messages.value].reverse().map(m =>
     `[${msgKindLabel(m.kind)}] ${msgFormatTime(m.ts)} — ${m.text}`
   ).join("\n");
-  navigator.clipboard.writeText(text);
+  copyToClipboard(text);
 }
 
 /** ---------- actions ---------- */
@@ -863,12 +879,20 @@ function cycleStart() {
   fire({ cmd: "cycle_start" }, 'ready');
 }
 
-function runFromLine(line: number, spindleDir: "off" | "forward" | "reverse", spindleSpeed: number) {
+function runFromLine(opts: import("./gcodeRfl").RflRunOptions) {
   fire({
     cmd: "auto_run",
-    line,
-    spindle_dir: spindleDir !== "off" ? spindleDir : undefined,
-    spindle_speed: spindleDir !== "off" ? spindleSpeed : undefined,
+    line: opts.line,
+    spindle_dir: opts.spindleDir !== "off" ? opts.spindleDir : undefined,
+    spindle_speed: opts.spindleDir !== "off" ? opts.spindleSpeed : undefined,
+    // RFL × M600 guard: measure this tool via MDI first (gateway bg sequence),
+    // retract to G53 Z0, and rapid to the derived start XY before AUTO_RUN.
+    pre_tool: opts.preTool > 0 ? opts.preTool : undefined,
+    safe_z: opts.safeZ || undefined,
+    entry_x: opts.entry?.x ?? undefined,
+    entry_y: opts.entry?.y ?? undefined,
+    entry_wcs: opts.entry?.wcs ?? undefined,
+    entry_units: opts.entry?.units ?? undefined,
   }, 'ready');
 }
 
@@ -1035,6 +1059,7 @@ onUnmounted(() => {
   window.removeEventListener("blur", stopAllJog);
   document.removeEventListener("visibilitychange", visHandler);
   document.removeEventListener("focusin", onNumFocus);
+  document.removeEventListener("fullscreenchange", onFullscreenChange);  // issue #32
   gamepad.stop();
 });
 
@@ -1128,14 +1153,16 @@ watch(viewerGcode, (newGcode) => {
       <div class="bannerContent" @click="messagesDialogOpen = true; markMessagesRead()">
         <Transition name="banner-fade" mode="out-in">
           <span v-if="safetyTrip" :key="'safety'" class="bannerError">
-            SAFETY TRIPPED at <span class="mono">{{ fmtTimestamp(safetyTrip.ts) }}</span>
-            — press Acknowledge to recover
+            SAFETY TRIPPED — press Acknowledge to recover
           </span>
           <span v-else-if="serverShuttingDown" :key="'shutdown'" class="bannerError">
             Server shutting down…
           </span>
           <span v-else-if="readerStale" :key="'reader-stale'" class="bannerError">
             HAL reader stale — UI values may be out of date
+          </span>
+          <span v-else-if="configWarning" :key="'config-warning'" class="bannerError">
+            Config fallback — {{ configWarning.reason }}
           </span>
           <span v-else-if="previewLoadError" :key="'preview-error'" class="bannerError">
             3D preview load failed — toolpath may be stale or missing
@@ -1454,7 +1481,7 @@ watch(viewerGcode, (newGcode) => {
           <div class="dialogTitle">{{ !toolChangeTool ? 'Remove Tool from Spindle' : 'Load Tool into Spindle' }}</div>
           <div class="dialogBody">
             <template v-if="toolChangeTool">
-              <strong>T{{ toolChangeTool }}</strong><template v-if="st.tool_change_info"> D{{ st.tool_change_info.D.toFixed(3) }} Z{{ st.tool_change_info.Z.toFixed(3) }}</template><br>
+              <strong>T{{ toolChangeTool }}</strong><template v-if="st.tool_change_info"> D{{ st.tool_change_info.D?.toFixed(3) ?? '—' }} Z{{ st.tool_change_info.Z?.toFixed(3) ?? '—' }}</template><br>
               <template v-if="st.tool_change_info?.description">{{ st.tool_change_info.description }}<br></template>
               Insert tool and press Confirm
             </template>
@@ -1867,7 +1894,6 @@ watch(viewerGcode, (newGcode) => {
 .macroPreview {
   display: block;
   margin-top: var(--gap-section);
-  font-family: var(--font-mono);
   font-size: var(--fs-sm);
   opacity: var(--opacity-muted);
 }
@@ -1934,7 +1960,7 @@ watch(viewerGcode, (newGcode) => {
 .msgItem.display { border-color: color-mix(in oklab, var(--display) 40%, var(--border)); }
 .msgTime {
   font-size: var(--fs-2xs);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   opacity: var(--opacity-muted);
   flex-shrink: 0;
 }

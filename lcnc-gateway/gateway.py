@@ -6,17 +6,19 @@ import math
 import time
 import os
 import subprocess
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import threading
 from pathlib import Path
 import linuxcnc
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, List, Tuple
 from fastapi.staticfiles import StaticFiles
 import re
 import shutil
-import tempfile
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body, Request
+from urllib.parse import urlsplit
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, HTTPException, Body, Query, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import StreamingResponse, JSONResponse, FileResponse, Response
 
@@ -26,15 +28,49 @@ from contextlib import asynccontextmanager
 
 import lcnc_trace as _trace
 _trace.init("gateway")
+_trace.install_crash_hooks("gateway")
+
+# Pure, linuxcnc-free helpers (importable under pytest without the binding).
+from gateway_util import (
+    ALLOWED_EXTENSIONS,
+    sanitize_filename,
+    validate_extension,
+    validate_path_within,
+    origin_allowed,
+    token_ok,
+    finite_float,
+    finite_int,
+    evaluate_trip_latch,
+    parse_telemetry_batch,
+    TELEMETRY_BODY_MAX,
+)
+from command_policy import check_command
+from tool_table import (
+    parse_tool_table,
+    write_tool_table,
+    _merge_tool_data,
+    _TOOL_META_FIELDS,
+)
+from settings_store import SettingsStore, VALID_SECTIONS as _VALID_SETTINGS_SECTIONS
+import status_runtime as _status_runtime_mod
+from status_runtime import StatusPayload
+import bulk_pipeline as _bulk_mod
+from tool_store import ToolLibraryStore
+from camera_broker import CameraBroker
+from fusion_import import decode_fusion_blob
 
 
-# === TEMP LIFECYCLE PROBE (remove after debugging) ===
+# === LIFECYCLE DIAGNOSTICS (permanent — promoted from temp probe) ===
+# This timeline + the [GC]/[HB-WAKE]/lag.window family below is the proven
+# attribution toolkit of the #35 effort (it pinned the GC object churn, the
+# estop_reset NML hold, and the heartbeat delivery cliff). Quiet by design
+# when healthy — keep it.
 # Single timeline anchor: every probe line carries +Nms from this anchor,
 # so boot, per-client connect, and shutdown all sit on one ruler. See
 # /home/cnc/.claude/plans/can-you-plan-for-jolly-leaf.md for the full plan.
 #
 # REMOVAL MAP — when stripping this probe later, delete:
-#   1. This whole block (lines 27 .. END TEMP LIFECYCLE PROBE marker below):
+#   1. This whole block (lines 27 .. END LIFECYCLE DIAGNOSTICS marker below):
 #        _T0, _dbg, _UvicornTimingFilter (+ filter install loop),
 #        _format_conn_state, _install_shutdown_probe (incl. the _patched
 #        monkey-patch of Server._wait_tasks_to_complete).
@@ -84,7 +120,7 @@ for _logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
     logging.getLogger(_logger_name).addFilter(_uv_timing_filter)
 
 
-# === TEMP GC-PROBE === log generation-0/1/2 garbage-collector events
+# === GC DIAGNOSTICS (permanent) === log generation-0/1/2 garbage-collector events
 # with duration. Python GC mark-sweep can stall the main thread for
 # hundreds of ms on a large object graph (e.g. accumulated msgpack
 # envelopes / status snapshots / error queues during a 12-client
@@ -118,7 +154,7 @@ def _gc_callback(phase: str, info: Dict[str, Any]) -> None:
 
 
 _gc.callbacks.append(_gc_callback)
-# === END TEMP LIFECYCLE PROBE ===
+# === END LIFECYCLE DIAGNOSTICS ===
 
 
 class _UvicornUrlColorFilter(logging.Filter):
@@ -139,6 +175,25 @@ logging.getLogger("uvicorn").addFilter(_UvicornUrlColorFilter())
 logging.getLogger("uvicorn.error").addFilter(_UvicornUrlColorFilter())
 
 
+class _UvicornAccessTelemetryFilter(logging.Filter):
+    """Drop /telemetry access-log lines — the browser POSTs these on a
+    steady cadence (tab visibility, send-buffer pressure, JS errors) and
+    each one would otherwise print an INFO line, drowning real requests.
+    The event payload still flows through the trace bus as browser.* —
+    only the duplicated access-log noise is suppressed."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3:
+            path = args[2]
+            if isinstance(path, str) and path.startswith("/telemetry"):
+                return False
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_UvicornAccessTelemetryFilter())
+
+
 # ---- Config ----
 POLL_HZ = 30  # status update rate
 BASE_DIR = Path(__file__).resolve().parent
@@ -148,59 +203,24 @@ MACHINE_DIR = BASE_DIR / "machine"
 # WIRE_FORMAT defaults to msgpack: smaller payload than JSON, faster
 # C-accelerated encode, and unlocks the per-tick shared-encode path under
 # fan-out when delta is off (one encode per tick instead of N). Set
-# WEBUI_WIRE_FORMAT=json explicitly to debug status frames in browser
-# DevTools. The remaining flags default OFF.
-_WIRE_FORMAT = (os.environ.get("WEBUI_WIRE_FORMAT") or "msgpack").strip().lower()
-if _WIRE_FORMAT not in ("json", "msgpack"):
-    _WIRE_FORMAT = "msgpack"
+# ---- Wire format / send policy ---- moved to ws_fanout (M3). Constants
+# rebound here; the WsFanout instance + method rebinds live after _set_phase.
+import ws_fanout as _ws_fanout_mod
 
-# Per-send timeout for ws.send_* calls. A backgrounded browser tab that
-# stops reading back-pressures the kernel TCP write buffer; `await
-# ws.send_bytes` then holds the asyncio loop long enough (1+ s observed)
-# to break the 500 ms HAL heartbeat budget and trigger a safety trip.
-# We bound any single send to this many seconds and force-close the
-# offending client on timeout — bug fix, not trip suppression: the
-# heartbeat task is unchanged and still trips on any other loop hang.
-# 0.2 s leaves ~300 ms of remaining budget for the rest of the cycle.
-# See plan in /home/cnc/.claude/plans/can-you-plan-for-jolly-leaf.md.
-_WS_SEND_TIMEOUT_S = 0.2
-_STATUS_DELTA_ENABLED = os.environ.get("WEBUI_STATUS_DELTA") == "1"
+_WIRE_FORMAT = _ws_fanout_mod.WIRE_FORMAT
+_STATUS_DELTA_ENABLED = _ws_fanout_mod.STATUS_DELTA_ENABLED
 _ADAPTIVE_POLL_ENABLED = os.environ.get("WEBUI_ADAPTIVE_POLL") == "1"
 try:
     _IDLE_POLL_HZ = max(1, int(os.environ.get("WEBUI_IDLE_POLL_HZ") or "5"))
 except ValueError:
     _IDLE_POLL_HZ = 5
-# Full-snapshot cadence when delta mode is on: force a full every N cycles so
-# any drift-bug self-heals within ~3s at 30 Hz.
-_DELTA_FULL_INTERVAL = 100
-
-# ---- Wire-format encoders ----
-# msgspec.json avoids per-call Encoder setup cost; msgspec.msgpack produces
-# compact binary frames for float-heavy StatusPayload. Both encoders are
-# thread-safe for reuse. msgspec is a hard dep (see requirements.txt).
+_DELTA_FULL_INTERVAL = _ws_fanout_mod.DELTA_FULL_INTERVAL
+# msgspec stays imported here: the poller's bulk-payload encodes (surface/grid/
+# preview — M4 territory) use it directly.
 import msgspec as _msgspec
 
-
-def _wire_enc_hook(obj):
-    # Any object msgspec doesn't know how to encode gets stringified
-    # (covers Path, datetime, and stray non-primitive payloads).
-    return str(obj)
-
-
-_json_encoder = _msgspec.json.Encoder(enc_hook=_wire_enc_hook)
-_msgpack_encoder = _msgspec.msgpack.Encoder(enc_hook=_wire_enc_hook)
-
-# Dedicated thread-pool for status-tick envelope encoding. The default
-# asyncio executor is shared with load_settings, gcode parse, HAL helpers,
-# and STL HTTP responses — under a 10+ client reconnect storm, per-client
-# encode_ms ballooned to hundreds of ms (executor queue wait time, not
-# actual encode work) and tripped the HAL heartbeat watchdog. msgspec
-# releases the GIL during encode, so 2 dedicated workers give parallel
-# throughput without GIL thrashing. Lifespan teardown shuts this down
-# with cancel_futures so a stuck encode can't delay the deterministic
-# HAL LOW. See ws_send_measured() for the consumer.
-from concurrent.futures import ThreadPoolExecutor
-_status_encode_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="status-encode")
+_json_encoder_encode = _ws_fanout_mod.json_encoder_encode
+_msgpack_encoder = _ws_fanout_mod.msgpack_encoder
 
 # Optional WS-init concurrency limiter. Default of 20 is a no-op for the
 # documented 10–13-tab scenario. If a real overload manifests (HAL trip
@@ -217,18 +237,59 @@ _WS_INIT_LIMIT = int(os.environ.get("WEBUI_WS_INIT_CONCURRENCY", "20"))
 _ws_init_sem = asyncio.Semaphore(_WS_INIT_LIMIT)
 
 
-def _json_encoder_encode(obj):
-    return _json_encoder.encode(obj)  # returns bytes
+# ── Auth / origin controls (issue #17) ──
+# Pre-shared token: empty string disables auth (loopback/dev). The launcher
+# fail-closed rule guarantees a token is set whenever HOST is non-loopback.
+WEBUI_TOKEN = os.environ.get("LCNC_WEBUI_TOKEN", "").strip()
+# Explicit Origin allow-list (comma/space-separated). Empty ⇒ same-host only.
+_ALLOWED_ORIGINS = {
+    o.strip() for o in re.split(r"[,\s]+", os.environ.get("LCNC_WEBUI_ALLOWED_ORIGINS", "").strip()) if o.strip()
+}
+_DEV = os.environ.get("LCNC_WEBUI_DEV", "0").strip() not in ("", "0", "false", "False")
+# In dev the page is served by Vite on :5173 and proxied to the gateway, so the
+# Origin won't match the gateway's host:port. Admit the standard local Vite
+# origins explicitly; the port rule in _ws_origin_ok also covers LAN dev.
+_DEV_ORIGINS = {"http://localhost:5173", "http://127.0.0.1:5173"} if _DEV else set()
+_VITE_DEV_PORT = 5173
 
 
-def _encode_ws_frame(obj):
-    """Encode a WS payload with the active wire format. Returns bytes for
-    msgpack (→ ws.send_bytes) or str for json (→ ws.send_text). Used for
-    shared payloads (viewer_gcode, surface_points, comp_grid) that are
-    encoded once and broadcast verbatim to every client."""
-    if _WIRE_FORMAT == "msgpack":
-        return _msgpack_encoder.encode(obj)
-    return _json_encoder_encode(obj).decode("utf-8")
+def _ws_origin_ok(origin: Optional[str], host: Optional[str]) -> bool:
+    if origin_allowed(origin, host, _ALLOWED_ORIGINS, _DEV_ORIGINS):
+        return True
+    # Dev convenience: the Vite dev server is reachable on any LAN IP, and the
+    # proxied WS may not preserve the Host header for a same-host match. So in
+    # dev mode admit any origin on the Vite port — the token still gates the
+    # connection. Never active in production (_DEV is false).
+    if _DEV and origin:
+        try:
+            if urlsplit(origin).port == _VITE_DEV_PORT:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def _peer_of(ws: WebSocket) -> str:
+    return ws.client.host if ws.client else "?"
+
+
+async def require_token(request: Request):
+    """FastAPI dependency gating mutation routes (issue #17).
+
+    No-op when no token is configured (loopback/dev). Accepts the token from the
+    ``X-Auth-Token`` header OR a ``token`` query param — the latter is needed
+    because ``navigator.sendBeacon`` (settings flush on page exit) cannot set
+    headers.
+    """
+    if not WEBUI_TOKEN:
+        return
+    presented = request.headers.get("x-auth-token") or request.query_params.get("token")
+    if not token_ok(presented, WEBUI_TOKEN):
+        _trace.emit("rest.auth_rejected", level="warn",
+                    peer=(request.client.host if request.client else "?"),
+                    path=request.url.path)
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
 
 # ---- LinuxCNC handles (nullable for auto-reconnect) ----
 STAT: Optional[linuxcnc.stat] = None
@@ -237,47 +298,98 @@ ERR: Optional[linuxcnc.error_channel] = None
 lcnc_connected = False
 _lcnc_pid: Optional[int] = None  # tracks linuxcncsvr PID
 
-# ---- WCS offset cache (populated from STAT at 30Hz) ----
-_WCS_BASES = [5220, 5240, 5260, 5280, 5300, 5320, 5340, 5360, 5380]
-_WCS_NAMES = ["G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"]
+# ---- WCS offset cache ---- moved to status_runtime (M2). Constants rebound
+# here; the cache list itself is rebound after the runtime instance exists.
+_WCS_BASES = _status_runtime_mod.WCS_BASES
+_WCS_NAMES = _status_runtime_mod.WCS_NAMES
 _G5X_MAP = {"G54": 1, "G55": 2, "G56": 3, "G57": 4, "G58": 5, "G59": 6, "G59.1": 7, "G59.2": 8, "G59.3": 9}
-_WCS_AXIS_KEYS = ["x", "y", "z", "a", "b", "c", "u", "v", "w"]
-_wcs_cache = [{"name": n, "x": 0.0, "y": 0.0, "z": 0.0, "a": 0.0, "b": 0.0, "c": 0.0, "u": 0.0, "v": 0.0, "w": 0.0, "r": 0.0} for n in _WCS_NAMES]
-_wcs_var_file_mtime: Optional[float] = None  # None means "not yet seeded"
+_WCS_AXIS_KEYS = _status_runtime_mod.WCS_AXIS_KEYS
 
 # ---- Connected WebSocket clients ----
-@dataclass
-class ClientState:
-    """Per-client server-side state. Replaces the prior dict-of-dict
-    registry; the field set is small and stable, so a typed shape
-    catches typos at write time and avoids `.get()` defaults entirely
-    for known fields.
+# ClientState + the client registry moved to ws_fanout (M3). The registry
+# global is rebound to the WsFanout instance's dict after _set_phase below.
+ClientState = _ws_fanout_mod.ClientState
 
-    The broadcast `clients` envelope reads only `ip` and `armed`; the
-    rest are server-internal."""
-    ip: str
-    ws: "WebSocket"
-    armed: bool = False
-    halshow_live: bool = False
-    last_hb: float = 0.0       # wall-clock time of last heartbeat from this client
-    hb_mono: float = 0.0       # monotonic ts of last hb (0 = never seen)
-    send_pending: bool = False # status fan-out is in-flight to this client
-    hidden: bool = False       # client tab is backgrounded (visibilityState)
-
-
-_clients: Dict[int, ClientState] = {}
 _next_client_id = 0
 
-# ---- HAL watchdog socket client ----
-# The watchdog is loaded by LinuxCNC HAL config (loadusr -W hal_watchdog.py).
-# Gateway connects to its Unix socket to send heartbeat/connected updates.
+# ---- Armed-resume holds (Layer D, session-id resume) ----
+# When an armed client's WebSocket closes, we register a short-lived hold
+# keyed by session_id. If the same session reconnects within the window via
+# `cmd:"hello"`, the new connection silently inherits armed=true. This makes
+# Ctrl-R, Wi-Fi blips, and brief screen-lock-induced WS closes invisible.
+#
+# tab close → new sessionId on next open → no resume (intentional)
+# Ctrl-R    → same sessionId → resume granted
+_ARMED_RESUME_GRACE_SEC = 10.0
+_armed_resume_holds: Dict[str, float] = {}  # session_id → expiry monotonic ts
+# Armed-resume is for a CLEAN brief reconnect (Ctrl-R, wifi blip) — the client was
+# beating normally right up to the drop. If the heartbeat was already lagging at
+# disconnect (a struggling/overloaded client), it's NOT a clean reconnect: do not
+# auto-restore armed, require an explicit operator re-arm. 2.0 s = at most ~1
+# missed 1 Hz beat; the disarm timeout is 3 s.
+_RESUME_MAX_HB_AGE = 2.0
+
+
+def _register_armed_resume_hold(session_id: Optional[str], client_id: int) -> None:
+    """Register an armed-resume hold for a session_id. No-op if no session_id."""
+    if not session_id:
+        return
+    _prune_armed_resume_holds()
+    expiry = time.monotonic() + _ARMED_RESUME_GRACE_SEC
+    _armed_resume_holds[session_id] = expiry
+    _trace.emit(
+        "session.resume_hold_registered",
+        client_id=client_id, session_id=session_id,
+        grace_sec=_ARMED_RESUME_GRACE_SEC,
+    )
+
+
+def _peek_armed_resume_hold(session_id: Optional[str]) -> str:
+    """Inspect a session_id without consuming. Returns one of:
+      "granted" — hold exists and within grace window
+      "expired" — hold exists but past expiry
+      "no_match" — no hold registered for this session_id (or no id at all)
+    Used by the hello handler to decide which trace event to emit before
+    actually consuming the hold via _consume_armed_resume_hold."""
+    if not session_id:
+        return "no_match"
+    expiry = _armed_resume_holds.get(session_id)
+    if expiry is None:
+        return "no_match"
+    if time.monotonic() > expiry:
+        return "expired"
+    return "granted"
+
+
+def _consume_armed_resume_hold(session_id: Optional[str]) -> None:
+    """Remove the hold for this session_id (single-use). Caller should have
+    already peeked to decide whether to grant. Safe to call even if no hold
+    exists — pops with default."""
+    if not session_id:
+        return
+    _armed_resume_holds.pop(session_id, None)
+
+
+def _prune_armed_resume_holds() -> None:
+    """Drop expired holds. Bounded size in practice (one entry per recently-
+    disconnected armed client) but cheap to keep tidy."""
+    now = time.monotonic()
+    expired = [sid for sid, exp in _armed_resume_holds.items() if now > exp]
+    for sid in expired:
+        del _armed_resume_holds[sid]
+
+# ---- HAL IPC: watchdog + reader sockets ----
+# Extracted to hal_bridge.py (M6). The bridge owns both Unix-socket clients
+# (watchdog sends, reader snapshots + RPC, snapshot freshness); the heartbeat
+# coroutine below stays HERE and only hands values to it — the bridge must
+# never produce a heartbeat. The instance + legacy-name rebinds (_hal_send,
+# _reader_get, ...) live after _set_phase, a constructor dependency; every
+# function in between resolves those globals at call time.
 import sys
 import signal
-import socket as _socket
 
+import hal_bridge as _hal_bridge_mod
 
-_HAL_SOCK_PATH = "/tmp/webui-safety.sock"
-_hal_sock: Optional[_socket.socket] = None
 _hal_last_hb = False
 _disconnect_grace_task: Optional[asyncio.Task] = None
 _DISCONNECT_GRACE_SEC = 3.0  # covers 2s frontend reconnect delay
@@ -290,115 +402,18 @@ _estop_hold = False  # hold connected=FALSE during UI e-stop
 # take longer to acknowledge a parsed block.
 _CMD_WAIT_TIMEOUT = 2.0
 
-def _hal_connect():
-    """Connect to the HAL watchdog Unix socket. Non-fatal if unavailable.
-
-    Socket is set to a tight (50 ms) sendall timeout so that, if the kernel
-    Unix-socket send buffer fills (e.g. watchdog process scheduling-delayed
-    during a cold-start handshake storm), our heartbeat task does NOT block
-    the entire asyncio loop waiting for buffer space. A timed-out sendall
-    raises socket.timeout, which we catch and treat as a dropped heartbeat
-    — the watchdog will correctly trip if heartbeats stop reaching it. The
-    timeout is generous compared to the 33 ms heartbeat cadence and tiny
-    compared to the 500 ms HAL trip threshold; we lose at most one
-    heartbeat to detect backpressure.
-    """
-    global _hal_sock
-    if _hal_sock is not None:
-        return  # already connected
-    try:
-        _hal_sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        _hal_sock.connect(_HAL_SOCK_PATH)
-        _hal_sock.settimeout(0.05)
-        _trace.emit("hal.socket_connected")
-    except Exception as e:
-        _trace.emit("hal.socket_connect_failed", level="error",
-                    exc=type(e).__name__, msg=str(e))
-        _hal_sock = None
-
-def _hal_disconnect():
-    """Disconnect from the HAL watchdog socket."""
-    global _hal_sock
-    if _hal_sock is not None:
-        try:
-            _hal_sock.close()
-        except Exception:
-            pass
-        _hal_sock = None
-
-# hal.send_summary is emitted once per N sends (N=30 ≈ 1 s at heartbeat
-# cadence) by the shared Aggregator. `slow_count` is tallied locally
-# (it isn't an avg/max metric) and reset by the extra-fields callable
-# at emit time. `tcp_outq` is read fresh on each emit so the kernel
-# buffer state is captured at summary-publication time, not at
-# Aggregator construction.
-_hal_send_slow_count = 0
-
-
-def _hal_send_extras() -> dict:
-    global _hal_send_slow_count
-    out = {"slow_count": _hal_send_slow_count, "tcp_outq": _hal_tcp_outq()}
-    _hal_send_slow_count = 0
-    return out
-
-
-_hal_send_agg = _trace.Aggregator(
-    "hal.send_summary", every=30, extra_fields=_hal_send_extras
-)
-
-
-def _hal_send(msg: dict):
-    """Send a pin-update message to the HAL watchdog via socket."""
-    global _hal_sock, _hal_send_slow_count
-    if _hal_sock is None:
-        _hal_connect()
-    if _hal_sock is not None:
-        _send_t0 = time.monotonic()
-        try:
-            _hal_sock.sendall((json.dumps(msg) + "\n").encode())
-        except _socket.timeout:
-            # Kernel send buffer full — watchdog process is scheduling-
-            # delayed (or hung). Drop this message and DON'T block the loop
-            # waiting for buffer space. Heartbeat task continues firing; if
-            # the watchdog truly isn't reading, the trip will fire correctly
-            # via oneshot.0.out going FALSE on its own. This converts a
-            # multi-second loop stall into a logged drop of one heartbeat.
-            _send_dt_to = (time.monotonic() - _send_t0) * 1000
-            _trace.emit("hal.send_timeout", level="warn",
-                        send_ms=round(_send_dt_to, 1),
-                        msg_keys=list(msg.keys()))
-            return
-        except (OSError, BrokenPipeError):
-            _hal_sock = None  # will reconnect on next send
-            _trace.emit("hal.send_disconnect", level="warn",
-                        msg_keys=list(msg.keys()))
-            return
-        _send_dt = (time.monotonic() - _send_t0) * 1000
-        if _send_dt > 30:
-            _trace.emit("hal.send_slow", level="warn",
-                        send_ms=round(_send_dt, 1),
-                        msg_keys=list(msg.keys()))
-            _hal_send_slow_count += 1
-        _hal_send_agg.record(ms=_send_dt)
-
-
-try:
-    import fcntl as _fcntl
-    import struct as _struct
-    _SIOCOUTQ = 0x5411  # Linux: bytes in TCP send buffer not yet acked
-    _SIOCINQ = 0x541B   # Linux: bytes in TCP recv buffer not yet read
-except Exception:
-    _fcntl = None
-    _struct = None
-    _SIOCOUTQ = 0
-    _SIOCINQ = 0
-
-
 def _snapshot_trip(trip_ts_ns: int) -> None:
     """Write a forensic bundle when a HAL safety trip fires. Runs in a
     worker thread (asyncio.to_thread) so it can't block the loop. Best
     effort: any failure is logged but doesn't propagate."""
-    out_dir = f"/tmp/lcnc-trip-{trip_ts_ns}/"
+    base = _trace.log_dir()
+    if not base:
+        # No silent scatter: a trip bundle written to cwd/`/tmp` is a lost
+        # forensic record. Surface the bug instead.
+        _trace.emit("safety.snapshot_no_log_dir", level="error",
+                    trip_ts_ns=trip_ts_ns)
+        return
+    out_dir = os.path.join(base, f"trips/{trip_ts_ns}/")
     try:
         os.makedirs(out_dir, exist_ok=True)
     except Exception as e:
@@ -429,112 +444,21 @@ def _snapshot_trip(trip_ts_ns: int) -> None:
                     out_dir=out_dir, exc=type(e).__name__, msg=str(e))
 
 
-def _hal_tcp_outq() -> int:
-    """Bytes queued in the kernel send buffer for _hal_sock. Linux only.
-    Returns -1 on any failure. Cheap (one ioctl, ~1 us)."""
-    if _hal_sock is None or _fcntl is None or _struct is None:
-        return -1
-    try:
-        buf = bytearray(4)
-        _fcntl.ioctl(_hal_sock.fileno(), _SIOCOUTQ, buf)
-        return _struct.unpack("I", bytes(buf))[0]
-    except Exception:
-        return -1
-
-
-# ---- HAL reader (sibling process: webui-reader) ----
-# hal_reader.py owns the `webui-reader` HAL component and pushes a snapshot
-# of the pins poll_status() needs at 30 Hz. The gateway never imports `hal`;
-# all HAL access goes over this socket.  set_p() and halshow_dump() are
-# served as request/reply on the same socket.
-_READER_SOCK_PATH = "/tmp/webui-reader.sock"
-# Single-rebind state: (snapshot, monotonic_ts). Both halves always come from
-# the same tick — no torn reads even if a future caller reads both values
-# across an `await`.
-_reader_state: Optional[Tuple[dict, float]] = None
-_reader_writer: Optional[asyncio.StreamWriter] = None
-_reader_lock = asyncio.Lock()
-_reader_pending: Dict[int, asyncio.Future] = {}
-_reader_next_id = 0
-# A snapshot is "stale" if no message has arrived within this window.
-# The reader pushes at 30 Hz (~33 ms) so 2 s = ~60 missed ticks.
-_READER_STALE_SEC = 2.0
-
-
-async def _reader_recv_loop():
-    """Connect to hal_reader.py and dispatch incoming messages.
-
-    Snapshots update _reader_state. Replies resolve pending futures keyed by
-    request id. Reconnects on socket close with a 1 s backoff.
-    """
-    global _reader_writer, _reader_state
-    while True:
-        _set_phase("reader_recv.connecting")
-        try:
-            reader, writer = await asyncio.open_unix_connection(_READER_SOCK_PATH)
-        except Exception as e:
-            _trace.emit("reader.connect_failed", level="warn",
-                        exc=type(e).__name__, msg=str(e))
-            await asyncio.sleep(1.0)
-            continue
-        _reader_writer = writer
-        _trace.emit("reader.connected")
-        # Push extra-pin config (e.g. user-configured spindle load pin) so the
-        # reader includes it in subsequent snapshots. Spawned as a separate
-        # task because this loop dispatches the reply — awaiting here would
-        # deadlock.
-        asyncio.create_task(_reader_configure_extra_pins())
-        try:
-            while True:
-                _set_phase("reader_recv.readline")
-                line = await reader.readline()
-                if not line:
-                    break
-                _set_phase("reader_recv.process_line")
-                try:
-                    msg = json.loads(line.decode())
-                except Exception as e:
-                    _trace.emit("reader.bad_json", level="warn",
-                                exc=type(e).__name__, msg=str(e))
-                    continue
-                mtype = msg.get("type")
-                if mtype == "snapshot":
-                    _reader_state = (msg, time.monotonic())
-                elif mtype == "reply":
-                    fut = _reader_pending.pop(msg.get("id"), None)
-                    if fut is not None and not fut.done():
-                        fut.set_result(msg)
-        except Exception as e:
-            _trace.emit("reader.recv_loop_error", level="warn",
-                        exc=type(e).__name__, msg=str(e))
-        finally:
-            _set_phase("reader_recv.cleanup")
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass
-            _reader_writer = None
-            # Fail any pending requests so callers don't hang.
-            for fut in _reader_pending.values():
-                if not fut.done():
-                    fut.set_exception(ConnectionError("HAL reader disconnected"))
-            _reader_pending.clear()
-        await asyncio.sleep(1.0)
-
-
 async def _reader_configure_extra_pins() -> None:
     """Push the current extra-pin config to the reader.
 
-    Called on reader reconnect and when settings change. Reads settings
+    Called on reader reconnect (the bridge's on_reader_connect hook spawns
+    this as a task — the recv loop dispatches the reply, so awaiting inside
+    the hook would deadlock) and when settings change. Reads settings
     directly so it's correct regardless of whether status_loop has run yet
     (race-free at startup). Fire-and-forget; failures log but don't propagate.
     """
-    if _reader_writer is None:
+    if not _hal_bridge.reader_connected:
         return
     pins: Dict[str, str] = {}
     try:
-        slp = load_settings().get("machine", {}).get("spindleLoadPin", "")
+        _settings = await asyncio.to_thread(load_settings)  # file read off the loop (B3)
+        slp = _settings.get("machine", {}).get("spindleLoadPin", "")
     except Exception:
         slp = ""
     if isinstance(slp, str) and _HAL_PIN_RE.match(slp):
@@ -544,62 +468,6 @@ async def _reader_configure_extra_pins() -> None:
     except Exception as e:
         _trace.emit("reader.configure_extra_pins_failed", level="warn",
                     exc=type(e).__name__, msg=str(e))
-
-
-async def _reader_request(req: str, timeout: float = 2.0, **kwargs) -> dict:
-    """Send a request to hal_reader.py and await the reply.
-
-    Raises ConnectionError if the reader is not connected, TimeoutError if
-    the reply doesn't arrive in time, RuntimeError if the reader returned ok=False.
-    """
-    global _reader_next_id
-    if _reader_writer is None:
-        raise ConnectionError("HAL reader not connected")
-    # Lock guards only the ID-increment + future-registration handshake.
-    # The actual write+drain happens unlocked: each call writes one complete
-    # `{...}\n` framed message in a single StreamWriter.write() (atomic on
-    # the buffer), so concurrent senders can't interleave bytes.
-    async with _reader_lock:
-        _reader_next_id += 1
-        req_id = _reader_next_id
-        loop = asyncio.get_running_loop()
-        fut = loop.create_future()
-        _reader_pending[req_id] = fut
-    try:
-        _reader_writer.write((json.dumps({"id": req_id, "req": req, **kwargs}) + "\n").encode())
-        await _reader_writer.drain()
-    except Exception:
-        _reader_pending.pop(req_id, None)
-        raise
-    try:
-        reply = await asyncio.wait_for(fut, timeout=timeout)
-    except asyncio.TimeoutError:
-        _reader_pending.pop(req_id, None)
-        raise
-    if not reply.get("ok"):
-        raise RuntimeError(reply.get("error", "reader request failed"))
-    return reply.get("result")
-
-
-def _reader_get(field: str):
-    """Return field from latest snapshot, or None if snapshot absent / field missing.
-
-    No `default` param by design — every absent value must surface as None all
-    the way to the frontend so consumers see "no data" honestly. See
-    feedback_no_silent_fallbacks.md.
-    """
-    state = _reader_state
-    if state is None:
-        return None
-    return state[0].get(field)
-
-
-def _reader_is_stale() -> bool:
-    """True if no snapshot has arrived within _READER_STALE_SEC."""
-    state = _reader_state
-    if state is None:
-        return True
-    return (time.monotonic() - state[1]) > _READER_STALE_SEC
 
 
 async def _disconnect_grace():
@@ -646,7 +514,7 @@ async def _cancel_disconnect_grace():
         try:
             await task
         except asyncio.CancelledError:
-            pass
+            pass  # safe-silent: we just cancelled it, CancelledError is the success signal
         except Exception as e:
             _trace.emit("disconnect_grace.cancel_error", level="warn",
                         error=f"{type(e).__name__}: {e}")
@@ -666,20 +534,25 @@ async def _heartbeat_loop():
     global _hal_last_hb
     _hb_expected = 1.0 / POLL_HZ
     _hb_last = time.monotonic()
-    # === TEMP HB-TRACE PROBE === counts heartbeat iterations so we can see
-    # gaps that [HB-STALL]'s post-sleep drift detector misses. The drift
-    # detector only fires when the task wakes up and notices the elapsed
-    # time was longer than expected — but if monotonic *itself* froze
-    # (VM pause / cgroup throttle / OS scheduler lockout where the whole
-    # process timer subsystem stops), the post-sleep drift looks normal.
-    # Logging the iteration count + monotonic + walltime every ~1s makes
-    # any frozen-window visible: a [HB] line that should appear ~1 s after
-    # the prior one but appears ~3 s later, with iteration count having
-    # advanced by only ~30 instead of ~30 × elapsed_seconds, exposes the
-    # gap. Walltime is included so a pause invisible to monotonic but
-    # visible to clock_gettime(CLOCK_REALTIME) (rare) shows up too.
+    # === HB-TRACE DIAGNOSTICS (permanent) === fires only when a 30-iteration window (~1 s
+    # at POLL_HZ=30) shows an anomaly that [HB-STALL]'s per-tick drift detector
+    # misses. Two cases:
+    #   1. Monotonic clock froze (VM pause / cgroup throttle / scheduler
+    #      lockout): wall delta ≫ monotonic delta between consecutive samples.
+    #      [HB-STALL] stays silent because post-sleep drift in monotonic terms
+    #      looks normal — the clock itself stopped.
+    #   2. Many sub-200ms stalls accumulating: each one is below [HB-STALL]'s
+    #      threshold but together push the 30-iter window well past 1 s.
+    # Healthy operation = silent. Anomaly = one log line with full context.
     _hb_iter = 0
-    # === TEMP HB-WAKE PROBE === pre-send anchor to catch a hidden gap that
+    _hb_sample_mono = time.monotonic()
+    _hb_sample_wall = time.time()
+    # Thresholds: skew >100ms means wall and monotonic disagree by enough to
+    # rule out routine scheduling jitter; mono_dt >1.5s (50% over expected 1s)
+    # means accumulated stall worth surfacing.
+    _HB_SKEW_THRESH = 0.1
+    _HB_MONO_THRESH = 1.5
+    # === HB-WAKE DIAGNOSTICS (permanent) === pre-send anchor to catch a hidden gap that
     # [HB-STALL] cannot see: scheduling delay between asyncio.sleep returning
     # and the heartbeat task actually being selected to run its body. If a
     # busy event loop holds the heartbeat task ready-but-not-running for
@@ -712,15 +585,24 @@ async def _heartbeat_loop():
             print(f"[HB-STALL] heartbeat gap {_hb_drift*1000:.0f}ms (expected {_hb_expected*1000:.0f}ms)", flush=True)
         _hb_last = _hb_now
         _hb_iter += 1
-        # Log every 30 iterations (~1 s at POLL_HZ=30). The space between
-        # consecutive [HB] lines should always be ≈1 s in monotonic terms;
-        # any larger jump means the loop was paused.
+        # Sample wall/mono every 30 iterations (~1 s at POLL_HZ=30). Log only
+        # when the window shows clock skew or accumulated stall — see the
+        # HB-TRACE PROBE comment above the loop for the two failure modes.
         if _hb_iter % 30 == 0:
-            print(
-                f"[HB] +{(_hb_now - _T0) * 1000:.0f}ms iter={_hb_iter} "
-                f"wall={time.time():.3f} clients={len(_clients)}",
-                flush=True,
-            )
+            _hb_now_wall = time.time()
+            _hb_mono_dt = _hb_now - _hb_sample_mono
+            _hb_wall_dt = _hb_now_wall - _hb_sample_wall
+            _hb_skew = abs(_hb_wall_dt - _hb_mono_dt)
+            if _hb_skew > _HB_SKEW_THRESH or _hb_mono_dt > _HB_MONO_THRESH:
+                print(
+                    f"[HB] +{(_hb_now - _T0) * 1000:.0f}ms iter={_hb_iter} "
+                    f"mono_dt={_hb_mono_dt*1000:.0f}ms "
+                    f"wall_dt={_hb_wall_dt*1000:.0f}ms "
+                    f"skew={_hb_skew*1000:.0f}ms clients={len(_clients)}",
+                    flush=True,
+                )
+            _hb_sample_mono = _hb_now
+            _hb_sample_wall = _hb_now_wall
 
 
 # Phase ring buffer — replaces last-writer-wins single global. Each
@@ -756,6 +638,51 @@ def _phase_ring_snapshot() -> List[Tuple[float, str]]:
         return list(_phase_ring)
     # Already filled; reorder so oldest is first.
     return _phase_ring[_phase_ring_idx:] + _phase_ring[:_phase_ring_idx]
+
+
+# ---- M4 bulk pipeline instance ----
+# Versioned immutable cached payloads (preview/surface/grid) + the parse
+# subprocess lifecycle. Reassigned-scalar state lives as instance ATTRIBUTES
+# (not rebinds — rebinding wouldn't track reassignment), so call sites read
+# _bulk.<attr> directly. Deps late-bound: STAT rebinds on reconnect, and
+# get_machine_units/_build_wcs_rotation_patches are defined further down.
+_bulk = _bulk_mod.BulkPipeline(
+    get_stat=lambda: STAT,
+    get_machine_units=lambda: get_machine_units(),
+    build_wcs_rotation_patches=lambda: _build_wcs_rotation_patches(),
+)
+
+
+# ---- M3 fanout instance ----
+# Send mechanics + client registry + tick stats live on the instance; the
+# registry/stats dict objects are stable so these rebinds stay valid.
+_ws_fanout = _ws_fanout_mod.WsFanout(set_phase=_set_phase)
+_clients = _ws_fanout.clients
+_status_tick_stats = _ws_fanout.tick_stats
+ws_send_json = _ws_fanout.ws_send_json
+ws_send_measured = _ws_fanout.ws_send_measured
+_ws_hidden_flag = _ws_fanout.ws_hidden_flag
+_diff_status_data = _ws_fanout_mod.diff_status_data
+
+
+# ---- M6 bridge instance ----
+# Created here because _set_phase is a constructor dependency. The legacy
+# underscore names are rebound to bound methods so the many call sites —
+# including _heartbeat_loop/_disconnect_grace defined ABOVE — read unchanged;
+# they resolve these globals at call time, after this point. on_reader_connect
+# spawns the extra-pin push as a task (the recv loop dispatches the reply, so
+# the hook itself must not await).
+_hal_bridge = _hal_bridge_mod.HalBridge(
+    set_phase=_set_phase,
+    on_reader_connect=lambda: asyncio.create_task(_reader_configure_extra_pins()),
+)
+_hal_connect = _hal_bridge.watchdog_connect
+_hal_disconnect = _hal_bridge.watchdog_disconnect
+_hal_send = _hal_bridge.watchdog_send
+_reader_recv_loop = _hal_bridge.reader_recv_loop
+_reader_request = _hal_bridge.reader_request
+_reader_get = _hal_bridge.reader_get
+_reader_is_stale = _hal_bridge.reader_is_stale
 
 
 def _phase_window(start_mono: float, end_mono: float) -> List[dict]:
@@ -834,9 +761,13 @@ _lag_monitor_task: Optional[asyncio.Task] = None
 _loop_tick_task: Optional[asyncio.Task] = None
 
 
+_rss_read_warned = False
+
+
 def _read_rss_kb() -> int:
     """Read VmRSS from /proc/self/status. Returns 0 on any failure (Linux-
     only path; harmless on other OSes since the gateway runs on Linux)."""
+    global _rss_read_warned
     try:
         with open("/proc/self/status") as f:
             for line in f:
@@ -844,8 +775,13 @@ def _read_rss_kb() -> int:
                     parts = line.split()
                     if len(parts) >= 2:
                         return int(parts[1])
-    except Exception:
-        pass
+    except Exception as e:
+        # One-shot warn — /proc failure is a fundamental OS issue, not
+        # a transient. Rate-limited at one event per process lifetime so
+        # the poll loop doesn't spam.
+        if not _rss_read_warned:
+            _rss_read_warned = True
+            _trace.emit_exc("proc.vmrss_read_failed", e)
     return 0
 
 
@@ -859,20 +795,6 @@ def _executor_qsize() -> int:
         if ex is None:
             return -1
         wq = getattr(ex, "_work_queue", None)
-        if wq is None:
-            return -1
-        return wq.qsize()
-    except Exception:
-        return -1
-
-
-def _encode_pool_qsize() -> int:
-    """Pending items in the dedicated status-encode executor pool
-    (`_status_encode_executor`, 2 workers). When this number grows, fan-out
-    encodes are queueing — distinct from default-executor pressure which
-    `_executor_qsize` already measures. Same private-attr caveat applies."""
-    try:
-        wq = getattr(_status_encode_executor, "_work_queue", None)
         if wq is None:
             return -1
         return wq.qsize()
@@ -967,7 +889,6 @@ async def _loop_tick():
                 "loop.tick",
                 pending_tasks=pending,
                 executor_qsize=_executor_qsize(),
-                encode_qsize=_encode_pool_qsize(),
                 gc_counts=list(gc.get_count()),
                 rss_kb=_read_rss_kb(),
                 clients=len(_clients) if "_clients" in globals() else 0,
@@ -997,6 +918,11 @@ def _start_heartbeat():
 
 _shared_status: Optional["StatusPayload"] = None
 _shared_status_dict: Optional[dict] = None  # cached asdict(_shared_status)
+
+# ---- Program-elapsed timer (server-authoritative) ----
+# Tracked across status polls so every connected client (including ones that
+# joined mid-program) sees the same elapsed time. Anchored to time.monotonic()
+# so wall-clock NTP corrections don't jump the counter.
 # Pre-encoded msgpack bytes of _shared_status_dict. When the wire format is
 # msgpack and no per-client mutation applies (tool_meta injection, delta), each
 # client's envelope encode splices these bytes verbatim via msgspec.Raw — one
@@ -1004,6 +930,7 @@ _shared_status_dict: Optional[dict] = None  # cached asdict(_shared_status)
 # when the poller has not run yet.
 _shared_status_data_msgpack: Optional[bytes] = None
 _shared_errors: list = []
+_errors_total: int = 0   # monotonic count of drained NML errors (RFL guard abort-detection)
 _shared_probe_updates: dict = {}
 _shared_timing: dict = {}  # poll_ms, errors_ms, parse_ms, poller_ts
 # Per-cycle snapshot of connected clients — rebuilt once by the poller so
@@ -1011,13 +938,6 @@ _shared_timing: dict = {}  # poll_ms, errors_ms, parse_ms, poller_ts
 # Reference is swapped atomically before _status_event.set(), so readers
 # always see a consistent list for the duration of their iteration.
 _shared_clients_list: list = []
-_surface_points_pending: list | None = None  # latest surface scan points; None = never scanned
-_surface_points_version: int = int(time.time())  # bumped each time new data is ready; seeded from startup so ?v= URLs don't collide across restarts
-_surface_initialized: bool = False           # True after startup file-read attempted
-_comp_grid_pending: dict | None = None       # latest parsed probe-results-grid.json
-_comp_grid_version: int = int(time.time())   # bumped each time new grid is ready; seeded from startup so ?v= URLs don't collide across restarts
-_comp_grid_initialized: bool = False         # True after startup file-read attempted
-_last_comp_hal_ver: int | None = None        # last seen compensation.grid-version HAL value
 _tool_table_version: int = int(time.time())  # bumped after every CMD.load_tool_table(); per-client trackers in status_loop send a `tool_table_changed` ping so other clients refetch
 
 # Halshow live loop — pushes value deltas to clients viewing the Settings → Halshow tab.
@@ -1026,49 +946,21 @@ _tool_table_version: int = int(time.time())  # bumped after every CMD.load_tool_
 _halshow_loop_task: Optional[asyncio.Task] = None
 _halshow_last_values: dict = {}                # "section/name" → last broadcast value (delta source)
 _halshow_topology_sent: dict = {}              # client_id → True once topology has been delivered
+_halshow_topology_cache: Optional[dict] = None  # built-once HAL graph (P5); HAL graph is static post-boot
 
-# Shared gcode preview — parsed once in a subprocess (gcode_parse_worker.py)
-# on file/rotation change. The parsed result (multi-MB polylines) is NOT
-# broadcast over the WS — N × ws.send_bytes(2.7 MB) saturates the event-loop
-# writer and trips the heartbeat watchdog. Instead: pre-encode the bytes, serve
-# them via GET /preview (uvicorn streamed response runs off the WS writer),
-# and broadcast a tiny JSON ping per version so clients know to fetch.
-_gcode_preview_pending: Optional[dict] = None   # {"file","feed","feed_lines","rapid","stats"}
-_gcode_preview_version: int = int(time.time()) # bumps on file change (or unload); seeded from startup so ?v= URLs don't collide across restarts
-_gcode_last_file: Optional[str] = None          # edge detection in poller
-_gcode_refresh_running: bool = False            # single-flight guard
-# Pre-encoded msgpack bytes of _gcode_preview_pending. Served over HTTP by
-# GET /preview so the 2.7 MB polyline payload never touches the WS writer.
-_gcode_preview_bytes: Optional[bytes] = None
-# Same payload pre-compressed once per parse so each client doesn't pay the
-# gzip cost on every fetch. /preview picks one based on Accept-Encoding.
-_gcode_preview_bytes_gz: Optional[bytes] = None
-
-# Pre-encoded msgpack bytes of the surface_points / comp_grid data dicts.
-# Served over HTTP by GET /surface_points and GET /comp_grid so the 10-80 KB
-# per-client fan-out never touches the single-threaded WS writer. Clients
-# receive a tiny *_ready JSON ping on version bump and fetch the cached
-# bytes out of band.
-_surface_points_bytes: Optional[bytes] = None
-_comp_grid_bytes: Optional[bytes] = None
-
-# Path to the subprocess parse worker (spawned via asyncio.create_subprocess_exec).
-_GCODE_WORKER_PATH = str(BASE_DIR / "gcode_parse_worker.py")
-
-# Safety-trip sticky notification: populated when _status_poller() detects a
-# TRUE→FALSE edge on oneshot.0.out (HAL heartbeat watchdog). Broadcast to all
-# clients in every status message until a client sends {cmd:"safety_trip_ack"}.
-# Lives server-side (not per-client) so reload / multi-tab all see the same trip.
-_unacked_trip: Optional[dict] = None  # {"ts": unix_ms, "reason": str}
-_last_trip_count: Optional[int] = None  # webui-safety.trip-count at last poll
+# Safety-trip sticky notification: populated when _status_poller() observes the
+# servo-thread HAL latch (webui-hb-latch.fault-out) go FALSE→TRUE after a known-
+# good baseline (issue #34). Broadcast to all clients in every status message
+# until a client sends {cmd:"safety_trip_ack"}. Lives server-side (not per-client)
+# so reload / multi-tab all see the same trip.
+_unacked_trip: Optional[dict] = None  # {"reason": str}
+_last_fault_latched: Optional[bool] = None  # webui-hb-latch.fault-out at last poll
+_trip_baseline_seen: bool = False  # have we ever seen the latch clear (FALSE)?
 
 # Warn-once flags for STAT field absence — the cascade itself is correct (different
 # LinuxCNC versions expose different fields), but exhausting all candidates without
 # a log leaves the operator staring at a blank DRO with no idea why. Reset on every
 # successful try_connect_lcnc() so a real failure isn't masked across reconnects.
-_machine_pos_warned = False
-_spindle_warned = False
-_err_poll_warned = False
 
 _status_gen = 0  # incremented each poll; clients compare to skip redundant sends
 _status_poller_task: Optional[asyncio.Task] = None
@@ -1076,19 +968,6 @@ _status_poller_task: Optional[asyncio.Task] = None
 # current event and `await event.wait()` instead of tight-polling _status_gen.
 # Lazily allocated on first use so module import doesn't require an event loop.
 _status_event: Optional[asyncio.Event] = None
-
-# Per-tick aggregate stats for [STATUS] log. Accumulated as each client's
-# status_loop finishes its send; snapshotted + logged on the next poller tick.
-# All writers run on the single event loop, so no lock is required.
-_status_tick_stats: Dict[str, Any] = {
-    "gen": 0, "tick_start": 0.0, "expected": 0, "done": 0,
-    "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
-    # === TEMP STATUS-PAYLOAD PROBE === aggregate per-tick wire metrics so
-    # the [STATUS] outlier log can attribute encode cost to actual payload
-    # size. tool_meta_count: how many clients got a tool_meta block this
-    # tick (suspected reconnect-storm inflator).
-    "bytes_sum": 0, "bytes_max": 0, "tool_meta_count": 0,
-}
 
 # Serializes all CMD.* access. The LinuxCNC NML command channel is not
 # thread-safe; concurrent handle_command coroutines with >=2 clients
@@ -1132,78 +1011,6 @@ def _log_timing(timing: dict):
 _PID_CHECK_INTERVAL = 5.0  # seconds between pgrep PID checks
 
 
-def _read_probe_results_file() -> list:
-    """Read probe-results.txt and return list of [x, y, z] triples."""
-    ini_path = getattr(STAT, "ini_filename", None)
-    if not ini_path:
-        return []
-    path = os.path.join(os.path.dirname(ini_path), "probe-results.txt")
-    points = []
-    if os.path.isfile(path):
-        with open(path) as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 3:
-                    try:
-                        points.append([float(parts[0]), float(parts[1]), float(parts[2])])
-                    except ValueError:
-                        pass
-    return points
-
-
-def _read_comp_grid_file() -> "dict | None":
-    """Read probe-results-grid.json and return parsed dict, or None if unavailable."""
-    ini_path = getattr(STAT, "ini_filename", None)
-    if not ini_path:
-        return None
-    path = os.path.join(os.path.dirname(ini_path), "probe-results-grid.json")
-    if not os.path.isfile(path):
-        return None
-    with open(path) as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError as e:
-            _trace.emit("probe.results_grid_corrupt", level="warn",
-                        exc=type(e).__name__, msg=str(e))
-            return None
-
-
-def _poll_and_serialize():
-    """Executor-thread helper: poll STAT + serialize to dict in one hop.
-
-    Combines poll_status() and the dataclass→dict conversion so neither
-    touches the event loop. Returns (StatusPayload, dict) — the dict is
-    cached as _shared_status_dict and consumed (via .copy()) by every
-    per-client status_loop.
-
-    The conversion uses `__dict__.copy()` rather than dataclasses.asdict().
-    asdict() recursively deep-copies every field; for StatusPayload (no
-    nested dataclasses, only primitives + flat lists) the deep copy
-    produces the same shape as the shallow copy but cost 100–200 ms under
-    storm-time GIL contention (measured 2026-05-02). Shallow copy is
-    correct because no consumer mutates the dict's list values.
-
-    Emits poll_status.slow on >50 ms total so we keep visibility on
-    regressions.
-    """
-    _t0 = time.monotonic()
-    st = poll_status()
-    _t1 = time.monotonic()
-    out = st.__dict__.copy()
-    _t2 = time.monotonic()
-    poll_ms = (_t1 - _t0) * 1000
-    serialize_ms = (_t2 - _t1) * 1000
-    total_ms = poll_ms + serialize_ms
-    if total_ms > 50:
-        _trace.emit(
-            "poll_status.slow", level="warn",
-            poll_ms=round(poll_ms, 1),
-            serialize_ms=round(serialize_ms, 1),
-            total_ms=round(total_ms, 1),
-        )
-    return st, out
-
-
 # Probe result widget names from DEBUG EVAL messages → friendly keys.
 # Used by _status_poller below; declared here so the reference at use site
 # isn't a forward-reference into the file.
@@ -1239,21 +1046,15 @@ async def _status_poller():
     synchronously. We do the same, yielding to the event loop between
     blocking sections so heartbeats and sends can proceed.
     """
-    global _shared_status, _shared_status_dict, _shared_errors, _shared_probe_updates
+    global _shared_status, _shared_status_dict, _shared_errors, _shared_probe_updates, _errors_total
     global _status_gen, lcnc_connected, STAT, CMD, ERR, _reconnect_fails, _shared_timing
-    global _surface_points_pending, _surface_points_version, _surface_initialized
-    global _comp_grid_pending, _comp_grid_version, _comp_grid_initialized, _last_comp_hal_ver
     global _status_event, _shared_clients_list
-    global _gcode_preview_pending, _gcode_preview_version
-    global _gcode_last_file, _gcode_refresh_running
-    global _gcode_preview_bytes, _gcode_preview_bytes_gz
-    global _surface_points_bytes, _comp_grid_bytes
     loop = asyncio.get_event_loop()
     _poll_fails = 0
     _last_pid_check = 0.0
     _cycle_start = time.monotonic()
     _was_active = True  # Experiment 4: track active/idle edge for instant wake-up
-    # === TEMP IDLE-GATEWAY PROBE === log when the gateway is up but no
+    # === IDLE-GATEWAY DIAGNOSTICS (permanent) === log when the gateway is up but no
     # clients are connected. Helps tell "all tabs reconnected fast" from
     # "tabs are stuck somewhere and never reaching us" in the log alone.
     _idle_last_log = 0.0
@@ -1344,34 +1145,56 @@ async def _status_poller():
                         if key:
                             try:
                                 probe_updates[key] = float(m.group(2))
-                            except ValueError:
-                                pass
+                            except ValueError as e:
+                                _trace.emit_exc(
+                                    "probe.widget_value_parse_failed", e,
+                                    widget=m.group(1), raw=m.group(2)[:80],
+                                )
                             continue
                     elif "LCNC_SURFACE_SCAN_DONE" in text:
                         surface_scan_done = True
                         continue  # consume — don't forward to frontend as an error
                 errs.append((kind, text))
 
+            # INI-change invalidation (issue #29): if the active INI changed
+            # under a persistent gateway, the surface/comp caches hold the
+            # previous config's data. Reset the init flags + clear pending/bytes
+            # and bump versions so clients refetch — the init blocks below then
+            # reload from the new config's result files (or stay empty).
+            _cur_ini = getattr(STAT, "ini_filename", None)
+            if _cur_ini and _bulk.caches_ini is not None and _bulk.caches_ini != _cur_ini:
+                _bulk.surface_initialized = False
+                _bulk.grid_initialized = False
+                _bulk.surface_pending = None
+                _bulk.surface_bytes = None
+                _bulk.grid_pending = None
+                _bulk.grid_bytes = None
+                _bulk.surface_version += 1
+                _bulk.grid_version += 1
+                _trace.emit("cache.ini_changed_invalidated", old=_bulk.caches_ini, new=_cur_ini)
+            if _cur_ini:
+                _bulk.caches_ini = _cur_ini
+
             # Startup init: push existing probe-results.txt to new clients on first connect
-            if not _surface_initialized and getattr(STAT, "ini_filename", None):
-                pts = await asyncio.to_thread(_read_probe_results_file)
+            if not _bulk.surface_initialized and getattr(STAT, "ini_filename", None):
+                pts = await asyncio.to_thread(_bulk.read_probe_results_file)
                 if pts:
-                    _surface_points_pending = pts
-                    _surface_points_bytes = await asyncio.to_thread(
+                    _bulk.surface_pending = pts
+                    _bulk.surface_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, pts
                     )
-                    _surface_points_version += 1
-                _surface_initialized = True
+                    _bulk.surface_version += 1
+                _bulk.surface_initialized = True
 
             # Scan completion: re-read file and push updated data to all clients
             if surface_scan_done:
-                pts = await asyncio.to_thread(_read_probe_results_file)
+                pts = await asyncio.to_thread(_bulk.read_probe_results_file)
                 if pts:
-                    _surface_points_pending = pts
-                    _surface_points_bytes = await asyncio.to_thread(
+                    _bulk.surface_pending = pts
+                    _bulk.surface_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, pts
                     )
-                    _surface_points_version += 1
+                    _bulk.surface_version += 1
                 # Tell compensation.py the file is complete and ready to load.
                 # Wrapped: compensation.py may not be loaded in all configs.
                 try:
@@ -1382,110 +1205,132 @@ async def _status_poller():
                                 hint="compensation.py not loaded?")
 
             # Comp grid startup init: push existing probe-results-grid.json on first connect
-            if not _comp_grid_initialized and getattr(STAT, "ini_filename", None):
+            if not _bulk.grid_initialized and getattr(STAT, "ini_filename", None):
                 t_read = time.monotonic()
-                grid = await asyncio.to_thread(_read_comp_grid_file)
+                grid = await asyncio.to_thread(_bulk.read_comp_grid_file)
                 t_read_done = time.monotonic()
                 if grid:
-                    _comp_grid_pending = grid
-                    _comp_grid_bytes = await asyncio.to_thread(
+                    _bulk.grid_pending = grid
+                    _bulk.grid_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, grid
                     )
                     t_enc_done = time.monotonic()
-                    _comp_grid_version += 1
+                    _bulk.grid_version += 1
                     print(
-                        f"[COMP] publish v={_comp_grid_version} trigger=init "
+                        f"[COMP] publish v={_bulk.grid_version} trigger=init "
                         f"file_ms={(t_read_done - t_read)*1000:.0f} "
                         f"encode_ms={(t_enc_done - t_read_done)*1000:.0f} "
-                        f"bytes={len(_comp_grid_bytes)}B "
+                        f"bytes={len(_bulk.grid_bytes)}B "
                         f"total_ms={(t_enc_done - t_read)*1000:.0f}",
                         flush=True,
                     )
-                _last_comp_hal_ver = st.comp_grid_version  # sync — prevents re-fire below
-                _comp_grid_initialized = True
+                _bulk.last_comp_hal_ver = st.comp_grid_version  # sync — prevents re-fire below
+                _bulk.grid_initialized = True
 
             # Comp grid update: detect via compensation.grid-version HAL pin
-            if _comp_grid_initialized and st.comp_grid_version is not None \
-                    and st.comp_grid_version != _last_comp_hal_ver:
+            if _bulk.grid_initialized and st.comp_grid_version is not None \
+                    and st.comp_grid_version != _bulk.last_comp_hal_ver:
                 t_read = time.monotonic()
-                grid = await asyncio.to_thread(_read_comp_grid_file)
+                grid = await asyncio.to_thread(_bulk.read_comp_grid_file)
                 t_read_done = time.monotonic()
                 if grid:
-                    _comp_grid_pending = grid
-                    _comp_grid_bytes = await asyncio.to_thread(
+                    _bulk.grid_pending = grid
+                    _bulk.grid_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, grid
                     )
                     t_enc_done = time.monotonic()
-                    _comp_grid_version += 1
+                    _bulk.grid_version += 1
                     print(
-                        f"[COMP] publish v={_comp_grid_version} trigger=hal "
+                        f"[COMP] publish v={_bulk.grid_version} trigger=hal "
                         f"hal_ver={st.comp_grid_version} "
                         f"file_ms={(t_read_done - t_read)*1000:.0f} "
                         f"encode_ms={(t_enc_done - t_read_done)*1000:.0f} "
-                        f"bytes={len(_comp_grid_bytes)}B "
+                        f"bytes={len(_bulk.grid_bytes)}B "
                         f"total_ms={(t_enc_done - t_read)*1000:.0f}",
                         flush=True,
                     )
-                _last_comp_hal_ver = st.comp_grid_version
+                _bulk.last_comp_hal_ver = st.comp_grid_version
 
             # Gcode preview: parse once (in subprocess) on file change, share
             # to all clients via version counter. Single-flight via
-            # _gcode_refresh_running so rapid-fire loads don't stack
+            # _bulk.refresh_running so rapid-fire loads don't stack
             # subprocesses. Parse output is WCS-invariant (worker un-rotates
             # and un-offsets), so rotation edits and WCS switches never
             # trigger a re-parse — frontend re-applies LIVE origin+rotation
             # as scene-graph updates.
-            file_changed = bool(st.active_file) and st.active_file != _gcode_last_file
-            if file_changed and not _gcode_refresh_running:
-                _gcode_refresh_running = True
-                register_bg_task(asyncio.create_task(_refresh_gcode_preview(st.active_file)))
-            elif not st.active_file and _gcode_last_file is not None:
-                _gcode_preview_pending = None
-                _gcode_preview_bytes = None
-                _gcode_preview_bytes_gz = None
-                _gcode_preview_version += 1
-                _gcode_last_file = None
+            # Edge on either the path OR the file's mtime: re-loading the same
+            # path after an in-place edit (web editor Save, or an external
+            # edit) keeps active_file constant, so without the mtime check the
+            # preview would never re-parse and the UI would show stale content.
+            if st.active_file:
+                try:
+                    _cur_mtime = os.path.getmtime(st.active_file)
+                except OSError:
+                    # File momentarily absent (e.g. mid atomic-write swap).
+                    # Leave _bulk.last_mtime as-is; next tick re-checks.
+                    _cur_mtime = _bulk.last_mtime
+            else:
+                _cur_mtime = None
+            file_changed = bool(st.active_file) and (
+                st.active_file != _bulk.last_file or _cur_mtime != _bulk.last_mtime
+            )
+            if file_changed and not _bulk.refresh_running:
+                _bulk.refresh_running = True
+                register_bg_task(asyncio.create_task(_bulk.refresh_gcode_preview(st.active_file)))
+            elif not st.active_file and _bulk.last_file is not None:
+                _bulk.preview_pending = None
+                _bulk.preview_bytes = None
+                _bulk.preview_bytes_gz = None
+                _bulk.preview_version += 1
+                _bulk.last_file = None
+                _bulk.last_mtime = None
 
-            # Safety-trip detection via webui-safety.trip-count. The counter is
-            # incremented by the independent hal_watchdog.py process on every
-            # oneshot.0.out TRUE→FALSE edge. Reading it here survives gateway
-            # stalls: even if the poller was frozen during the FALSE window,
-            # the counter records the trip for us to observe on resume.
-            global _last_trip_count, _unacked_trip
-            trip_count = _reader_get("trip_count")
-            if trip_count is None:
-                pass  # reader hasn't pushed a snapshot yet — skip this tick
-            elif _last_trip_count is None:
-                _last_trip_count = trip_count  # sync on first reader snapshot
-            elif trip_count > _last_trip_count:
-                if _unacked_trip is None:
-                    _unacked_trip = {
-                        "ts": int(time.time() * 1000),
-                        "reason": "hal_heartbeat_timeout",
-                    }
-                    _trace.emit(
-                        "safety.tripped", level="error",
-                        trip_count=trip_count,
-                        ts_ms=_unacked_trip["ts"],
-                    )
-                    # Auto-snapshot the trace bus into a forensic bundle so
-                    # the trip is reconstructable end-to-end without operator
-                    # action. Run in to_thread so the bundler subprocess can't
-                    # block the asyncio loop or the safety-trip status update.
-                    _trip_ts_ns = int(time.time_ns())
-                    asyncio.create_task(
-                        asyncio.to_thread(_snapshot_trip, _trip_ts_ns)
-                    )
-                _last_trip_count = trip_count
+            # Safety-trip detection via the servo-thread HAL latch level
+            # (webui-hb-latch.fault-out, issue #34). The latch is sticky and
+            # owned by HAL — independent of both this poller and the watchdog
+            # process — so reading it here survives gateway stalls AND watchdog
+            # restarts: the level still reads TRUE on resume. evaluate_trip_latch
+            # is a pure state machine (unit-tested in gateway_util) that edge-
+            # detects a clean FALSE→TRUE only after a known-good baseline, so a
+            # boot-faulted latch doesn't spuriously banner.
+            global _last_fault_latched, _trip_baseline_seen, _unacked_trip
+            _tl = evaluate_trip_latch(
+                _reader_get("trip_latched"), _last_fault_latched, _trip_baseline_seen
+            )
+            _last_fault_latched = _tl["last_latched"]
+            _trip_baseline_seen = _tl["baseline_seen"]
+            if _tl["faulted_on_connect"]:
+                # First-sight TRUE: boot-in-ESTOP or a trip while the gateway was
+                # absent — ambiguous, so audit it but don't raise the banner (the
+                # real ESTOP state is already shown via STAT).
+                _trace.emit("safety.latch_faulted_on_connect", level="warn")
+            if _tl["tripped"] and _unacked_trip is None:
+                # No timestamp: the level is only read inside the status loop,
+                # which doesn't run when no clients are connected, so "when the
+                # gateway noticed" != "when the trip happened" and would mislead
+                # operators. Drop it; the trace event below carries its own ts.
+                _unacked_trip = {"reason": "hal_heartbeat_timeout"}
+                _trace.emit("safety.tripped", level="error")
+                # Auto-snapshot the trace bus into a forensic bundle so the trip
+                # is reconstructable end-to-end without operator action. Run in
+                # to_thread so the bundler subprocess can't block the asyncio
+                # loop or the safety-trip status update.
+                _trip_ts_ns = int(time.time_ns())
+                asyncio.create_task(
+                    asyncio.to_thread(_snapshot_trip, _trip_ts_ns)
+                )
 
             # Cache results for per-client loops
             _shared_status = st
             _shared_status_dict = status_dict
-            # Pre-encode the shared `data` dict into msgpack bytes once per
-            # tick so each client's envelope encode can splice via msgspec.Raw
-            # instead of re-encoding the identical payload N times. JSON wire
-            # format has no Raw-splice primitive, so we skip there.
-            if _WIRE_FORMAT == "msgpack":
+            # Pre-encode the shared `data` dict into msgpack bytes once per tick so
+            # each client's envelope encode can splice via msgspec.Raw instead of
+            # re-encoding the identical payload N times. Only the `_use_shared`
+            # path consumes it, and that path requires `not _STATUS_DELTA_ENABLED`
+            # — so when delta mode is on (each client diffs+encodes its own frame)
+            # this full-status encode every tick was pure wasted loop work. JSON
+            # wire format has no Raw-splice primitive, so we skip there too.
+            if _WIRE_FORMAT == "msgpack" and not _STATUS_DELTA_ENABLED:
                 _set_phase("status_poller.shared_msgpack_encode")
                 _t_enc = time.monotonic()
                 _shared_status_data_msgpack = _msgpack_encoder.encode(status_dict)
@@ -1499,6 +1344,11 @@ async def _status_poller():
             ]
             t3 = time.monotonic()
             _shared_errors = errs
+            if errs:
+                # Monotonic error counter: lets long-running sequences (RFL guard)
+                # detect "did ANY error/abort surface during my window" even though
+                # _shared_errors itself is replaced per tick.
+                _errors_total += len(errs)
             _shared_probe_updates = probe_updates
             poll_ms = round((t1 - t0) * 1000, 2)
             errors_ms = round((t2 - t1) * 1000, 2)
@@ -1558,10 +1408,15 @@ async def _status_poller():
             _status_gen += 1
             old_evt = _status_event
             _status_event = asyncio.Event()
+            # Exclude hidden tabs from expected — they intentionally skip the
+            # send loop, so counting them as "expected to finish" would flag
+            # every tick as an outlier and spam the log. send_pending peers
+            # stay in the count: if a send actually wedges across ticks, the
+            # outlier log should still fire.
             _status_tick_stats.update({
                 "gen": _status_gen,
                 "tick_start": time.monotonic(),
-                "expected": len(_clients),
+                "expected": sum(1 for c in _clients.values() if not c.hidden),
                 "done": 0, "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
                 "bytes_sum": 0, "bytes_max": 0, "tool_meta_count": 0,
             })
@@ -1584,15 +1439,8 @@ async def _status_poller():
         # machine is idle (interp idle, not moving, no motion mode); full
         # POLL_HZ otherwise. Instant wake-up on idle→active transition keeps
         # first-motion latency at most one poll cycle, not one idle cycle.
-        if _ADAPTIVE_POLL_ENABLED and _shared_status is not None:
-            st = _shared_status
-            _is_active = (
-                (st.interp_state is not None and st.interp_state != linuxcnc.INTERP_IDLE)
-                or (st.task_mode in (linuxcnc.MODE_AUTO, linuxcnc.MODE_MDI))
-                or (st.current_vel is not None and abs(st.current_vel) > 0.001)
-                or (st.inpos is False)
-                or (st.tool_change_requested is True)
-            )
+        if _ADAPTIVE_POLL_ENABLED:
+            _is_active = _poll_is_active(_shared_status, _reader_is_stale())
             if _is_active and not _was_active:
                 # idle → active: skip the sleep, tick immediately
                 _was_active = True
@@ -1698,9 +1546,9 @@ def _self_restart():
 def try_connect_lcnc() -> bool:
     """Attempt to connect to LinuxCNC. Returns True on success."""
     global STAT, CMD, ERR, lcnc_connected, _lcnc_pid, _nc_files_dir, _ini_config, _ever_connected
-    global _machine_pos_warned, _spindle_warned, _err_poll_warned
     _nc_files_dir = None        # re-resolve on reconnect
     _ini_config = None          # re-read INI config on reconnect
+    _status_runtime.invalidate_var_file_path()  # re-resolve on reconnect (P2.1)
     if not _nml_connectable():
         return False
     try:
@@ -1713,9 +1561,7 @@ def try_connect_lcnc() -> bool:
         _lcnc_pid = _get_lcnc_pid()
         # Re-arm warn-once flags so a STAT field that disappears across a
         # reconnect produces a fresh log line instead of being suppressed.
-        _machine_pos_warned = False
-        _spindle_warned = False
-        _err_poll_warned = False
+        _status_runtime.reset_warn_flags()
         print(f"[VINIT] try_connect_lcnc OK, pid={_lcnc_pid}", flush=True)
         return True
     except Exception as e:
@@ -1739,12 +1585,11 @@ def check_lcnc_instance() -> bool:
             return True
         return False
     # PID changed (appeared, disappeared, or different instance)
-    global _wcs_var_file_mtime
     old_pid = _lcnc_pid
     _lcnc_pid = pid
     _tool_tbl_path = None  # config may have changed, re-resolve from INI
     _tool_tbl_ini = None
-    _wcs_var_file_mtime = None  # force re-seed of WCS cache from var file on next poll
+    _status_runtime.invalidate_wcs_mtime()  # force WCS re-seed from var file on next poll
     if pid is None:
         print(f"[VINIT] check_lcnc_instance: PID gone (was {old_pid}), disconnecting", flush=True)
         lcnc_connected = False
@@ -1752,6 +1597,36 @@ def check_lcnc_instance() -> bool:
     else:
         print(f"[VINIT] check_lcnc_instance: PID changed {old_pid} -> {pid}", flush=True)
     return True
+
+
+# ---- M2 runtime instance ----
+# Injected deps are late-bound lambdas: STAT/ERR/_fb_scale rebind on reconnect /
+# settings change, and load_tool_library is defined further down this module.
+# Legacy names rebind to bound methods so the ~100 call sites read unchanged.
+_status_runtime = _status_runtime_mod.StatusRuntime(
+    get_stat=lambda: STAT,
+    get_err=lambda: ERR,
+    reader_get=_hal_bridge.reader_get,
+    get_tool_tbl_path=lambda: get_tool_tbl_path(),
+    load_tool_library=lambda: load_tool_library(),
+    get_fb_scale=lambda: _fb_scale,
+)
+safe_get = _status_runtime.safe_get
+normalize_homed = _status_runtime.normalize_homed
+get_spindle_override = _status_runtime.get_spindle_override
+poll_status = _status_runtime.poll_status
+_poll_and_serialize = _status_runtime.poll_and_serialize
+_poll_is_active = _status_runtime.poll_is_active
+_stat_poll_timed = _status_runtime.stat_poll_timed
+read_errors_nonblocking = _status_runtime.read_errors_nonblocking
+_update_program_timer = _status_runtime.update_program_timer
+_seed_wcs_cache = _status_runtime.seed_wcs_cache
+_resolve_var_file_path = _status_runtime.resolve_var_file_path
+_wcs_cache = _status_runtime.wcs_cache  # stable list — handlers mutate rows in place
+to_float_list = _status_runtime_mod.to_float_list
+_read_var_file = _status_runtime_mod.read_var_file
+_write_var_file_updates = _status_runtime_mod.write_var_file_updates
+_policy_state_from_payload = _status_runtime_mod.policy_state_from_payload
 
 
 # Best-effort connection at startup (gateway still runs if LinuxCNC isn't up yet)
@@ -1770,16 +1645,22 @@ if _get_lcnc_pid() is not None:
         _trace.emit(
             "boot.hal_connect",
             dt_ms=round((time.monotonic() - _bt) * 1000, 1),
-            sock_ok=_hal_sock is not None,
+            sock_ok=_hal_bridge.watchdog_connected,
         )
 else:
     _trace.emit("boot.lcnc_skip", reason="no linuxcncsvr pid")
 
 
 # ---- NC files directory ----
-ALLOWED_EXTENSIONS = {".ngc", ".nc", ".gcode", ".tap", ".txt"}
-MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+# ALLOWED_EXTENSIONS now lives in gateway_util (imported at top).
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB (G-code can legitimately be this large)
+# Fusion tool-library import (P1.2): json.loads holds the GIL in the worker thread
+# (~6 ms/MB measured), so it can't be isolated from the heartbeat. Realistic
+# libraries are <2 MB (<15 ms); cap at 16 MB (~100 ms worst case, sub-trip, machine
+# idle during import) so a bogus 50 MB upload can't approach the watchdog budget.
+MAX_TOOL_LIBRARY_SIZE = 16 * 1024 * 1024  # 16 MB
 _nc_files_dir: Optional[str] = None
+_nc_files_ini: Optional[str] = None   # INI identity the _nc_files_dir cache is keyed to
 _ini_config: Optional[dict] = None
 
 
@@ -1906,32 +1787,39 @@ def get_probe_macros() -> list:
 
 
 def get_nc_files_dir() -> str:
-    """Return NC files directory from LinuxCNC INI, fallback ~/linuxcnc/nc_files."""
-    global _nc_files_dir
-    if _nc_files_dir is not None:
+    """Return NC files directory from the LinuxCNC INI, fallback ~/linuxcnc/nc_files.
+
+    Reads PROGRAM_PREFIX from LCNC_INI_FILE (exported by the launcher) — the same
+    boot-independent source get_tool_tbl_path() uses — instead of STAT.ini_filename,
+    so it never polls the NML status channel on the event loop and works before
+    try_connect_lcnc succeeds (B4). Cached and keyed to the active INI so an INI
+    change re-resolves; only a tiny INI parse on first use / INI change.
+    """
+    global _nc_files_dir, _nc_files_ini
+    ini_path = os.environ.get("LCNC_INI_FILE")
+    if _nc_files_dir is not None and ini_path == _nc_files_ini:
         return _nc_files_dir
 
-    fallback = os.path.expanduser("~/linuxcnc/nc_files")
-
-    if STAT is not None:
+    resolved = None
+    if ini_path:
         try:
-            STAT.poll()
-            ini_path = getattr(STAT, "ini_filename", None)
-            if ini_path:
-                ini = linuxcnc.ini(ini_path)
-                prefix = ini.find("DISPLAY", "PROGRAM_PREFIX")
-                if prefix:
-                    if not os.path.isabs(prefix):
-                        prefix = os.path.join(os.path.dirname(ini_path), prefix)
-                    prefix = os.path.realpath(prefix)
-                    if os.path.isdir(prefix):
-                        _nc_files_dir = prefix
-                        return _nc_files_dir
-        except Exception:
-            pass
+            ini = linuxcnc.ini(ini_path)
+            prefix = ini.find("DISPLAY", "PROGRAM_PREFIX")
+            if prefix:
+                if not os.path.isabs(prefix):
+                    prefix = os.path.join(os.path.dirname(ini_path), prefix)
+                prefix = os.path.realpath(prefix)
+                if os.path.isdir(prefix):
+                    resolved = prefix
+        except Exception as e:
+            _trace.emit_exc("ini.nc_files_parse_failed", e, ini_path=ini_path)
 
-    _nc_files_dir = fallback
-    os.makedirs(_nc_files_dir, exist_ok=True)
+    if resolved is None:
+        resolved = os.path.expanduser("~/linuxcnc/nc_files")
+        os.makedirs(resolved, exist_ok=True)
+
+    _nc_files_dir = resolved
+    _nc_files_ini = ini_path
     return _nc_files_dir
 
 
@@ -1940,13 +1828,6 @@ TOOL_LIBRARY_PATH = BASE_DIR / "tool_library.json"
 _tool_tbl_path: Optional[str] = None
 _tool_tbl_ini: Optional[str] = None
 _tool_meta_dirty = False
-# mtime-keyed cache for tool_library.json — status_loop reads this on every
-# tool-number change × every connected client, so the uncached disk-read +
-# JSON-parse was the single largest event-loop stall in the status path.
-_tool_lib_cache: Optional[Tuple[float, dict]] = None  # (mtime, data)
-
-_TOOL_TP_RE = re.compile(r"T(\d+)\s+P(\d+)")
-_TOOL_FIELD_RE = re.compile(r"([XYZD])([+-]?[\d.]+)")
 
 
 def get_tool_tbl_path() -> Optional[str]:
@@ -1978,83 +1859,14 @@ def get_tool_tbl_path() -> Optional[str]:
             _tool_tbl_path = tbl
             _tool_tbl_ini = ini_path
             return _tool_tbl_path
-    except Exception:
-        pass
+    except Exception as e:
+        _trace.emit_exc("tool_tbl.path_resolve_failed", e, ini_path=ini_path)
     return None
 
 
-def parse_tool_table(path: str) -> list:
-    """Parse a LinuxCNC tool.tbl file → list of dicts.
-
-    Handles both column orders: Z before D and D before Z,
-    since LinuxCNC may rewrite the file in either order.
-    """
-    tools = []
-    with open(path, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line or line.startswith(";") or line.startswith("#"):
-                continue
-            tp = _TOOL_TP_RE.match(line)
-            if not tp:
-                continue
-            # Split off remark (everything after ';')
-            remark = ""
-            if ";" in line:
-                data_part, remark = line.split(";", 1)
-                remark = remark.strip()
-            else:
-                data_part = line
-            # Extract X/Y/Z/D fields in any order
-            fields = {m.group(1): float(m.group(2)) for m in _TOOL_FIELD_RE.finditer(data_part)}
-            tools.append({
-                "T": int(tp.group(1)),
-                "P": int(tp.group(2)),
-                "X": fields.get("X", 0.0),
-                "Y": fields.get("Y", 0.0),
-                "Z": fields.get("Z", 0.0),
-                "D": fields.get("D", 0.0),
-                "remark": remark,
-            })
-    return tools
-
-
-def atomic_write_bytes(path: str, data: bytes) -> None:
-    """Atomically write `data` to `path` via tempfile + os.replace.
-
-    Cleans up the temp file if anything fails. Used everywhere we persist
-    user data — six near-identical copies were extracted into this helper.
-    Caller-side text/JSON encoding goes through this so the atomic primitive
-    stays single-purpose.
-    """
-    dir_name = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(data)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except FileNotFoundError:
-            pass
-        raise
-
-
-def write_tool_table(path: str, tools: list):
-    """Write tools to a LinuxCNC tool.tbl file atomically."""
-    lines = [";Tool  Pocket Z Offset     Diameter     Remark\n"]
-    for t in sorted(tools, key=lambda x: x["T"]):
-        tn = t["T"]
-        pn = t.get("P", tn)
-        z = t.get("Z", 0.0)
-        d = t.get("D", 0.0)
-        remark = t.get("remark", "")
-        line = f"T{tn:<5d} P{pn:<5d} Z{z:+013.6f}  D{d:+012.6f}"
-        if remark:
-            line += f"   ; {remark}"
-        lines.append(line + "\n")
-    atomic_write_bytes(path, "".join(lines).encode("utf-8"))
+# parse_tool_table / write_tool_table / _merge_tool_data now live in
+# tool_table.py, and atomic_write_bytes in gateway_util — both imported at top
+# (gateway modularization, issue #33).
 
 
 async def _reload_tool_table_and_bump():
@@ -2070,6 +1882,24 @@ async def _reload_tool_table_and_bump():
     _tool_table_version += 1
 
 
+async def _persist_imported_tools(tbl_path: str, tbl_tools: list, library: dict) -> None:
+    """Persist a full tool-table replacement (the REST Fusion import) atomically
+    w.r.t. every other tool / NML operation (issue #24).
+
+    Serialized under `_cmd_lock` — not a separate lock — for two reasons: the WS
+    tool handlers (save/add/delete/renumber) already serialize on it via
+    `handle_command`, and the reload touches the NML command channel, whose
+    thread-safety contract requires that lock. The REST import previously
+    bypassed `_cmd_lock`, so it could both race those handlers on tool.tbl /
+    tool_library.json (lost update) AND call `_cmd_blocking` without the lock.
+    The blocking file writes run off the event loop via `run_in_executor`."""
+    loop = asyncio.get_event_loop()
+    async with _get_cmd_lock():
+        await loop.run_in_executor(None, write_tool_table, tbl_path, tbl_tools)
+        await _reload_tool_table_and_bump()
+        await loop.run_in_executor(None, save_tool_library, library)
+
+
 def _current_ini_path() -> str:
     """Return the current INI file path, or 'default' if unavailable."""
     if STAT and getattr(STAT, "ini_filename", None):
@@ -2077,311 +1907,70 @@ def _current_ini_path() -> str:
     return "default"
 
 
-def _load_tool_library_all() -> dict:
-    """Load the full tool_library.json (all configs), mtime-cached.
-
-    Hot path: status_loop calls load_tool_library() on every tool-number
-    change for every connected client. mtime-keying catches both UI edits
-    (via _save_tool_library_all) and external edits to the file.
-    """
-    global _tool_lib_cache
-    if not TOOL_LIBRARY_PATH.exists():
-        _tool_lib_cache = None
-        return {}
-    try:
-        mtime = TOOL_LIBRARY_PATH.stat().st_mtime
-    except OSError as e:
-        _trace.emit("tool_lib.stat_failed", level="warn",
-                    path=str(TOOL_LIBRARY_PATH), exc=type(e).__name__, msg=str(e))
-        return _tool_lib_cache[1] if _tool_lib_cache else {}
-    if _tool_lib_cache is not None and _tool_lib_cache[0] == mtime:
-        return _tool_lib_cache[1]
-    try:
-        with open(TOOL_LIBRARY_PATH, "r") as f:
-            data = json.load(f)
-    except json.JSONDecodeError as e:
-        _trace.emit("tool_lib.corrupt", level="error",
-                    path=str(TOOL_LIBRARY_PATH), exc=type(e).__name__, msg=str(e))
-        return _tool_lib_cache[1] if _tool_lib_cache else {}
-    except OSError as e:
-        _trace.emit("tool_lib.read_failed", level="warn",
-                    path=str(TOOL_LIBRARY_PATH), exc=type(e).__name__, msg=str(e))
-        return _tool_lib_cache[1] if _tool_lib_cache else {}
-    _tool_lib_cache = (mtime, data)
-    return data
+def _tool_lib_error(event: str, level: str, e: Exception) -> None:
+    _trace.emit(event, level=level, path=str(TOOL_LIBRARY_PATH),
+                exc=type(e).__name__, msg=str(e))
 
 
-def _save_tool_library_all(all_data: dict):
-    """Write tool_library.json atomically."""
-    global _tool_lib_cache
-    atomic_write_bytes(str(TOOL_LIBRARY_PATH), json.dumps(all_data, indent=2).encode("utf-8"))
-    _tool_lib_cache = None  # invalidate; next read re-loads with fresh mtime
+# tool_library.json persistence lives in tool_store.py (issue #33). The store
+# owns the mtime cache + the strict refuse-to-clobber write; the current-INI key
+# (_current_ini_path → STAT) and trace are injected. Thin wrappers below keep the
+# existing call sites stable.
+_tool_lib_store = ToolLibraryStore(TOOL_LIBRARY_PATH, _current_ini_path,
+                                   on_error=_tool_lib_error)
 
 
 def load_tool_library() -> dict:
-    """Load extended tool metadata for the current INI config."""
-    all_data = _load_tool_library_all()
-    ini = _current_ini_path()
-    # Migration: if top-level keys look like tool numbers (old format), wrap them
-    if all_data and not any(k.startswith("/") for k in all_data) and any(k.isdigit() for k in all_data):
-        all_data = {ini: all_data}
-        _save_tool_library_all(all_data)
-    return all_data.get(ini, {})
+    return _tool_lib_store.load()
 
 
 def save_tool_library(library: dict):
-    """Write tool metadata for the current INI config.
-
-    The cached read in _load_tool_library_all() returns {} on transient stat
-    or read failures — fine for read paths but catastrophic for the write
-    path: a stale {} would overwrite tool_library.json and wipe entries for
-    every other INI config. Do a strict re-read here that raises on any I/O
-    or parse failure; let the save fail loudly instead of silently corrupting.
-    """
-    if TOOL_LIBRARY_PATH.exists():
-        with open(TOOL_LIBRARY_PATH, "r") as f:
-            all_data = json.load(f)
-        if not isinstance(all_data, dict):
-            raise RuntimeError(
-                f"{TOOL_LIBRARY_PATH} top-level is {type(all_data).__name__}, "
-                "expected dict — refusing to overwrite"
-            )
-    else:
-        all_data = {}
-    all_data[_current_ini_path()] = library
-    _save_tool_library_all(all_data)
+    _tool_lib_store.save(library)
 
 
-_TOOL_META_FIELDS = (
-    "type", "description", "flutes", "oal", "flute_length", "shoulder_length",
-    "shoulder_diameter", "corner_radius", "body_length", "shaft_diameter",
-    "taper_angle", "point_angle", "tip_diameter", "material", "holder", "holder_segments",
-    "assembly_gauge_length", "profile",
-)
+# _TOOL_META_FIELDS now lives in tool_table.py (imported at top, #33).
 
 
 # ---- Server-Side Settings ----
 SETTINGS_PATH = BASE_DIR / "settings.json"
-_settings_version = 0
-_settings_cache: Optional[dict] = None
 _fb_scale = 60  # spindle feedback scale: 60 (RPS→RPM) or 1 (already RPM)
 _spindle_load_pin = ""  # HAL pin for spindle load %, empty = disabled
-_tc_info_cache: dict = {}  # {(tool_num, tbl_mtime): merged_list} — one entry max
 _HAL_PIN_RE = re.compile(r'^[a-zA-Z0-9_][a-zA-Z0-9_.:-]*$')
-_VALID_SETTINGS_SECTIONS = {"macros", "machine", "viewer", "camera", "mdi", "gamepad", "probe", "toolsetter", "keyboard", "display", "panels"}
 
 
-def _load_settings_all() -> dict:
-    """Load the full settings.json (all configs)."""
-    global _settings_cache
-    if _settings_cache is not None:
-        return _settings_cache
-    if SETTINGS_PATH.exists():
-        try:
-            with open(SETTINGS_PATH, "r") as f:
-                _settings_cache = json.load(f)
-                return _settings_cache
-        except Exception as e:
-            _trace.emit("settings.load_failed", level="warn",
-                        path=str(SETTINGS_PATH), exc=type(e).__name__, msg=str(e))
-    _settings_cache = {}
-    return _settings_cache
+def _settings_load_error(e: Exception) -> None:
+    _trace.emit("settings.load_failed", level="warn",
+                path=str(SETTINGS_PATH), exc=type(e).__name__, msg=str(e))
 
 
-def _save_settings_all(all_data: dict):
-    """Write settings.json atomically."""
-    global _settings_cache
-    atomic_write_bytes(str(SETTINGS_PATH), json.dumps(all_data, indent=2).encode("utf-8"))
-    _settings_cache = all_data
+# settings.json persistence lives in settings_store.py (issue #33). The store
+# owns the cache, RMW lock, refuse-to-clobber guard and version counter; the
+# current-INI key (_current_ini_path → STAT) is injected. Thin wrappers below
+# keep the existing call sites stable.
+_settings_store = SettingsStore(SETTINGS_PATH, _current_ini_path,
+                                on_load_error=_settings_load_error)
 
 
 def load_settings() -> dict:
-    """Load settings for the current INI config."""
-    all_data = _load_settings_all()
-    return all_data.get(_current_ini_path(), {})
+    return _settings_store.load()
 
 
 def save_settings_section(section: str, data):
-    """Save a single settings section for the current INI config."""
-    global _settings_version
-    all_data = _load_settings_all()
-    ini = _current_ini_path()
-    if ini not in all_data:
-        all_data[ini] = {}
-    all_data[ini][section] = data
-    _save_settings_all(all_data)
-    _settings_version += 1
+    _settings_store.save_section(section, data)
 
 
 def reset_settings():
-    """Reset all settings for the current INI config."""
-    global _settings_version
-    all_data = _load_settings_all()
-    ini = _current_ini_path()
-    if ini in all_data:
-        del all_data[ini]
-        _save_settings_all(all_data)
-    _settings_version += 1
+    _settings_store.reset()
 
 
-def _merge_tool_data(tbl_tools: list, library: dict) -> list:
-    """Merge tool.tbl entries with metadata from tool_library.json."""
-    merged = []
-    for t in tbl_tools:
-        key = str(t["T"])
-        meta = library.get(key, {})
-        entry = {
-            "T": t["T"],
-            "P": t["P"],
-            "Z": t["Z"],
-            "D": t["D"],
-            "remark": t.get("remark", ""),
-        }
-        for field in _TOOL_META_FIELDS:
-            if field == "description":
-                entry[field] = meta.get("description", t.get("remark", ""))
-            elif field == "type":
-                entry[field] = meta.get("type", "")
-            else:
-                entry[field] = meta.get(field)
-        merged.append(entry)
-    return merged
+# _merge_tool_data now lives in tool_table.py (imported at top, #33).
 
 
 
 
-def sanitize_filename(name: str) -> str:
-    name = os.path.basename(name)
-    name = name.replace("\x00", "")
-    name = name.lstrip(".")
-    if not name:
-        name = "uploaded.ngc"
-    return name
+# sanitize_filename / validate_extension / validate_path_within now live in
+# gateway_util (imported at top) so they're unit-testable without linuxcnc.
 
-
-def validate_extension(filename: str) -> bool:
-    _, ext = os.path.splitext(filename)
-    return ext.lower() in ALLOWED_EXTENSIONS
-
-
-def validate_path_within(path: str, root: str) -> bool:
-    # Use abspath (not realpath) so symlinked subdirectories are allowed
-    abs_path = os.path.abspath(path)
-    abs_root = os.path.abspath(root)
-    return abs_path.startswith(abs_root + os.sep) or abs_path == abs_root
-
-
-@dataclass
-class StatusPayload:
-    ts: float
-
-    # safety / state
-    estop: bool
-    enabled: bool
-    homed: Optional[bool]  # LinuxCNC stat truth (normalized)
-    homed_joints: Optional[list]  # per-joint homed mask (configured joints only)
-
-    # task/motion
-    task_mode: Optional[int]
-    interp_state: Optional[int]
-    paused: Optional[bool]
-    state: Optional[int]
-    motion_mode: Optional[int]  # TRAJ_MODE_FREE=1, TRAJ_MODE_COORD=2, TRAJ_MODE_TELEOP=3
-    inpos: Optional[bool]       # machine is at commanded position
-    axis_mask: Optional[int]    # bitmask of configured axes (bit0=X, bit1=Y, bit2=Z, …)
-    program_units: Optional[int]  # 1=inch, 2=mm, 3=cm
-    current_line: Optional[int]   # interpreter line (read-ahead, ahead of motion_line)
-    read_line: Optional[int]      # line being parsed
-    call_level: Optional[int]     # subroutine nesting depth
-
-    # offsets and positions
-    g5x_index: Optional[int]  # 0=G54, 1=G55, 2=G56, etc.
-    g5x_offset: Optional[List[float]]
-    g92_offset: Optional[List[float]]
-    rotation_xy: Optional[float]
-    wcs_table: Optional[List[Dict[str, Any]]]  # all 9 WCS slots (G54–G59.3) w/ per-axis + rotation
-    joint_pos: Optional[List[float]]
-    tool_offset: Optional[List[float]]
-    machine_pos: Optional[List[float]]
-    work_pos: Optional[List[float]]
-    dtg: Optional[List[float]]
-
-    # misc
-    feed_override: Optional[float]
-    spindle_override: Optional[float]
-    rapid_override: Optional[float]
-    feed_override_enabled: Optional[bool]
-    spindle_override_enabled: Optional[bool]
-    block_delete: Optional[bool]           # block delete (/) switch
-    optional_stop: Optional[bool]          # optional stop (M1) switch
-    feed_hold_enabled: Optional[bool]      # feed hold allowed
-    adaptive_feed_enabled: Optional[bool]  # adaptive feed active
-    current_vel: Optional[float]
-    spindle_speed: Optional[float]       # commanded (S word)
-    spindle_speed_actual: Optional[float] # after override
-    spindle_load: Optional[float]        # load % from configurable HAL pin
-    spindle_direction: Optional[int]
-    active_file: Optional[str]
-    motion_line: Optional[int]
-
-    # active modal codes
-    gcodes: Optional[List[int]]
-    mcodes: Optional[List[int]]
-
-    # tool (stat-only)
-    tool_number: Optional[int]
-    tool_diameter: Optional[float]
-    tool_length: Optional[float]   # Z length offset (positive magnitude)
-
-    # tool change (HAL iocontrol)
-    tool_change_requested: Optional[bool]
-    tool_change_tool: Optional[int]
-    tool_change_info: Optional[dict]
-
-    # probing
-    probe_tripped: Optional[bool]
-    probe_input: Optional[bool]
-    probing: Optional[bool]
-    probed_position: Optional[List[float]]
-
-    # external offset (surface compensation)
-    eoffset_z: Optional[float]
-    eoffset_enabled: Optional[bool]
-    comp_method: Optional[int]  # 0=nearest, 1=linear, 2=cubic
-    comp_grid_version: Optional[int]
-
-    # coolant
-    flood: Optional[bool]
-    mist: Optional[bool]
-
-
-
-
-def safe_get(attr: str, default=None):
-    if STAT is None:
-        return default
-    return getattr(STAT, attr, default)
-
-
-def to_float_list(x) -> Optional[List[float]]:
-    if x is None:
-        return None
-    try:
-        return [float(v) for v in x]
-    except Exception:
-        return None
-
-
-def normalize_homed(homed_val) -> Optional[bool]:
-    """LinuxCNC homed confirmation. STAT.homed is a fixed-length tuple of int
-    (one slot per possible joint, e.g. length 16); STAT.joints is the configured
-    joint count. Slice to that count so unused slots don't drag homed False."""
-    if not homed_val:
-        return None
-    nj = safe_get("joints", 0)
-    if not nj:
-        return None
-    return all(bool(x) for x in homed_val[:nj])
 
 def _ini_float(ini, section: str, key: str):
     v = ini.find(section, key)
@@ -2490,576 +2079,6 @@ def read_machine_limits_from_ini(stat_obj):
     return origin, size
 
 
-def get_spindle_override() -> Optional[float]:
-    val = safe_get("spindle_override", None)
-    if val is not None:
-        try:
-            result = float(val)
-            if result > 0:
-                return result
-        except (TypeError, ValueError):
-            pass
-
-    spindles = safe_get("spindle", None)
-    if spindles is not None:
-        try:
-            s0 = spindles[0]
-            if hasattr(s0, 'override'):
-                return float(s0.override)
-            if isinstance(s0, dict) and 'override' in s0:
-                return float(s0['override'])
-        except (IndexError, AttributeError, TypeError, ValueError, KeyError):
-            pass
-
-    return None
-
-
-def _read_var_file(path: str, wanted: set) -> Dict[str, float]:
-    """Read var file, return {var_number_str: float_value} for wanted keys."""
-    result: Dict[str, float] = {}
-    with open(path) as f:
-        for line in f:
-            parts = line.split()
-            if len(parts) >= 2 and parts[0] in wanted:
-                result[parts[0]] = float(parts[1])
-    return result
-
-
-def _write_var_file_updates(var_file: str, str_vars: Dict[str, float]) -> None:
-    """Read var_file, replace/insert each {var: value}, atomically write back.
-
-    Sync helper — call via asyncio.to_thread from async handlers so the
-    blocking I/O can't stall the event loop.
-    """
-    with open(var_file) as f:
-        lines = f.readlines()
-    found = set()
-    for i, line in enumerate(lines):
-        parts = line.split()
-        if len(parts) >= 2 and parts[0] in str_vars:
-            lines[i] = f"{parts[0]}\t{str_vars[parts[0]]:.6f}\n"
-            found.add(parts[0])
-    missing = {k: v for k, v in str_vars.items() if k not in found}
-    if missing:
-        for k, v in missing.items():
-            lines.append(f"{k}\t{v:.6f}\n")
-        def _var_key(line):
-            try: return int(line.split()[0])
-            except (ValueError, IndexError): return 999999
-        lines.sort(key=_var_key)
-    atomic_write_bytes(var_file, "".join(lines).encode("utf-8"))
-
-
-def _resolve_var_file_path() -> Optional[str]:
-    """Resolve absolute path to the LinuxCNC var file from the active INI."""
-    ini_path = getattr(STAT, "ini_filename", None)
-    if not ini_path:
-        return None
-    try:
-        ini = linuxcnc.ini(ini_path)
-    except Exception:
-        return None
-    var_file = ini.find("RS274NGC", "PARAMETER_FILE")
-    if not var_file:
-        return None
-    if not os.path.isabs(var_file):
-        var_file = os.path.join(os.path.dirname(ini_path), var_file)
-    return var_file
-
-
-def _seed_wcs_cache():
-    """Re-read _wcs_cache from the var file. Safe to call repeatedly."""
-    global _wcs_var_file_mtime
-    try:
-        var_file = _resolve_var_file_path()
-        if not var_file:
-            return
-        var_map = {}
-        for i, base in enumerate(_WCS_BASES):
-            for j, key in enumerate(_WCS_AXIS_KEYS):
-                var_map[str(base + 1 + j)] = (i, key)
-            var_map[str(base + 10)] = (i, "r")
-        raw = _read_var_file(var_file, set(var_map))
-        for var_key, value in raw.items():
-            idx, field = var_map[var_key]
-            _wcs_cache[idx][field] = value
-        try:
-            _wcs_var_file_mtime = os.path.getmtime(var_file)
-        except OSError:
-            _wcs_var_file_mtime = None
-    except Exception as e:
-        _trace.emit("wcs.seed_cache_failed", level="warn",
-                    exc=type(e).__name__, msg=str(e))
-
-
-def _stat_poll_timed(caller: str = "?") -> None:
-    """Drop-in replacement for STAT.poll() that times the call and emits
-    `stat.poll_slow` on >30 ms. Use from main-thread call sites (handlers)
-    so we can localize storm-time GIL contention. The shared poller has
-    its own inline probe inside poll_status."""
-    if STAT is None:
-        return
-    t0 = time.monotonic()
-    STAT.poll()
-    dt_ms = (time.monotonic() - t0) * 1000
-    if dt_ms > 30:
-        _trace.emit("stat.poll_slow", level="warn",
-                    duration_ms=round(dt_ms, 1), caller=caller)
-
-
-def poll_status() -> StatusPayload:
-    if STAT is None:
-        raise RuntimeError("LinuxCNC not connected")
-    # Time STAT.poll() in isolation. Trace shows status_poller.poll_and_serialize
-    # holding the loop for 700+ms; we don't know yet whether it's STAT.poll
-    # itself (LinuxCNC NML read), the var-file mtime check, or Python work.
-    # Per-call probe surfaces the actual culprit. Threshold tight enough to
-    # catch storm-time elevations (typical poll is <2 ms).
-    _stat_t0 = time.monotonic()
-    STAT.poll()
-    _stat_dt_ms = (time.monotonic() - _stat_t0) * 1000
-    if _stat_dt_ms > 30:
-        _trace.emit("stat.poll_slow", level="warn",
-                    duration_ms=round(_stat_dt_ms, 1), caller="poll_status")
-
-    # ---- safety/state ----
-    estop = bool(safe_get("estop", True))
-    enabled = bool(safe_get("enabled", False))
-
-    # ---- homing (stat-only truth) ----
-    homed_val = safe_get("homed", None)
-    homed = normalize_homed(homed_val)
-
-    nj = safe_get("joints", 0)
-    homed_joints = [bool(x) for x in homed_val[:nj]] if homed_val and nj else None
-
-    # ---- offsets ----
-    g5x_index = safe_get("g5x_index", None)
-    g5x = to_float_list(safe_get("g5x_offset", None))
-    g92 = to_float_list(safe_get("g92_offset", None))
-    rotation_xy = safe_get("rotation_xy", None)
-
-    # Update WCS cache: re-seed from var file whenever its mtime changes.
-    # LinuxCNC rewrites the var file on interpreter sync (program end, MDI
-    # completion that wrote vars, probe macros). This catches writes to
-    # inactive slots. Active slot is overwritten from STAT below — mid-motion
-    # authoritative source.
-    try:
-        _vfp = _resolve_var_file_path()
-        if _vfp:
-            _vmt = os.path.getmtime(_vfp)
-            if _wcs_var_file_mtime is None or _vmt != _wcs_var_file_mtime:
-                _seed_wcs_cache()
-    except OSError:
-        pass  # var file may be momentarily absent during rename-atomic writes
-    if g5x_index is not None and g5x is not None:
-        ci = g5x_index - 1  # STAT.g5x_index is 1-based
-        if 0 <= ci < 9:
-            for j, key in enumerate(_WCS_AXIS_KEYS):
-                _wcs_cache[ci][key] = g5x[j] if len(g5x) > j else 0.0
-            _wcs_cache[ci]["r"] = rotation_xy if rotation_xy is not None else 0.0
-
-    # ---- positions ----
-    # Prefer joint_actual_position (live encoder feedback, updates even when
-    # machine is off/ESTOP) over actual_position (motion controller output,
-    # stops updating when servo loop is disabled).  For trivkins machines
-    # joint positions are identical to Cartesian axis positions.
-    machine_pos = to_float_list(safe_get("joint_actual_position", None))
-    if machine_pos is None:
-        machine_pos = to_float_list(safe_get("actual_position", None))
-    if machine_pos is None:
-        machine_pos = to_float_list(safe_get("position", None))
-    if machine_pos is None:
-        global _machine_pos_warned
-        if not _machine_pos_warned:
-            _trace.emit("poller.no_machine_pos", level="warn",
-                        msg="STAT exposes no joint_actual_position / actual_position / position — DRO blank")
-            _machine_pos_warned = True
-
-    # Tool offset vector (active tool length comp)
-    tool_offset = to_float_list(safe_get("tool_offset", None))
-
-    # Work position (matches AXIS / GMOCCAPY / QtPyVCP convention):
-    #   rel = machine_pos − g5x − tool_offset
-    #   rotate (rel.x, rel.y) by −rotation_xy
-    #   work_pos = rel − g92
-    # G92 is applied AFTER rotation per LinuxCNC coordinate-system spec, so a
-    # G92 offset typed in the rotated WCS frame stays aligned with that frame.
-    work_pos = None
-    if machine_pos is not None:
-        work_pos = machine_pos.copy()
-
-        if g5x is not None:
-            for i in range(min(len(work_pos), len(g5x))):
-                work_pos[i] -= g5x[i]
-
-        if tool_offset is not None:
-            for i in range(min(len(work_pos), len(tool_offset))):
-                work_pos[i] -= tool_offset[i]
-
-        if rotation_xy and len(work_pos) >= 2:
-            t = -math.radians(rotation_xy)
-            c, s = math.cos(t), math.sin(t)
-            x, y = work_pos[0], work_pos[1]
-            work_pos[0] = x * c - y * s
-            work_pos[1] = x * s + y * c
-
-        if g92 is not None:
-            for i in range(min(len(work_pos), len(g92))):
-                work_pos[i] -= g92[i]
-
-    # RAW joint positions (for driving the machine model / spindle nose)
-    jpos = safe_get("joint_actual_position", None)
-    if jpos is None:
-        jpos = safe_get("joint_position", None)
-    joint_pos = to_float_list(jpos)
-
-    dtg = to_float_list(safe_get("dtg", None))
-
-    # ---- velocity & spindle ----
-    current_vel = safe_get("current_vel", None)
-    try:
-        current_vel = float(current_vel) if current_vel is not None else None
-    except Exception:
-        current_vel = None
-
-    # Spindle speed and direction. STAT.spindle is a tuple of dicts; entry [0]
-    # carries 'speed' (float) and 'direction' (int) for the primary spindle.
-    spindle_speed = None
-    spindle_direction = None
-    spindles = safe_get("spindle", None)
-    if spindles:
-        s0 = spindles[0]
-        spindle_speed = float(s0['speed'])
-        spindle_direction = int(s0['direction'])
-    else:
-        global _spindle_warned
-        if not _spindle_warned:
-            _trace.emit("poller.no_spindle_data", level="warn",
-                        msg="STAT.spindle empty/missing — commanded spindle speed unavailable")
-            _spindle_warned = True
-
-
-
-
-    # ---- tool (stat-only) ----
-    # STAT.tool_table is a tuple of tool_result named tuples (id, xoffset..woffset,
-    # diameter, frontangle, backangle, orientation). STAT.tool_offset is a 9-tuple
-    # of floats holding the active G43 offset (Z at index 2).
-    tool_number = safe_get("tool_in_spindle", None)
-    tool_diameter = None
-    tool_length = None
-
-    tt = safe_get("tool_table", None)
-    if tool_number is not None and tt:
-        for t in tt:
-            if t.id == tool_number:
-                tool_diameter = float(t.diameter)
-                tool_length = abs(float(t.zoffset))
-                break
-
-    if tool_length is None:
-        tofs = safe_get("tool_offset", None)
-        if tofs:
-            tool_length = abs(float(tofs[2]))
-
-
-    # Tool change request from HAL iocontrol (via webui-reader snapshot).
-    # None means reader has no snapshot yet — pass that through honestly.
-    tool_change_requested = _reader_get("tool_change")  # Optional[bool]
-    tool_change_tool = None
-    tool_change_info = None
-    if tool_change_requested is True:
-        _tc_num = _reader_get("tool_prep_number")
-        tool_change_tool = int(_tc_num) if _tc_num else None
-        if tool_change_tool is not None:
-            try:
-                tbl_path = get_tool_tbl_path()
-                tbl_mtime = os.path.getmtime(tbl_path) if tbl_path and os.path.exists(tbl_path) else 0
-                cache_key = (tool_change_tool, tbl_mtime)
-                if cache_key not in _tc_info_cache:
-                    tbl_tools = parse_tool_table(tbl_path)
-                    library = load_tool_library()
-                    _tc_info_cache.clear()
-                    _tc_info_cache[cache_key] = _merge_tool_data(tbl_tools, library)
-                entry = next((t for t in _tc_info_cache[cache_key] if t["T"] == tool_change_tool), None)
-                if entry:
-                    tool_change_info = {"D": entry["D"], "Z": entry["Z"], "description": entry.get("description", "")}
-            except (OSError, KeyError, ValueError, TypeError) as e:
-                _trace.emit("toolchange.info_lookup_failed", level="warn",
-                            tool=tool_change_tool, exc=type(e).__name__, msg=str(e))
-
-    spindle_ovr = get_spindle_override()
-
-    # Spindle speed: pass None through if reader has no snapshot yet (or the
-    # pin failed to read this tick). UI consumers handle null with `?? null`.
-    _sp_in = _reader_get("spindle_speed_in")
-    spindle_speed_actual = _sp_in * _fb_scale if _sp_in is not None else None
-
-    return StatusPayload(
-        ts=time.time(),
-        estop=estop,
-        enabled=enabled,
-        homed=homed,
-        homed_joints=homed_joints,
-        task_mode=safe_get("task_mode", None),
-        interp_state=safe_get("interp_state", None),
-        paused=bool(safe_get("paused", False)),
-        state=safe_get("state", None),
-        motion_mode=safe_get("motion_mode", None),
-        inpos=bool(safe_get("inpos", 0)),
-        axis_mask=safe_get("axis_mask", None),
-        program_units=safe_get("program_units", None),
-        current_line=safe_get("current_line", None),
-        read_line=safe_get("read_line", None),
-        call_level=safe_get("call_level", None),
-        g5x_index=g5x_index,
-        g5x_offset=g5x,
-        g92_offset=g92,
-        rotation_xy=rotation_xy,
-        wcs_table=[row.copy() for row in _wcs_cache],
-        joint_pos=joint_pos,
-        tool_offset=tool_offset,
-        machine_pos=machine_pos,
-        work_pos=work_pos,       # <-- tool-tip work coords
-        dtg=dtg,
-        feed_override=safe_get("feedrate", None),
-        spindle_override=spindle_ovr,
-        rapid_override=safe_get("rapidrate", None),
-        feed_override_enabled=bool(safe_get("feed_override_enabled", True)),
-        spindle_override_enabled=bool(safe_get("spindle_override_enabled", True)),
-        block_delete=bool(safe_get("block_delete", 0)),
-        optional_stop=bool(safe_get("optional_stop", 0)),
-        feed_hold_enabled=bool(safe_get("feed_hold_enabled", 0)),
-        adaptive_feed_enabled=bool(safe_get("adaptive_feed_enabled", 0)),
-        current_vel=current_vel,
-        spindle_speed=spindle_speed,
-        spindle_speed_actual=spindle_speed_actual,
-        spindle_load=_reader_get("spindle_load"),
-        spindle_direction=spindle_direction,
-        active_file=safe_get("file", None),
-        motion_line=safe_get("motion_line", None),
-        gcodes=to_float_list(safe_get("gcodes", None)),
-        mcodes=to_float_list(safe_get("mcodes", None)),
-        tool_number=tool_number,
-        tool_diameter=tool_diameter,
-        tool_length=tool_length,
-        tool_change_requested=tool_change_requested,
-        tool_change_tool=tool_change_tool,
-        tool_change_info=tool_change_info,
-        probe_tripped=bool(safe_get("probe_tripped", 0)),
-        probe_input=_reader_get("probe_input"),
-        probing=bool(safe_get("probing", 0)),
-        probed_position=to_float_list(safe_get("probed_position", None)),
-        flood=bool(safe_get("flood", 0)),
-        mist=bool(safe_get("mist", 0)),
-        eoffset_z=_reader_get("z_eoffset"),
-        eoffset_enabled=_reader_get("z_eoffset_enable"),
-        comp_method=_reader_get("comp_method"),
-        comp_grid_version=_reader_get("comp_grid_version"),
-    )
-
-
-
-def read_errors_nonblocking() -> list:
-    global _err_poll_warned
-    if ERR is None:
-        return []
-    out = []
-    try:
-        while len(out) < 50:  # cap: prevents executor stall on pathological error floods
-            e = ERR.poll()
-            if not e:
-                break
-            out.append(e)
-    except Exception as e:
-        # Error buffer may be briefly invalid after reconnect — log first
-        # failure per reconnect window so a persistent issue surfaces; reset
-        # in try_connect_lcnc() so each reconnect gets one log line max.
-        if not _err_poll_warned:
-            _trace.emit("err_chan.poll_failed", level="warn",
-                        exc=type(e).__name__, msg=str(e))
-            _err_poll_warned = True
-    return out
-
-
-def _ws_hidden_flag(ws: WebSocket) -> bool:
-    """Look up the `hidden` state of the client owning `ws` by identity.
-    Used by the slow-send probes so a single trace event tells us whether
-    the slow consumer was a backgrounded tab (hidden-tab gating should
-    have caught it) or a genuinely-visible peer (separate problem).
-
-    Iterates over a snapshot (`list(...)`) to avoid the only realistic
-    failure mode (`RuntimeError: dictionary changed size during iteration`)
-    when another coroutine adds or removes a client mid-call. Any other
-    exception is a real bug and is allowed to propagate — better to
-    surface a crash than to silently report `hidden=False` on a corrupted
-    state and mislead the trace consumer.
-    """
-    for c in list(_clients.values()):
-        if c.ws is ws:
-            return c.hidden
-    return False
-
-
-async def _safe_ws_close(ws: WebSocket, peer: str) -> None:
-    """Fire-and-forget close used by the ws_send_measured timeout branch.
-
-    Bounds its own work to 500 ms total. Runs in a background task created
-    via asyncio.create_task — the caller (timeout branch in ws_send_measured)
-    must NOT await this. ws.close() itself can await an internal drain that
-    isn't reliably bounded under storm conditions; if our wait_for here
-    fires, the connection is forcibly torn down by the underlying TCP
-    timeout / the peer's reconnect logic.
-    """
-    try:
-        await asyncio.wait_for(ws.close(code=1001), timeout=0.5)
-    except Exception:
-        pass
-
-
-async def ws_send_json(ws: WebSocket, obj: Dict[str, Any]):
-    # Legacy-name shim: all sends go through ws_send_measured so the wire-format
-    # flag applies uniformly and non-status messages don't diverge from status
-    # frames. Callers that need encode timing / bytes use ws_send_measured directly.
-    await ws_send_measured(ws, obj)
-
-
-def _diff_status_data(last: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
-    """Return fields of `current` that differ from `last`.
-
-    Single-level diff — StatusPayload is flat (no nested dataclasses per the
-    definition around line 1144). For list-valued fields, Python == compares
-    element-wise; mismatched lists are included whole. Reports added/changed
-    keys only (no tombstone semantics) — `data` mirrors `linuxcnc.stat`, whose
-    keys are stable, so removals don't occur in practice.
-    """
-    diff: Dict[str, Any] = {}
-    for k, v in current.items():
-        if k not in last or last[k] != v:
-            diff[k] = v
-    return diff
-
-
-async def ws_send_measured(ws: WebSocket, obj: Dict[str, Any]) -> Tuple[float, int]:
-    """Encode + send a WS payload. Returns (encode_ms, bytes_sent).
-
-    Used by the status hot path to attribute encode cost and payload size for
-    the Debug-tab timing surface. Other callers keep using ws_send_json when
-    they don't care about the measurement.
-
-    The wire format is chosen by _WIRE_FORMAT (see Experiment 1). encode_ms
-    excludes the actual ws.send_* call; bytes_sent is the size of the encoded
-    payload. Returns (encode_ms, 0) if the client disconnected mid-send.
-    """
-    t0 = time.monotonic()
-    _set_phase("ws_send_measured.encode")
-    # Inline encode. Earlier this went through `_status_encode_executor` for
-    # parallelism, but the trace bus showed encode_qsize=0 across every
-    # storm-time loop.tick while encode_ms still climbed to 50–200 ms — pool
-    # dispatch isn't the cost, GIL contention is, and offloading to a worker
-    # only adds dispatch overhead while making the worker fight for the GIL
-    # alongside the main loop. msgspec's C-level encoder is fast (sub-ms for
-    # the typical envelope) and inline encoding eliminates one full thread
-    # round-trip per send. The legacy `ws.encode_slow` event still fires if
-    # this assumption breaks under future load.
-    if _WIRE_FORMAT == "msgpack":
-        data = _msgpack_encoder.encode(obj)
-    else:
-        data = _json_encoder_encode(obj)
-    encode_ms = round((time.monotonic() - t0) * 1000, 3)
-    try:
-        _send_peer = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
-    except Exception:
-        _send_peer = "?"
-    # Encode-only slow path: catches the case where the encode pool was
-    # contended / GIL-starved but the actual ws.send returns fast. Without
-    # this, ws.fanout_send_slow only fires when SEND is also slow and we'd
-    # miss encode-pool starvation entirely.
-    if encode_ms > 50:
-        _trace.emit(
-            "ws.encode_slow",
-            level="warn" if encode_ms > 200 else "info",
-            peer=_send_peer, encode_ms=encode_ms, bytes=len(data),
-            hidden=_ws_hidden_flag(ws),
-        )
-    _set_phase(f"ws_send.{_WIRE_FORMAT} peer={_send_peer} bytes={len(data)}")
-    # Bound any single send to _WS_SEND_TIMEOUT_S. A backgrounded browser
-    # tab stops reading → kernel TCP write buffer fills → `await
-    # ws.send_bytes` holds the loop ~1+ s, breaking the 500 ms HAL
-    # heartbeat budget. wait_for caps it; on timeout we close the slow
-    # client (they're already not getting updates anyway). Other clients
-    # are unaffected — each runs in its own status_loop task. The
-    # heartbeat task remains tied to the same asyncio loop, so any other
-    # cause of loop hang still trips the watchdog correctly.
-    send_t0 = time.monotonic()
-    try:
-        if _WIRE_FORMAT == "msgpack":
-            await asyncio.wait_for(ws.send_bytes(data), timeout=_WS_SEND_TIMEOUT_S)
-        else:
-            await asyncio.wait_for(
-                ws.send_text(data if isinstance(data, str) else data.decode("utf-8")),
-                timeout=_WS_SEND_TIMEOUT_S,
-            )
-    except asyncio.TimeoutError:
-        _set_phase(f"ws_send_measured.timeout_caught peer={_send_peer}")
-        # Slow consumer — log peer and close the WS. The per-client
-        # status_loop catches the resulting WebSocketDisconnect and
-        # exits cleanly (existing handler).
-        try:
-            peer = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
-        except Exception:
-            peer = "?"
-        try:
-            obj_type = str(obj.get("type", "?"))
-        except Exception:
-            obj_type = "?"
-        send_ms = (time.monotonic() - send_t0) * 1000
-        _trace.emit(
-            "ws.slow_client_drop", level="warn",
-            peer=peer, send_ms=round(send_ms, 1),
-            timeout_ms=int(_WS_SEND_TIMEOUT_S * 1000),
-            bytes=len(data), obj_type=obj_type,
-            hidden=_ws_hidden_flag(ws),
-        )
-        # Schedule the close as fire-and-forget so the timeout branch
-        # itself never blocks the asyncio loop. With N concurrent slow
-        # peers the previous inline `await wait_for(ws.close, 0.1)` could
-        # add N × 100 ms of loop-hold; create_task adds ~0 ms. The close
-        # task is bounded internally (see _safe_ws_close). Combined with
-        # the per-client send_pending flag, no further fan-out is queued
-        # to this client until the close completes or the connection
-        # errors out.
-        asyncio.create_task(_safe_ws_close(ws, peer))
-        _set_phase(f"ws_send_measured.timeout_returning peer={_send_peer}")
-        return (encode_ms, 0)
-    except RuntimeError:
-        _set_phase(f"ws_send_measured.RuntimeError peer={_send_peer}")
-        return (encode_ms, 0)
-    _set_phase(f"ws_send_measured.send_done peer={_send_peer}")
-    send_dt_ms = (time.monotonic() - send_t0) * 1000
-    # Promote any slow but completed send (>50 ms) into the trace bus so
-    # we see backpressure building before it timeouts.
-    if send_dt_ms > 50:
-        try:
-            peer = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
-        except Exception:
-            peer = "?"
-        try:
-            obj_type = str(obj.get("type", "?"))
-        except Exception:
-            obj_type = "?"
-        _trace.emit(
-            "ws.fanout_send_slow",
-            level="warn" if send_dt_ms > 200 else "info",
-            peer=peer, send_ms=round(send_dt_ms, 1),
-            encode_ms=encode_ms, bytes=len(data), obj_type=obj_type,
-            hidden=_ws_hidden_flag(ws),
-        )
-    # msgspec returns bytes; stdlib json returns str — both have len() == bytes/chars
-    return (encode_ms, len(data))
-
-
 async def _cmd_blocking(cmd_fn, *args, wait=_CMD_WAIT_TIMEOUT) -> int:
     """Run a blocking CMD.* call + optional wait_complete() on a worker thread.
 
@@ -3121,37 +2140,258 @@ def _jog_joint_flag() -> int:
     return 1
 
 
-async def _disarm_safety_sequence() -> None:
-    """Stop motion + abort interpreter as part of a disarm. Caller must hold _cmd_lock.
+async def _jog_stop_for_client() -> None:
+    """Jog-stop every joint as part of a client disarm. Caller must hold _cmd_lock.
 
-    Used by both the heartbeat-timeout path in status_loop and the ws-close
-    path in ws_endpoint's finally block — they were two near-identical copies.
-    Behaviour:
-      - if AUTO + interpreter not idle: abort (program-running case)
-      - else if homed: switch to MANUAL, jog_stop every joint, then abort
-    All CMD.* calls offload via _cmd_blocking so a slow GIL section can't
-    starve the heartbeat task.
+    Called when a client transitions to disarmed via heartbeat stall or WS
+    close. The point is to stop any in-flight jog this client may have
+    started — without a follow-up jog_stop the machine continues moving
+    until it hits a limit.
+
+    This function does NOT abort the program. A running G-code program is
+    owned by LinuxCNC's interpreter, not by any single client. Motion abort
+    from a client-liveness failure is the HAL chain's job (oneshot timeout
+    on all-clients-out, or gateway hang). Per the architecture review in
+    docs/plans, keep the "armed = authorization" and "HAL = safety" layers
+    separate — this function only handles the in-flight-jog case.
+
+    Mode safety: if the machine is in MODE_AUTO with the interpreter
+    running, a jog cannot be in flight (jogging requires MANUAL/TELEOP).
+    Forcing a mode switch to MANUAL here would interrupt the program —
+    exactly what this cleanup is trying to avoid. So skip in that case.
+
+    Multi-armed-client note: today we stop every joint, which can interfere
+    with a parallel jog from another armed client. Per-client active-jog
+    tracking is a documented follow-up; for now, the bluntness is acceptable
+    because simultaneous multi-client jogging is rare and stopping is the
+    safe default.
     """
     if not bool(safe_get("enabled", False)):
         return
     mode = safe_get("task_mode", None)
     interp = safe_get("interp_state", None)
     if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-        await _cmd_blocking(CMD.abort, wait=None)
-        return
+        return  # program running — no jog to stop, must not switch mode
     homed = normalize_homed(safe_get("homed", None))
-    if homed:
-        await set_mode(linuxcnc.MODE_MANUAL)
-        jf = _jog_joint_flag()
-        _nj = getattr(STAT, "joints", 3) if STAT else 3
-        for ax in range(_nj):
-            await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, ax, wait=None)
-    await _cmd_blocking(CMD.abort, wait=None)
+    if not homed:
+        return  # nothing to jog-stop if not homed
+    await set_mode(linuxcnc.MODE_MANUAL)
+    jf = _jog_joint_flag()
+    _nj = getattr(STAT, "joints", 3) if STAT else 3
+    for ax in range(_nj):
+        await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, ax, wait=None)
 
 
 def require_armed(armed: bool):
     if not armed:
         raise PermissionError("Not armed")
+
+
+def require_no_eoffset():
+    """Mirror the frontend probe/zero gate (issue #19): refuse a touch-off / work
+    offset edit while surface-compensation Z eoffset is active, or LinuxCNC would
+    bake the eoffset into the new offset (the current position the offset is
+    derived from is contaminated). LinuxCNC itself doesn't enforce this web-UI
+    gate, so a direct client could otherwise bypass it. Mirrors the frontend's
+    `!eoffsetEnabled` condition: only blocks when the pin is definitely enabled
+    (None/stale → allowed, matching the UI)."""
+    if _reader_get("z_eoffset_enable"):
+        raise PermissionError("Surface compensation active — clear the eoffset before editing work offsets")
+
+
+# ---- Run-from-line toolchange guard (RFL × M600) ----
+# LinuxCNC's run-from-line skim re-enters M600 remap bodies in lines 1..N-1:
+# G38 probes are queue-busters and execute for REAL while plain moves are
+# discarded, and the routine's G43 does not survive into the synthesized state
+# (no TLO at cycle start — Z-crash risk on hardware). Guard sequence: measure
+# the tool via MDI first (full routine: real retract + G43 applied), arm the
+# one-shot #3116 skip flag (tool_touch_off.ngc o<450> no-ops under the skim,
+# re-issuing only the modal G43), then AUTO_RUN. Runs as a BACKGROUND task:
+# the measurement takes minutes and handle_command holds _cmd_lock for its
+# whole body — running it inline would freeze every client's commands (incl.
+# Abort) and starve this client's heartbeat. Each CMD step takes the lock
+# individually; completion waits poll STAT lock-free. Progress is broadcast
+# via the status fanout (rfl_status field), single-flight via _rfl_active.
+_rfl_active: bool = False
+_rfl_status: Optional[dict] = None   # last guard-sequence phase, riding the status fanout
+
+
+async def _rfl_wait_interp_idle(timeout_s: float, grace_s: float = 2.0):
+    """Wait until the interpreter is idle again after a fire-and-forget MDI.
+
+    Completion = interp observed non-idle then idle again, OR never observed
+    non-idle within the grace window while idle (instant commands like
+    parameter assignments can finish between polls). Lock-free: only STAT
+    reads. Returns (ok, reason)."""
+    t0 = time.monotonic()
+    deadline = t0 + timeout_s
+    started = False
+    while time.monotonic() < deadline:
+        try:
+            STAT.poll()
+        except Exception as e:
+            return False, f"STAT.poll failed: {e}"
+        if safe_get("task_state", None) != linuxcnc.STATE_ON:
+            return False, "machine left ON state (estop/off)"
+        interp = safe_get("interp_state", None)
+        if interp != linuxcnc.INTERP_IDLE:
+            started = True
+        elif started or (time.monotonic() - t0) > grace_s:
+            return True, ""
+        await asyncio.sleep(0.1)
+    return False, f"timeout after {timeout_s:.0f}s"
+
+
+async def _rfl_mdi_step(text: str, timeout_s: float):
+    """One locked MDI dispatch + lock-free completion wait. Returns (ok, reason)."""
+    async with _get_cmd_lock():
+        blocked = reject_if_auto_running()
+        if blocked:
+            return False, blocked.get("error", "busy")
+        await set_mode(linuxcnc.MODE_MDI)
+        await _cmd_blocking(CMD.mdi, text, wait=None)
+    return await _rfl_wait_interp_idle(timeout_s)
+
+
+def _rfl_phase(phase: str, ok: bool = True, error: str = "") -> None:
+    global _rfl_status
+    _rfl_status = {"phase": phase, "ok": ok, "error": error, "ts": int(time.time() * 1000)}
+    _trace.emit("rfl.phase", level="info" if ok else "warn",
+                phase=phase, ok=ok, error=error)
+
+
+_RFL_WCS_OK = {"G54", "G55", "G56", "G57", "G58", "G59", "G59.1", "G59.2", "G59.3"}
+
+
+def _rfl_entry_mdi(entry: dict) -> str:
+    """Compose the position-preamble MDI line: optional units + WCS prefixes
+    (matching what the program will use at line N), forced G90, rapid to the
+    derived XY. Axes the scan couldn't determine are simply omitted (modal)."""
+    parts = []
+    if entry.get("units"):
+        parts.append(entry["units"])
+    if entry.get("wcs"):
+        parts.append(entry["wcs"])
+    parts.append("G90 G0")
+    if entry.get("x") is not None:
+        parts.append(f"X{entry['x']:.4f}")
+    if entry.get("y") is not None:
+        parts.append(f"Y{entry['y']:.4f}")
+    return " ".join(parts)
+
+
+def _rfl_entry_reached(entry: dict):
+    """Verify the preamble move actually landed (an abort mid-move leaves the
+    interp idle with no error text). Compares machine position against the WCS
+    target + active g5x/g92 offsets — valid because the scan REFUSES rotation/
+    G92-mutating programs. Returns (ok, reason)."""
+    STAT.poll()
+    g5x = safe_get("g5x_offset", None) or (0.0,) * 9
+    g92 = safe_get("g92_offset", None) or (0.0,) * 9
+    pos = safe_get("position", None)
+    if not pos:
+        return False, "no position from STAT"
+    mu = get_machine_units()
+    scale = 1.0
+    if entry.get("units") == "G20" and mu == "mm":
+        scale = 25.4
+    elif entry.get("units") == "G21" and mu == "in":
+        scale = 1.0 / 25.4
+    tol = 0.5 if mu == "mm" else 0.02
+    for key, i in (("x", 0), ("y", 1)):
+        val = entry.get(key)
+        if val is None:
+            continue
+        expected = float(val) * scale + float(g5x[i]) + float(g92[i])
+        if abs(float(pos[i]) - expected) > tol:
+            return False, f"{key.upper()} at {float(pos[i]):.3f}, expected {expected:.3f}"
+    return True, ""
+
+
+async def _rfl_sequence(start_line: int, pre_tool: int, safe_z: bool,
+                        spindle_dir: Optional[str], spindle_speed: int,
+                        entry: Optional[dict] = None) -> None:
+    global _rfl_active
+    flag_armed = False
+    try:
+        if pre_tool:
+            _rfl_phase("measuring")
+            err_mark = _errors_total
+            ok, why = await _rfl_mdi_step(f"T{pre_tool} M600", timeout_s=240.0)
+            if not ok:
+                _rfl_phase("measure_failed", False, why)
+                return
+            STAT.poll()
+            tofs = safe_get("tool_offset", None)
+            applied = abs(float(tofs[2])) if tofs else 0.0
+            if safe_get("tool_in_spindle", None) != pre_tool or applied <= 1e-9:
+                _rfl_phase("measure_failed", False,
+                           f"verification failed (tool={safe_get('tool_in_spindle', None)}, applied Z={applied:.4f})")
+                return
+            if _errors_total != err_mark:
+                # An error (or operator abort → probe-interrupted error) surfaced
+                # during the measurement window — refuse to continue into motion.
+                _rfl_phase("measure_failed", False, "errors during measurement (aborted?)")
+                return
+            ok, why = await _rfl_mdi_step(f"#3116={pre_tool}", timeout_s=10.0)
+            if not ok:
+                _rfl_phase("flag_failed", False, why)
+                return
+            flag_armed = True
+        if safe_z:
+            _rfl_phase("safe_z")
+            ok, why = await _rfl_mdi_step("G53 G0 Z0", timeout_s=120.0)
+            if not ok:
+                _rfl_phase("safe_z_failed", False, why)
+                return
+            STAT.poll()
+            pos = safe_get("position", None)
+            if pos and abs(float(pos[2])) > 0.5:
+                # Move ended early (an abort mid-move leaves interp idle with no
+                # error text) — machine is NOT at safe height; refuse to start.
+                _rfl_phase("safe_z_failed", False,
+                           f"Z did not reach machine zero (at {float(pos[2]):.2f})")
+                return
+        if entry and (entry.get("x") is not None or entry.get("y") is not None):
+            # Position preamble: rapid to the XY the program expects at line N
+            # (at safe height — the handler forces safe_z on whenever entry is
+            # given), so the RFL entry's modal Y/Z moves run at the RIGHT X/Y
+            # instead of wherever the machine happens to stand.
+            _rfl_phase("positioning")
+            ok, why = await _rfl_mdi_step(_rfl_entry_mdi(entry), timeout_s=120.0)
+            if not ok:
+                _rfl_phase("positioning_failed", False, why)
+                return
+            ok, why = _rfl_entry_reached(entry)
+            if not ok:
+                _rfl_phase("positioning_failed", False, why)
+                return
+        if spindle_dir and spindle_speed > 0:
+            async with _get_cmd_lock():
+                await set_mode(linuxcnc.MODE_MANUAL)
+                if spindle_dir == "forward":
+                    await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_FORWARD, spindle_speed, wait=None)
+                elif spindle_dir == "reverse":
+                    await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_REVERSE, spindle_speed, wait=None)
+        _rfl_phase("starting")
+        async with _get_cmd_lock():
+            await set_mode(linuxcnc.MODE_AUTO)
+            await _cmd_blocking(CMD.auto, linuxcnc.AUTO_RUN, start_line, wait=None)
+        flag_armed = False  # consumed by the skim (o<450> self-clears #3116)
+        _rfl_phase("running")
+    except Exception as e:
+        _trace.emit_exc("rfl.sequence_failed", e)
+        _rfl_phase("failed", False, f"{type(e).__name__}: {e}")
+    finally:
+        if flag_armed:
+            # Never leave a stale skip flag behind — it could silently skip a
+            # legitimate future measurement. Best-effort clear, loud on failure.
+            ok, why = await _rfl_mdi_step("#3116=0", timeout_s=10.0)
+            if ok:
+                _trace.emit("rfl.flag_cleared")
+            else:
+                _trace.emit("rfl.flag_clear_failed", level="error", err=why)
+        _rfl_active = False
 
 
 async def handle_command(msg: Dict[str, Any], armed: bool):
@@ -3162,7 +2402,7 @@ async def handle_command(msg: Dict[str, Any], armed: bool):
 
 
 async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
-    global _estop_hold
+    global _estop_hold, _rfl_active
     cmd = msg.get("cmd")
     if not cmd:
         return {"ok": False, "error": "Missing cmd"}
@@ -3173,8 +2413,8 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             tbl_path = get_tool_tbl_path()
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
-            tbl_tools = parse_tool_table(tbl_path)
-            library = load_tool_library()
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)  # file reads off the loop (B3)
+            library = await asyncio.to_thread(load_tool_library)
             merged = _merge_tool_data(tbl_tools, library)
             current_tool = None
             try:
@@ -3188,7 +2428,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             return {"ok": True, "tools": merged, "current_tool": current_tool}
 
         if cmd == "get_probe_results":
-            pts = await asyncio.to_thread(_read_probe_results_file)
+            pts = await asyncio.to_thread(_bulk.read_probe_results_file)
             return {"ok": True, "points": pts}
 
         if cmd == "get_comp_grid":
@@ -3215,6 +2455,24 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
     if not lcnc_connected:
         return {"ok": False, "error": "LinuxCNC not connected"}
 
+    # Backend command authorization (issue #19). Enforces the SAME unified policy
+    # the frontend consumes (command_policy). Because the frontend's Gate/fire()
+    # layer already gates on these exact classes, this never rejects a
+    # conforming-UI command — it backstops direct / buggy / malicious clients.
+    # 'always' commands (jog_stop, estop, abort, …) pass. The handler-level
+    # require_armed()/reject_if_auto_running() guards remain as defense in depth.
+    # Denials are bounded + traced — never silently dropped
+    # (feedback_no_silent_fallbacks).
+    if _shared_status is not None:
+        _deny = check_command(cmd, _policy_state_from_payload(_shared_status, armed))
+        if _deny is not None:
+            _trace.emit("ws.command_denied", level="warn", cmd=cmd, reason=_deny)
+            return {"ok": False, "error": _deny}
+    else:
+        # No status snapshot yet (pre-first-poll window). Can't evaluate state;
+        # the handler-level guards still apply. Trace so the gap is auditable.
+        _trace.emit("policy.check_skipped_no_state", level="warn", cmd=cmd)
+
     try:
         if cmd == "arm":
             return {"ok": True}
@@ -3226,11 +2484,29 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             return {"ok": True}
 
         if cmd == "estop_reset":
+            # require_armed is safe here despite a trip auto-clearing nothing:
+            # the frontend gates its Reset button on canResetEstop (armed &&
+            # isEstop), and arm is rejected while _unacked_trip is set, so the
+            # operator-reachable recovery order is Acknowledge -> Arm -> Reset.
+            # By the time this command can be sent the client is armed.
             require_armed(armed)
-            # Release hal_watchdog's trip-latch first so the safety chain
-            # can come back up when LinuxCNC transitions out of ESTOP.
-            # 20ms sleep ≈ 2× hal_watchdog select slice, enough for the
-            # pin write to land before STATE_ESTOP_RESET is evaluated.
+            # Do NOT pre-check emc_enable_in here. Standard LinuxCNC safety
+            # chains feed iocontrol.0.user-enable-out back into the AND that
+            # drives emc-enable-in (the operator-acknowledgement latch).
+            # user-enable-out is LOW by design while task is in STATE_ESTOP,
+            # so emc-enable-in is *always* FALSE at the moment of reset —
+            # checking it deadlocks the only command that can escape ESTOP.
+            # machine_on is the correct gate: by then user-enable-out is
+            # TRUE and emc-enable-in reflects only hardware conditions.
+            # UI's safetyChainOpen still keeps the estop indicator visible
+            # if the chain is hardware-open post-reset, so the operator is
+            # not misled. Issues #14 (problem) and #15 (this regression).
+            # Pulse the HAL latch reset first so the safety chain can come back
+            # up when LinuxCNC transitions out of ESTOP. The gateway sends the
+            # IPC; hal_watchdog drives webui-safety.trip-reset-out, and the
+            # servo-thread estop_latch clears within a cycle. 20ms sleep ≈ 2×
+            # hal_watchdog select slice, enough for the reset edge to propagate
+            # and ok-out to land before STATE_ESTOP_RESET is evaluated.
             _hal_send({"trip_reset": True})
             await asyncio.sleep(0.02)
             await _cmd_blocking(CMD.state, linuxcnc.STATE_ESTOP_RESET, wait=None)
@@ -3244,6 +2520,9 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             STAT.poll()
             if safe_get("estop", True):
                 return {"ok": False, "error": "Cannot Machine On while in E-stop"}
+            # Same edge-detection defense as estop_reset (issue #14).
+            if _reader_get("emc_enable_in") is False:
+                return {"ok": False, "error": "Safety chain is open — cannot turn machine on"}
             await _cmd_blocking(CMD.state, linuxcnc.STATE_ON, wait=None)
             return {"ok": True}
 
@@ -3257,7 +2536,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             blocked = reject_if_auto_running()
             if blocked:
                 return blocked
-            mode = int(msg.get("mode", 0))
+            mode = finite_int(msg.get("mode", 0))
             if mode not in (linuxcnc.MODE_MANUAL, linuxcnc.MODE_AUTO, linuxcnc.MODE_MDI):
                 return {"ok": False, "error": f"Invalid mode: {mode}"}
             await set_mode(mode)
@@ -3307,22 +2586,24 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "save_tool":
             require_armed(armed)
-            tool_num = int(msg["tool_number"])
+            tool_num = finite_int(msg["tool_number"], lo=0)
             tbl_path = get_tool_tbl_path()
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
 
-            # Update tool.tbl
-            tbl_tools = parse_tool_table(tbl_path)
+            # Update tool.tbl — all file I/O off the loop; _cmd_lock stays held
+            # so the read-modify-write is still serialized (B3). ToolLibraryStore
+            # is lock-guarded, so an offloaded status-loop read can't race it.
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)
             found = False
             for t in tbl_tools:
                 if t["T"] == tool_num:
                     if "pocket" in msg:
-                        t["P"] = int(msg["pocket"])
+                        t["P"] = finite_int(msg["pocket"], lo=0)
                     if "z_offset" in msg:
-                        t["Z"] = float(msg["z_offset"])
+                        t["Z"] = finite_float(msg["z_offset"])
                     if "diameter" in msg:
-                        t["D"] = float(msg["diameter"])
+                        t["D"] = finite_float(msg["diameter"], lo=0)
                     if "remark" in msg:
                         t["remark"] = str(msg["remark"])
                     found = True
@@ -3330,57 +2611,57 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if not found:
                 return {"ok": False, "error": f"Tool T{tool_num} not found"}
 
-            write_tool_table(tbl_path, tbl_tools)
+            await asyncio.to_thread(write_tool_table, tbl_path, tbl_tools)
             await _reload_tool_table_and_bump()
 
             # Update metadata
-            library = load_tool_library()
+            library = await asyncio.to_thread(load_tool_library)
             key = str(tool_num)
             if key not in library:
                 library[key] = {}
             for field in _TOOL_META_FIELDS:
                 if field in msg:
                     library[key][field] = msg[field]
-            save_tool_library(library)
+            await asyncio.to_thread(save_tool_library, library)
             global _tool_meta_dirty
             _tool_meta_dirty = True
             return {"ok": True}
 
         if cmd == "add_tool":
             require_armed(armed)
-            tool_num = int(msg["tool_number"])
+            tool_num = finite_int(msg["tool_number"], lo=0)
             tbl_path = get_tool_tbl_path()
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
 
-            tbl_tools = parse_tool_table(tbl_path)
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)
             for t in tbl_tools:
                 if t["T"] == tool_num:
                     return {"ok": False, "error": f"Tool T{tool_num} already exists"}
 
             tbl_tools.append({
                 "T": tool_num,
-                "P": int(msg.get("pocket", tool_num)),
-                "Z": float(msg.get("z_offset", 0.0)),
-                "D": float(msg.get("diameter", 0.0)),
+                "P": finite_int(msg.get("pocket", tool_num), lo=0),
+                "Z": finite_float(msg.get("z_offset", 0.0)),
+                "D": finite_float(msg.get("diameter", 0.0), lo=0),
                 "remark": str(msg.get("remark", "")),
             })
-            write_tool_table(tbl_path, tbl_tools)
+            await asyncio.to_thread(write_tool_table, tbl_path, tbl_tools)
             await _reload_tool_table_and_bump()
 
             # Save metadata if provided
-            library = load_tool_library()
+            library = await asyncio.to_thread(load_tool_library)
             key = str(tool_num)
             library[key] = {}
             for field in _TOOL_META_FIELDS:
                 if field in msg:
                     library[key][field] = msg[field]
-            save_tool_library(library)
+            await asyncio.to_thread(save_tool_library, library)
             return {"ok": True}
 
         if cmd == "delete_tool":
             require_armed(armed)
-            tool_num = int(msg["tool_number"])
+            tool_num = finite_int(msg["tool_number"], lo=0)
 
             # Don't delete the currently loaded tool
             STAT.poll()
@@ -3396,26 +2677,73 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if not tbl_path:
                 return {"ok": False, "error": "Tool table path not available"}
 
-            tbl_tools = parse_tool_table(tbl_path)
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)
             new_tools = [t for t in tbl_tools if t["T"] != tool_num]
             if len(new_tools) == len(tbl_tools):
                 return {"ok": False, "error": f"Tool T{tool_num} not found"}
 
-            write_tool_table(tbl_path, new_tools)
+            await asyncio.to_thread(write_tool_table, tbl_path, new_tools)
             await _reload_tool_table_and_bump()
 
-            library = load_tool_library()
+            library = await asyncio.to_thread(load_tool_library)
             library.pop(str(tool_num), None)
-            save_tool_library(library)
+            await asyncio.to_thread(save_tool_library, library)
 
             return {"ok": True}
+
+        if cmd == "renumber_tool":
+            # One transactional renumber (issue #30): validate, then rewrite the
+            # tool table AND move the metadata together under the already-held
+            # _cmd_lock. Replaces the old add_tool+delete_tool client sequence,
+            # which could leave a duplicate / lost tool if the second send failed.
+            require_armed(armed)
+            old_num = finite_int(msg["old_tool_number"], lo=0)
+            new_num = finite_int(msg["tool_number"], lo=0)
+            tbl_path = get_tool_tbl_path()
+            if not tbl_path:
+                return {"ok": False, "error": "Tool table path not available"}
+
+            tbl_tools = await asyncio.to_thread(parse_tool_table, tbl_path)
+            src = next((t for t in tbl_tools if t["T"] == old_num), None)
+            if src is None:
+                return {"ok": False, "error": f"Tool T{old_num} not found"}
+            if new_num != old_num and any(t["T"] == new_num for t in tbl_tools):
+                return {"ok": False, "error": f"Tool T{new_num} already exists"}
+
+            # Don't renumber the tool in the spindle — its active offset would
+            # shift under it.
+            STAT.poll()
+            current = safe_get("tool_in_spindle", None)
+            try:
+                current = int(current) if current is not None else None
+            except (ValueError, TypeError):
+                current = None
+            if current == old_num:
+                return {"ok": False, "error": f"Cannot renumber T{old_num} — currently in spindle"}
+
+            src["T"] = new_num
+            src["P"] = finite_int(msg.get("pocket", new_num), lo=0)
+            src["Z"] = finite_float(msg.get("z_offset", src.get("Z", 0.0)))
+            src["D"] = finite_float(msg.get("diameter", src.get("D", 0.0)), lo=0)
+            src["remark"] = str(msg.get("remark", src.get("remark", "")))
+            await asyncio.to_thread(write_tool_table, tbl_path, tbl_tools)
+            await _reload_tool_table_and_bump()
+
+            library = await asyncio.to_thread(load_tool_library)
+            meta = library.pop(str(old_num), {}) or {}
+            for field in _TOOL_META_FIELDS:
+                if field in msg:
+                    meta[field] = msg[field]
+            library[str(new_num)] = meta
+            await asyncio.to_thread(save_tool_library, library)
+            return {"ok": True, "tool_number": new_num}
 
         if cmd == "tool_change":
             require_armed(armed)
             blocked = reject_if_auto_running()
             if blocked:
                 return blocked
-            tool_num = int(msg["tool_number"])
+            tool_num = finite_int(msg["tool_number"], lo=0)
             await set_mode(linuxcnc.MODE_MDI)
             await _cmd_blocking(CMD.mdi, f"T{tool_num} M6 G43", wait=None)
             return {"ok": True}
@@ -3431,8 +2759,13 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 # Already paused → advance one block (no mode change)
                 await _cmd_blocking(CMD.auto, linuxcnc.AUTO_STEP, wait=None)
             elif mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
-                # Running (not paused) → pause first, next click will step
-                await _cmd_blocking(CMD.auto, linuxcnc.AUTO_PAUSE, wait=None)
+                # Running (not paused). The 'step' gate forbids stepping while
+                # running, but it checks a status SNAPSHOT while this handler
+                # re-polls fresh — so this guards the race where the program
+                # started in between. Reject (consistent with the gate) rather
+                # than fall through to the 'idle' branch and re-start a running
+                # program (review #3).
+                return {"ok": False, "error": "Cannot step while running — pause first"}
             else:
                 # Idle → start program and step
                 await set_mode(linuxcnc.MODE_AUTO)
@@ -3442,7 +2775,38 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
         if cmd == "auto_run":
             require_armed(armed)
             spindle_dir = msg.get("spindle_dir")
-            spindle_speed = int(msg.get("spindle_speed", 0))
+            spindle_speed = finite_int(msg.get("spindle_speed", 0), lo=0)
+            start_line = finite_int(msg.get("line", 0), lo=0)
+            pre_tool = finite_int(msg.get("pre_tool", 0), lo=0)
+            safe_z = bool(msg.get("safe_z", False))
+            entry = None
+            _ex, _ey = msg.get("entry_x"), msg.get("entry_y")
+            if _ex is not None or _ey is not None:
+                entry = {
+                    "x": finite_float(_ex) if _ex is not None else None,
+                    "y": finite_float(_ey) if _ey is not None else None,
+                    "wcs": msg.get("entry_wcs") if msg.get("entry_wcs") in _RFL_WCS_OK else None,
+                    "units": msg.get("entry_units") if msg.get("entry_units") in ("G20", "G21") else None,
+                }
+                safe_z = True  # the XY preamble only ever moves at safe height
+
+            if pre_tool or safe_z or entry:
+                # RFL guard path (see _rfl_sequence): long-running — the
+                # measurement alone takes minutes — so it CANNOT run inside this
+                # handler (we hold _cmd_lock here and block this client's receive
+                # loop). Validate, spawn, return immediately; progress rides the
+                # status fanout as `rfl_status`.
+                if _rfl_active:
+                    return {"ok": False, "error": "Run-from-line sequence already in progress"}
+                blocked = reject_if_auto_running()
+                if blocked:
+                    return blocked
+                _rfl_active = True
+                _rfl_phase("queued")
+                register_bg_task(asyncio.create_task(_rfl_sequence(
+                    start_line, pre_tool, safe_z, spindle_dir, spindle_speed, entry)))
+                return {"ok": True, "rfl": "started"}
+
             if spindle_dir and spindle_speed > 0:
                 await set_mode(linuxcnc.MODE_MANUAL)
                 if spindle_dir == "forward":
@@ -3450,7 +2814,6 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
                 elif spindle_dir == "reverse":
                     await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_REVERSE, spindle_speed, wait=None)
             await set_mode(linuxcnc.MODE_AUTO)
-            start_line = int(msg.get("line", 0))
             await _cmd_blocking(CMD.auto, linuxcnc.AUTO_RUN, start_line, wait=None)
             return {"ok": True}
 
@@ -3462,22 +2825,27 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if blocked:
                 return blocked
 
-            axis = int(msg.get("axis"))
-            vel = float(msg.get("vel", 0.0))
+            axis = finite_int(msg.get("axis"), lo=0)
+            vel = finite_float(msg.get("vel", 0.0))
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             await _cmd_blocking(CMD.jog, linuxcnc.JOG_CONTINUOUS, jf, axis, vel, wait=None)
             return {"ok": True}
 
         if cmd == "jog_stop":
-            if not armed:
-                return {"ok": True}  # safety no-op — stopping is always safe
-
-            blocked = reject_if_auto_running()
-            if blocked:
-                return blocked
-
-            axis = int(msg.get("axis"))
+            # Stopping motion is always allowed — gateway must NOT silently
+            # drop a stop request, even from a disarmed client. The previous
+            # `if not armed: return ok` short-circuit caused a real safety
+            # gap: operator holds jog, disarms, releases → client's jog_stop
+            # was accepted as no-op and the machine kept moving. Audit Phase
+            # 2 / Issue E1. In AUTO+running a jog cannot be in flight
+            # (jogging requires MANUAL/TELEOP) and a forced mode switch
+            # would interrupt the program — skip that case explicitly.
+            mode = safe_get("task_mode", None)
+            interp = safe_get("interp_state", None)
+            if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
+                return {"ok": True}
+            axis = finite_int(msg.get("axis"), lo=0)
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, axis, wait=None)
@@ -3494,22 +2862,22 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
-                await _cmd_blocking(CMD.jog, linuxcnc.JOG_CONTINUOUS, jf, int(entry["axis"]), float(entry["vel"]), wait=None)
+                await _cmd_blocking(CMD.jog, linuxcnc.JOG_CONTINUOUS, jf, finite_int(entry["axis"], lo=0), finite_float(entry["vel"]), wait=None)
             return {"ok": True}
 
         if cmd == "jog_stop_multi":
-            if not armed:
-                return {"ok": True}  # safety no-op — stopping is always safe
-
-            blocked = reject_if_auto_running()
-            if blocked:
-                return blocked
-
+            # Stopping motion is always allowed — see jog_stop above for the
+            # same audit rationale (Phase 2 / Issue E1). In AUTO+running we
+            # have no jog in flight and must not switch modes.
+            mode = safe_get("task_mode", None)
+            interp = safe_get("interp_state", None)
+            if mode == linuxcnc.MODE_AUTO and interp != linuxcnc.INTERP_IDLE:
+                return {"ok": True}
             axes = msg.get("axes", [])
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for a in axes:
-                await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, int(a), wait=None)
+                await _cmd_blocking(CMD.jog, linuxcnc.JOG_STOP, jf, finite_int(a, lo=0), wait=None)
             return {"ok": True}
 
         if cmd == "jog_incr":
@@ -3519,9 +2887,9 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if blocked:
                 return blocked
 
-            axis = int(msg.get("axis"))
-            vel = abs(float(msg.get("vel", 0.0)))  # speed only; distance carries direction
-            dist = float(msg.get("distance", 0.0))
+            axis = finite_int(msg.get("axis"), lo=0)
+            vel = abs(finite_float(msg.get("vel", 0.0)))  # speed only; distance carries direction
+            dist = finite_float(msg.get("distance", 0.0))
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             await _cmd_blocking(CMD.jog, linuxcnc.JOG_INCREMENT, jf, axis, vel, dist, wait=None)
@@ -3538,7 +2906,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             await set_mode(linuxcnc.MODE_MANUAL)
             jf = _jog_joint_flag()
             for entry in axes:
-                await _cmd_blocking(CMD.jog, linuxcnc.JOG_INCREMENT, jf, int(entry["axis"]), abs(float(entry["vel"])), float(entry["distance"]), wait=None)
+                await _cmd_blocking(CMD.jog, linuxcnc.JOG_INCREMENT, jf, finite_int(entry["axis"], lo=0), abs(finite_float(entry["vel"])), finite_float(entry["distance"]), wait=None)
             return {"ok": True}
 
         if cmd == "home_all":
@@ -3556,14 +2924,14 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "home":
             require_armed(armed)
-            joint = int(msg.get("joint", -1))
+            joint = finite_int(msg.get("joint", -1))
             await set_mode(linuxcnc.MODE_MANUAL)
             await _cmd_blocking(CMD.home, joint, wait=None)
             return {"ok": True}
 
         if cmd == "unhome":
             require_armed(armed)
-            joint = int(msg.get("joint", -1))
+            joint = finite_int(msg.get("joint", -1))
             await set_mode(linuxcnc.MODE_MANUAL)
             await _cmd_blocking(CMD.teleop_enable, 0)  # unhome requires joint mode
             await _cmd_blocking(CMD.unhome, joint, wait=None)
@@ -3588,7 +2956,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_feed_override":
             require_armed(armed)
-            scale = float(msg.get("scale", 1.0))
+            scale = finite_float(msg.get("scale", 1.0), 1.0)
             # Clamp to reasonable range (0-200%)
             scale = max(0.0, min(2.0, scale))
             await _cmd_blocking(CMD.feedrate, scale, wait=None)
@@ -3596,7 +2964,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_spindle_override":
             require_armed(armed)
-            scale = float(msg.get("scale", 1.0))
+            scale = finite_float(msg.get("scale", 1.0), 1.0)
             # Clamp to reasonable range (50-200%)
             scale = max(0.5, min(2.0, scale))
             await _cmd_blocking(CMD.spindleoverride, scale, wait=None)
@@ -3604,14 +2972,14 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "spindle_forward":
             require_armed(armed)
-            speed = float(msg.get("speed", 0))
+            speed = finite_float(msg.get("speed", 0))
             await set_mode(linuxcnc.MODE_MANUAL)
             await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_FORWARD, speed, wait=None)
             return {"ok": True}
 
         if cmd == "spindle_reverse":
             require_armed(armed)
-            speed = float(msg.get("speed", 0))
+            speed = finite_float(msg.get("speed", 0))
             await set_mode(linuxcnc.MODE_MANUAL)
             await _cmd_blocking(CMD.spindle, linuxcnc.SPINDLE_REVERSE, speed, wait=None)
             return {"ok": True}
@@ -3656,7 +3024,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_rapid_override":
             require_armed(armed)
-            scale = float(msg.get("scale", 1.0))
+            scale = finite_float(msg.get("scale", 1.0), 1.0)
             # Clamp to 0-100%
             scale = max(0.0, min(1.0, scale))
             await _cmd_blocking(CMD.rapidrate, scale, wait=None)
@@ -3676,7 +3044,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_max_velocity":
             require_armed(armed)
-            velocity = float(msg.get("velocity", 0.0))
+            velocity = finite_float(msg.get("velocity", 0.0))
             # Clamp to positive values
             velocity = max(0.0, velocity)
             await _cmd_blocking(CMD.maxvel, velocity, wait=None)
@@ -3703,10 +3071,25 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             if blocked:
                 return blocked
 
+            # Phase markers (B8) subdivide load_file so the lag monitor pins which
+            # step holds the loop — the run named "handle_command cmd=load_file"
+            # at ~78 ms but couldn't say which part. set_mode/program_open already
+            # offload their NML work; if a marker dominates a future lag.window,
+            # that's the synchronous piece to move off-loop next.
+            _set_phase("load_file.set_mode")
             await set_mode(linuxcnc.MODE_AUTO)
-            # program_open can legitimately take several seconds on large files —
-            # offload so the heartbeat/poller keep ticking during the wait.
-            await _cmd_blocking(CMD.program_open, abs_path, wait=5)
+            # Fire-and-forget (no wait_complete). milltask opens the file in its
+            # OWN process; our `wait=5` just polled it via CMD.wait_complete — and
+            # the LinuxCNC C binding HOLDS THE GIL across that poll, so the
+            # `to_thread` offload could not free the loop (a 44 MB open stalled it
+            # 62 ms — `load_file.program_open` dominated the lag.window; a larger
+            # file or slower disk scales straight toward the 500 ms watchdog trip).
+            # The program_open SEND is a microsecond NML write. Completion is
+            # observed via the status stream (interp_state + file) and the preview
+            # re-parses from disk independently — same contract as the tool_change
+            # fire-and-forget path. Open failures surface on the error channel.
+            _set_phase("load_file.program_open")
+            await _cmd_blocking(CMD.program_open, abs_path, wait=None)
             return {"ok": True, "path": abs_path}
 
         if cmd == "unload_file":
@@ -3818,6 +3201,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 
         if cmd == "set_wcs":
             require_armed(armed)
+            require_no_eoffset()  # touch-off contamination guard (issue #19)
             blocked = reject_if_auto_running()
             if blocked:
                 return blocked
@@ -3855,20 +3239,49 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
 # Viewer support (Web 3D)
 # -----------------------------
 
+# ── Config-fallback degraded state (issue #21) ──
+# A unit-system or machine-geometry fallback is dangerous for a CNC, so it is
+# surfaced to the operator (status_msg["config_warning"]) instead of silently
+# becoming a normal default. Flags latch until a subsequent successful read.
+_units_fallback_active = False
+_units_fallback_reason = ""
+_config_warning_active = False
+_config_warning_reason = ""
+
+
+def _set_units_fallback(active: bool, reason: str = "") -> None:
+    global _units_fallback_active, _units_fallback_reason
+    if active and not _units_fallback_active:
+        _trace.emit("config.units_fallback", level="warn", reason=reason)
+    _units_fallback_active = active
+    _units_fallback_reason = reason if active else ""
+
+
 def get_machine_units() -> str:
-    """Return 'in' or 'mm' based on INI [TRAJ]LINEAR_UNITS."""
+    """Return 'in' or 'mm' based on INI [TRAJ]LINEAR_UNITS.
+
+    Falling back to 'mm' is unit-ambiguous and unsafe for visualization/motion,
+    so each fallback is surfaced via _set_units_fallback (issue #21) rather than
+    silently returning a default.
+    """
     if not STAT or not getattr(STAT, "ini_filename", None):
+        _set_units_fallback(True, "no INI loaded")
         return "mm"
     try:
-        ini = linuxcnc.ini(STAT.ini_filename)
-        lu = (ini.find("TRAJ", "LINEAR_UNITS") or "mm").strip().lower()
-        return "in" if lu in ("inch", "in", "imperial") else "mm"
-    except Exception:
+        lu = linuxcnc.ini(STAT.ini_filename).find("TRAJ", "LINEAR_UNITS")
+        if not lu:
+            _set_units_fallback(True, "[TRAJ]LINEAR_UNITS missing")
+            return "mm"
+        _set_units_fallback(False)
+        return "in" if lu.strip().lower() in ("inch", "in", "imperial") else "mm"
+    except Exception as e:
+        _set_units_fallback(True, f"INI parse error: {type(e).__name__}")
         return "mm"
 
 
 def _load_machine_config() -> dict:
     """Load machine model config from machine.json, or return hardcoded defaults."""
+    global _config_warning_active, _config_warning_reason
     cfg_path = MACHINE_DIR / "machine.json"
     if cfg_path.exists():
         try:
@@ -3877,7 +3290,15 @@ def _load_machine_config() -> dict:
             print(f"[VINIT] Loaded machine config: {cfg.get('name', '?')}", flush=True)
             return cfg
         except Exception as e:
-            print(f"[VINIT] Failed to load machine.json: {e}, using defaults", flush=True)
+            # Wrong geometry is an operator-visible degraded state, not a silent
+            # default (issue #21).
+            _trace.emit_exc("config.machine_json_load_failed", e, level="warn")
+            _config_warning_active = True
+            _config_warning_reason = f"machine.json load failed ({type(e).__name__}) — using default geometry"
+    else:
+        _trace.emit("config.machine_json_missing", level="warn", path=str(cfg_path))
+        _config_warning_active = True
+        _config_warning_reason = "machine.json missing — using default geometry"
     # Fallback: hardcoded defaults (original PM-25MV setup)
     return {
         "name": "Default",
@@ -4096,121 +3517,6 @@ def _build_wcs_rotation_patches() -> Dict[str, str]:
     return patches
 
 
-_gcode_parse_proc: Optional[asyncio.subprocess.Process] = None  # tracked so lifespan can terminate it
-
-async def _refresh_gcode_preview(filepath: str):
-    """Parse filepath in an isolated subprocess and publish the result.
-
-    Called from _status_poller on file change. Single-flight via
-    _gcode_refresh_running — the caller sets the flag before scheduling, this
-    coroutine clears it on exit. The subprocess has its own Python interpreter
-    and its own GIL, so _heartbeat_loop keeps ticking through the parse even
-    for multi-second programs.
-    """
-    global _gcode_preview_pending, _gcode_preview_version
-    global _gcode_last_file, _gcode_refresh_running
-    global _gcode_preview_bytes, _gcode_preview_bytes_gz, _gcode_parse_proc
-    t_start = time.monotonic()
-    try:
-        ini_path = getattr(STAT, "ini_filename", None) if STAT is not None else None
-        if not ini_path:
-            return
-        active_idx = getattr(STAT, "g5x_index", None) if STAT is not None else None
-        patches = _build_wcs_rotation_patches()
-        ctx = {
-            "file": filepath,
-            "ini_path": ini_path,
-            "units": get_machine_units(),
-            "var_patches": patches,
-            "g5x_index": active_idx if isinstance(active_idx, int) else 1,
-        }
-        ctx_bytes = _msgpack_encoder.encode(ctx)
-        _trace.emit("gcode.spawn_start",
-                    file=os.path.basename(filepath), active_idx=active_idx)
-
-        t_spawn = time.monotonic()
-        proc = await asyncio.create_subprocess_exec(
-            sys.executable, _GCODE_WORKER_PATH,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _gcode_parse_proc = proc
-        t_spawned = time.monotonic()
-        _trace.emit("gcode.spawn_ok",
-                    pid=proc.pid, fork_ms=round((t_spawned - t_spawn) * 1000, 1))
-
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(input=ctx_bytes),
-                timeout=60.0,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            _trace.emit("gcode.parse_timeout", level="warn", file=filepath)
-            return
-        t_communicated = time.monotonic()
-        if proc.returncode != 0:
-            err_tail = stderr.decode(errors="replace")[:500] if stderr else ""
-            _trace.emit("gcode.parse_worker_failed", level="warn",
-                        rc=proc.returncode, stderr_tail=err_tail)
-            return
-        # Surface worker-side timing (printed to stderr by the worker).
-        if stderr:
-            for ln in stderr.decode(errors="replace").splitlines():
-                if ln.strip():
-                    _trace.emit("gcode.worker_log", line=ln)
-        _trace.emit("gcode.worker_done",
-                    parse_ms=round((t_communicated - t_spawned) * 1000, 1),
-                    stdout_bytes=len(stdout))
-
-        t_dec = time.monotonic()
-        preview = await asyncio.to_thread(_msgspec.msgpack.decode, stdout)
-        t_dec_done = time.monotonic()
-        pending = {
-            "file": filepath,
-            "feed": preview.get("feed", []),
-            "feed_lines": preview.get("feed_lines", []),
-            "rapid": preview.get("rapid", []),
-            "stats": preview.get("stats"),
-        }
-        # Encode once off-thread for the GET /preview endpoint. Clients fetch
-        # this over HTTP (uvicorn's streamed-response path — independent of
-        # the WS writer), so the event loop isn't stalled by N-way 2.7 MB
-        # send_bytes() on a single thread.
-        preview_bytes: bytes = await asyncio.to_thread(_msgspec.msgpack.encode, pending)
-        t_enc_done = time.monotonic()
-        # Pre-compress once so each client doesn't pay the gzip cost per fetch.
-        # Level 6 = default; for our msgpack of float arrays it gets ~70-80%
-        # reduction. Skip below 4 KB — overhead isn't worth it.
-        preview_bytes_gz: Optional[bytes] = None
-        if len(preview_bytes) >= 4096:
-            preview_bytes_gz = await asyncio.to_thread(gzip.compress, preview_bytes, 6)
-        t_gz_done = time.monotonic()
-        # Publish pending + bytes together before bumping the version so
-        # GET /preview readers never see stale bytes under a new version.
-        _gcode_preview_pending = pending
-        _gcode_preview_bytes = preview_bytes
-        _gcode_preview_bytes_gz = preview_bytes_gz
-        _gcode_preview_version += 1
-        _gcode_last_file = filepath
-        _trace.emit("gcode.publish",
-                    version=_gcode_preview_version,
-                    decode_ms=round((t_dec_done - t_dec) * 1000, 1),
-                    encode_ms=round((t_enc_done - t_dec_done) * 1000, 1),
-                    gzip_ms=round((t_gz_done - t_enc_done) * 1000, 1),
-                    bytes=len(preview_bytes),
-                    bytes_gz=len(preview_bytes_gz) if preview_bytes_gz else 0,
-                    total_ms=round((t_gz_done - t_start) * 1000, 1))
-    except Exception as e:
-        _trace.emit("gcode.preview_refresh_failed", level="warn",
-                    file=filepath, exc=type(e).__name__, msg=str(e))
-    finally:
-        _gcode_refresh_running = False
-        _gcode_parse_proc = None
-
-
 # ---- Lifespan shutdown registry ----
 # Long-lived tasks register themselves here so the FastAPI lifespan can cancel
 # them on shutdown. uvicorn replaces our module-level signal handlers, so the
@@ -4228,11 +3534,58 @@ def register_bg_task(t: asyncio.Task) -> asyncio.Task:
 @asynccontextmanager
 async def lifespan(app: "FastAPI"):
     _trace.emit("boot.lifespan_ready")
-    # === TEMP IDLE-GATEWAY PROBE === start the status poller from lifespan
+    # Asyncio loop exists only after lifespan startup — wire the
+    # unhandled-task hook here so uvicorn's own handler is preserved.
+    _trace.install_asyncio_handler("gateway")
+    # === IDLE-GATEWAY DIAGNOSTICS === start the status poller from lifespan
     # rather than waiting for the first WS connect, so the [IDLE] log fires
     # during the pre-first-client window. The poller's `if not _clients`
     # branch sleeps cheaply, so running from boot is harmless.
     _start_status_poller()
+    # Warm the machine-path caches now (both resolve from LCNC_INI_FILE, which the
+    # launcher exports before uvicorn, and neither touches NML) so the first
+    # /upload or tool op doesn't pay an INI parse / makedirs on the event loop (B4).
+    try:
+        get_nc_files_dir()
+        get_tool_tbl_path()
+    except Exception as e:
+        _trace.emit_exc("boot.path_warmup_failed", e)
+    # Opt-in event-loop attribution (issue #35): with WEBUI_ASYNCIO_DEBUG=1 asyncio
+    # logs "Executing <coro …> took N seconds" for any callback holding the loop
+    # >50 ms (half the [HB-WAKE] threshold), naming the exact culprit behind a
+    # stall. Off by default — asyncio debug mode adds per-callback overhead, an
+    # observer effect on the hot path, so it's a diagnostic toggle, not always-on.
+    if os.environ.get("WEBUI_ASYNCIO_DEBUG") == "1":
+        try:
+            _dbg_loop = asyncio.get_running_loop()
+            _dbg_loop.slow_callback_duration = 0.05
+            _dbg_loop.set_debug(True)
+            _trace.emit("boot.asyncio_debug_enabled", level="warn", slow_callback_ms=50)
+            print("[ASYNCIO-DEBUG] slow-callback logging enabled (>50ms)", flush=True)
+        except Exception as e:
+            _trace.emit_exc("boot.asyncio_debug_failed", e)
+    # Optional (mmw#4): move the long-lived startup heap out of GC's reach. gen-2
+    # (full-heap) collections scan every tracked object and freeze the loop while
+    # they run; the startup set (modules, app, caches, viewer init) is never
+    # garbage, so scanning it every gen-2 is pure waste (mmw#4 saw 3 of 4
+    # collections free 0 objects). collect() first so startup cyclic garbage is
+    # reclaimed (not frozen forever), then freeze() promotes the survivors to the
+    # permanent generation — later gen-2 collections scan only post-startup allocs.
+    # freeze() does NOT disable GC: refcounting is untouched and new objects still
+    # flow gen0→1→2, so runtime memory (incl. post-startup cycles) is still fully
+    # collected — the frozen set is a one-time snapshot, so this can't pile up over
+    # time. Default OFF: it's a narrow optimization with a small risk (a startup
+    # cycle that later dies is never reclaimed), so best practice is to A/B it on
+    # the target (WEBUI_GC_FREEZE=1) — confirm gen-2 durations drop AND RSS stays
+    # flat via the [GC] logs — then flip this default ON once proven.
+    if os.environ.get("WEBUI_GC_FREEZE") == "1":
+        try:
+            _gc.collect()
+            _gc.freeze()
+            _trace.emit("boot.gc_frozen")
+            print("[GC] froze startup heap — gen-2 now scans only new allocations", flush=True)
+        except Exception as e:
+            _trace.emit_exc("boot.gc_freeze_failed", e)
     yield
     # ---- Shutdown ----
     # Order matters. Each step is bounded so a stuck client/socket can't block
@@ -4275,6 +3628,14 @@ async def lifespan(app: "FastAPI"):
             print(f"[SHUTDOWN] {_elapsed()} WS close timed out", flush=True)
         print(f"[SHUTDOWN] {_elapsed()} closed {len(snapshot)} WS connection(s)", flush=True)
 
+    _shutdown_fusion_proc = _bulk.fusion_import_proc  # (fusion worker — same race as review #2)
+    # Capture the in-flight parse handle BEFORE cancelling background tasks
+    # (review #2): cancelling _bulk.refresh_gcode_preview runs its finally, which
+    # clears _bulk.gcode_parse_proc — but the to_thread worker + subprocess keep
+    # running. Reading the global in step 6 would then see None and orphan the
+    # child. Hold the handle here so step 6 can still terminate it.
+    _shutdown_parse_proc = _bulk.gcode_parse_proc
+
     # 3. Cancel background tasks. Must precede step 4: _disconnect_grace and
     # _heartbeat_loop continuously toggle the heartbeat field via _hal_send;
     # if still running when step 4 writes the deterministic LOW, the watchdog
@@ -4292,17 +3653,6 @@ async def lifespan(app: "FastAPI"):
             print(f"[SHUTDOWN] {_elapsed()} {sum(1 for t in tasks if not t.done())} bg task(s) did not finish in 2s", flush=True)
         print(f"[SHUTDOWN] {_elapsed()} cancelled {len(tasks)} bg tasks", flush=True)
 
-    # 3b. Shut down the dedicated status-encode pool. wait=False because a
-    # mid-flight encode must not delay the deterministic HAL LOW below;
-    # cancel_futures=True abandons any encodes still queued. The default
-    # asyncio executor is shut down implicitly by the runtime — we only
-    # own this dedicated pool's lifecycle.
-    try:
-        _status_encode_executor.shutdown(wait=False, cancel_futures=True)
-        print(f"[SHUTDOWN] {_elapsed()} status encode pool shutdown", flush=True)
-    except Exception as e:
-        print(f"[SHUTDOWN] {_elapsed()} encode pool shutdown failed: {type(e).__name__}: {e}", flush=True)
-
     # 4. Final HAL state — deterministic LOW transition. hal_watchdog also
     # forces pins LOW on socket close (recv empty data), but explicit is
     # better here so the trip-latch / safety chain settles before halrun
@@ -4315,31 +3665,30 @@ async def lifespan(app: "FastAPI"):
 
     # 5. Disconnect HAL sockets (must follow step 4 — _hal_send needs the socket).
     _hal_disconnect()
-    if _reader_writer is not None:
-        try:
-            _reader_writer.close()
-            await asyncio.wait_for(_reader_writer.wait_closed(), timeout=0.5)
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[SHUTDOWN] {_elapsed()} reader writer close: {type(e).__name__}: {e}", flush=True)
+    await _hal_bridge.reader_aclose()
     print(f"[SHUTDOWN] {_elapsed()} HAL sockets disconnected", flush=True)
 
-    # 6. Terminate gcode parse subprocess if alive.
-    proc = _gcode_parse_proc
-    if proc is not None and proc.returncode is None:
+    # 6. Terminate the gcode parse subprocess if still alive, using the handle
+    # captured before step 3 (review #2). _bulk_mod.terminate_parse_proc bounds the wait
+    # (to_thread); terminating the child unblocks the orphaned communicate() thread.
+    if _shutdown_fusion_proc is not None:
         try:
-            proc.terminate()
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=1.0)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-            print(f"[SHUTDOWN] {_elapsed()} gcode parse subprocess terminated rc={proc.returncode}", flush=True)
+            await _bulk_mod.terminate_parse_proc(_shutdown_fusion_proc)
+            print(f"[SHUTDOWN] {_elapsed()} fusion import worker handled", flush=True)
+        except Exception as e:
+            print(f"[SHUTDOWN] {_elapsed()} fusion worker terminate failed: {e}", flush=True)
+    proc = _shutdown_parse_proc
+    if proc is not None:
+        try:
+            await _bulk_mod.terminate_parse_proc(proc)
+            print(f"[SHUTDOWN] {_elapsed()} gcode parse subprocess handled rc={proc.returncode}", flush=True)
         except Exception as e:
             print(f"[SHUTDOWN] {_elapsed()} gcode proc terminate failed: {e}", flush=True)
 
-    # 7. Camera.
+    # 7. Camera — awaitable broker shutdown stops the producer + releases the
+    # device deterministically (review #4), instead of a fire-and-forget release.
     try:
-        _camera_release()
+        await _camera_broker.aclose()
         print(f"[SHUTDOWN] {_elapsed()} camera released", flush=True)
     except Exception as e:
         print(f"[SHUTDOWN] {_elapsed()} camera release failed: {e}", flush=True)
@@ -4350,9 +3699,15 @@ async def lifespan(app: "FastAPI"):
 app = FastAPI(lifespan=lifespan)
 _trace.emit("boot.app_instantiated")
 
+# CORS is defense-in-depth only — the WS Origin gate and the REST token
+# dependency are the real boundary (issue #17). When an explicit allow-list is
+# configured, honour it (plus dev origins); otherwise fall back to "*", since
+# the gateway can't enumerate its own same-host origins at config time and the
+# token (a custom header, never served cross-origin) is what actually gates.
+_cors_origins = sorted(_ALLOWED_ORIGINS | _DEV_ORIGINS) if _ALLOWED_ORIGINS else ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -4394,13 +3749,19 @@ async def trace_http(request: Request, call_next):
         if request.client is not None:
             peer = f"{request.client.host}:{request.client.port}"
     except Exception:
-        pass
+        pass  # safe-silent: peer label is cosmetic, "?" is a fine fallback
     # Skip /assets and /static (served by StaticFiles, no instrumentation
     # value, and they fan out a lot during cold-load).
     if path.startswith("/assets/") or path.startswith("/static/"):
         return await call_next(request)
     _set_phase(f"http.{method}.{path}")
-    _trace.emit("http.start", path=path, method=method, peer=peer)
+    # /telemetry is high-frequency, low-value diagnostics (best-effort browser
+    # event batches). Emitting http.start + http.end for each one floods the
+    # trace bus and was itself measurable event-loop load (P0.3). Skip the
+    # routine pair for it; still surface slow (>50 ms) or error completions.
+    is_telemetry = path == "/telemetry"
+    if not is_telemetry:
+        _trace.emit("http.start", path=path, method=method, peer=peer)
     status = 0
     try:
         resp = await call_next(request)
@@ -4415,9 +3776,10 @@ async def trace_http(request: Request, call_next):
         raise
     finally:
         dur = (time.monotonic() - t0) * 1000
-        level = "warn" if dur > 50 else "info"
-        _trace.emit("http.end", level=level, path=path, method=method,
-                    peer=peer, duration_ms=round(dur, 1), status=status)
+        if not is_telemetry or dur > 50 or status >= 400 or status == 0:
+            level = "warn" if dur > 50 else "info"
+            _trace.emit("http.end", level=level, path=path, method=method,
+                        peer=peer, duration_ms=round(dur, 1), status=status)
 
 
 # Serve static machine assets (STLs etc.)
@@ -4453,38 +3815,105 @@ async def telemetry(request: Request):
         return {"ok": False, "error": "body_read_failed"}
     if not raw:
         return {"ok": True, "events": 0}
+    if len(raw) > TELEMETRY_BODY_MAX:
+        # Bounded ingestion (M1): an arbitrary-size NDJSON body previously
+        # expanded into unbounded parse work on this handler. Loud, not silent.
+        _trace.emit("telemetry.body_oversized", level="warn", bytes=len(raw))
+        return {"ok": False, "error": "body_too_large"}
     peer = "?"
     try:
         if request.client is not None:
             peer = f"{request.client.host}:{request.client.port}"
     except Exception:
-        pass
-    accepted = 0
-    rejected = 0
-    for line in raw.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            evt = json.loads(line)
-        except Exception:
-            rejected += 1
-            continue
-        if not isinstance(evt, dict):
-            rejected += 1
-            continue
-        kind = str(evt.get("kind") or evt.get("tag") or "event")
-        # Forward all fields as-is (strings/numbers/bools only after JSON
-        # decode anyway). Prefix tag with `browser.` so the merged trace
-        # makes the source obvious.
-        fields = {k: v for k, v in evt.items() if k not in ("kind", "tag")}
+        pass  # safe-silent: peer label is cosmetic, "?" is a fine fallback
+    # Validation/parsing is pure + bounded (gateway_util.parse_telemetry_batch);
+    # this handler keeps only transport concerns and the trace emission. Tags are
+    # prefixed `browser.` so the merged trace makes the source obvious; fields
+    # arrive JSON-decoded (strings/numbers/bools), never executed or rendered raw.
+    events, rejected = parse_telemetry_batch(raw)
+    for kind, fields in events:
         fields["peer"] = peer
         _trace.emit(f"browser.{kind}", **fields)
-        accepted += 1
-    return {"ok": True, "events": accepted, "rejected": rejected}
+    return {"ok": True, "events": len(events), "rejected": rejected}
 
 
-@app.post("/upload")
+def _safe_unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except FileNotFoundError:
+        pass  # safe-silent: best-effort temp cleanup, already-gone is fine
+
+
+# Injectable file opener for _atomic_stream_upload — tests substitute a blocking
+# writer to exercise cancellation during an in-flight write (review #5).
+_upload_file_opener = os.fdopen
+
+
+async def _atomic_stream_write(chunks, dest_path: str, max_bytes: int) -> int:
+    """Stream an async iterator of byte chunks to ``dest_path`` atomically and
+    bounded, keeping the event loop free. Shared core for ``POST /upload``
+    (multipart) and ``PUT /save`` (raw body) — one machinery, not two.
+
+    Every blocking disk op (mkstemp/write/flush/fsync/close/replace/unlink) is
+    offloaded via run_in_executor, so a slow disk, an fsync, or a large file
+    can't stall the HAL heartbeat (#35). The body is never materialized whole —
+    that also avoids the multi-MB allocation burst that feeds gen-2 GC (mmw#4).
+
+    Bounded: rejects with 413 the instant the running byte count exceeds
+    ``max_bytes`` (no oversized buffering). Atomic + durable: writes to a
+    ``.part`` temp in the destination dir, fsyncs, then ``os.replace`` — and
+    removes the temp on ANY failure, so LinuxCNC never sees a partial file.
+    Returns the number of bytes written.
+    """
+    loop = asyncio.get_event_loop()
+    dest_dir = os.path.dirname(dest_path) or "."
+    # Dedicated single-thread executor so THIS request's file ops serialize on one
+    # thread. If the coroutine is cancelled mid-write, the queued close/unlink run
+    # AFTER the in-flight write finishes rather than racing it on another pool
+    # thread (review #5). Uploads/saves are infrequent, so the thread is cheap.
+    io_ex = ThreadPoolExecutor(max_workers=1, thread_name_prefix="upload-io")
+    try:
+        fd, tmp = await loop.run_in_executor(
+            io_ex, lambda: tempfile.mkstemp(dir=dest_dir, suffix=".part")
+        )
+        written = 0
+        try:
+            f = _upload_file_opener(fd, "wb")
+            try:
+                async for chunk in chunks:
+                    if not chunk:
+                        continue
+                    written += len(chunk)
+                    if written > max_bytes:
+                        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
+                    await loop.run_in_executor(io_ex, f.write, chunk)
+                await loop.run_in_executor(io_ex, lambda: (f.flush(), os.fsync(f.fileno())))
+            finally:
+                await loop.run_in_executor(io_ex, f.close)
+            await loop.run_in_executor(io_ex, os.replace, tmp, dest_path)
+            tmp = None  # published — don't unlink in finally
+            return written
+        finally:
+            if tmp is not None:
+                await loop.run_in_executor(io_ex, _safe_unlink, tmp)
+    finally:
+        io_ex.shutdown(wait=False)
+
+
+async def _atomic_stream_upload(file: "UploadFile", dest_path: str,
+                                max_bytes: int, chunk_size: int = 1 << 20) -> int:
+    """Multipart-upload adapter over _atomic_stream_write: reads are async
+    (Starlette's threadpool — yields to the loop between chunks)."""
+    async def _chunks():
+        while True:
+            chunk = await file.read(chunk_size)
+            if not chunk:
+                return
+            yield chunk
+    return await _atomic_stream_write(_chunks(), dest_path, max_bytes)
+
+
+@app.post("/upload", dependencies=[Depends(require_token)])
 async def upload_gcode(file: UploadFile = File(...)):
     """Upload a G-code file to the NC files directory."""
     if not file.filename:
@@ -4503,21 +3932,26 @@ async def upload_gcode(file: UploadFile = File(...)):
     if not validate_path_within(dest_path, nc_dir):
         raise HTTPException(status_code=400, detail="Invalid filename")
 
-    content = await file.read()
-    if len(content) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
-
     try:
-        atomic_write_bytes(dest_path, content)
+        size = await _atomic_stream_upload(file, dest_path, MAX_UPLOAD_SIZE)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    return {"ok": True, "path": dest_path, "filename": safe_name, "size": len(content)}
+    return {"ok": True, "path": dest_path, "filename": safe_name, "size": size}
 
 
-@app.put("/save")
-async def save_gcode(path: str = Body(...), content: str = Body(...)):
-    """Save edited G-code content back to an existing file."""
+@app.put("/save", dependencies=[Depends(require_token)])
+async def save_gcode(request: Request, path: str = Query(...)):
+    """Save edited G-code content back to an existing file.
+
+    The body is the RAW UTF-8 text, not JSON (#35): a 50 MB `JSON.stringify` on the
+    browser main thread blocked it for seconds and starved the client heartbeat (the
+    gateway never even saw the request — so it never showed as an HB-WAKE). Reading the
+    raw body is async network I/O (no loop block), and it arrives already UTF-8-encoded,
+    so there's no on-loop encode either. Only the atomic write+fsync is offloaded.
+    """
     nc_dir = get_nc_files_dir()
     abs_path = os.path.abspath(path)
 
@@ -4533,163 +3967,24 @@ async def save_gcode(path: str = Body(...), content: str = Body(...)):
     if not os.path.isfile(abs_path):
         raise HTTPException(status_code=404, detail="File not found")
 
-    encoded = content.encode("utf-8")
-    if len(encoded) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large (max 50 MB)")
-
+    # Stream the raw UTF-8 body through the same bounded atomic chunk-writer as
+    # /upload (one machinery, not two): the ≤50 MB body is never materialized as
+    # one bytes object (request.body() buffered it whole in RAM), the size bound
+    # rejects mid-stream, and write/fsync/replace serialize off the loop —
+    # LinuxCNC never sees a half-written file.
     try:
-        atomic_write_bytes(abs_path, encoded)
+        size = await _atomic_stream_write(request.stream(), abs_path, MAX_UPLOAD_SIZE)
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to save file: {e}")
 
-    return {"ok": True, "path": abs_path, "size": len(encoded)}
+    return {"ok": True, "path": abs_path, "size": size}
 
 
 # ---- Fusion 360 Tool Library Import ----
 
-_FUSION_TYPE_MAP = {
-    "flat end mill": "endmill",
-    "ball end mill": "ball",
-    "bull nose end mill": "bullnose",
-    "chamfer mill": "chamfer",
-    "drill": "drill",
-    "spot drill": "drill",
-    "counter bore": "endmill",
-    "reamer": "endmill",
-    "boring bar": "endmill",
-    "center drill": "centerdrill",
-    "counter sink": "countersink",
-    "dovetail mill": "dovetail",
-    "face mill": "facemill",
-    "lollipop mill": "lollipop",
-    "slot mill": "slotmill",
-    "thread mill": "threadmill",
-    "form mill": "formmill",
-    "radius mill": "radiusmill",
-    "tapered mill": "tapered",
-    "probe": "probe",
-    "tap right hand": "tap",
-    "tap left hand": "tap",
-    "engraving cutter": "engraver",
-}
-
-
-def _fusion_unit_scale(src: Optional[str], machine_unit: str) -> float:
-    """Multiplier to convert a Fusion `unit` field value to machine native units.
-    Fusion writes "millimeters" or "inches"; default to mm if missing/unknown.
-    """
-    src_mm = not (src or "millimeters").lower().startswith("in")
-    machine_mm = machine_unit == "mm"
-    if src_mm == machine_mm:
-        return 1.0
-    return 25.4 if (not src_mm and machine_mm) else (1.0 / 25.4)
-
-
-def _opt_scale(v, scale: float):
-    return None if v is None else v * scale
-
-
-def _parse_fusion_library(data: dict) -> tuple[list, list]:
-    """Parse a Fusion 360 Library.json → (tools, skipped_duplicates).
-
-    Tools with duplicate numbers are excluded from the main list and returned
-    separately so the caller can warn about them.  The *first* occurrence of
-    each number is kept; later duplicates are skipped.
-
-    Linear dimensions are converted from each entry's `unit` (and each
-    holder's `unit`) into the machine's native linear unit.
-    """
-    machine_unit = get_ini_config().get("linear_units", "mm")
-    tools: list[dict] = []
-    skipped: list[dict] = []
-    seen_nums: dict[int, int] = {}          # tool_num → index in tools[]
-    for entry in data.get("data", []):
-        pp = entry.get("post-process", {})
-        geom = entry.get("geometry", {})
-        presets = entry.get("start-values", {}).get("presets", [])
-        holder = entry.get("holder", {})
-
-        tool_num = pp.get("number")
-        if tool_num is None:
-            continue
-
-        fusion_type = entry.get("type", "")
-        our_type = _FUSION_TYPE_MAP.get(fusion_type, "other")
-
-        tool_scale = _fusion_unit_scale(entry.get("unit"), machine_unit)
-
-        tool = {
-            "T": int(tool_num),
-            "D": float(geom.get("DC", 0)) * tool_scale,
-            "description": entry.get("description", "").strip(),
-            "type": our_type,
-            "flutes": geom.get("NOF"),
-            "oal": _opt_scale(geom.get("OAL"), tool_scale),
-            "flute_length": _opt_scale(geom.get("LCF"), tool_scale),
-            "corner_radius": _opt_scale(geom.get("RE"), tool_scale),
-            "body_length": _opt_scale(geom.get("LB"), tool_scale),
-            "shaft_diameter": _opt_scale(geom.get("SFDM"), tool_scale),
-            "taper_angle": geom.get("TA"),
-            "point_angle": geom.get("SIG"),
-            "tip_diameter": _opt_scale(geom.get("tip-diameter"), tool_scale),
-            "shoulder_length": _opt_scale(geom.get("shoulder-length"), tool_scale),
-            "shoulder_diameter": _opt_scale(geom.get("shoulder-diameter"), tool_scale),
-            "assembly_gauge_length": _opt_scale(geom.get("assemblyGaugeLength"), tool_scale),
-            "material": entry.get("BMC"),
-            "holder": holder.get("description") if holder else None,
-            "fusion_type": fusion_type,
-        }
-        # ---- Per-type angle normalization (Fusion stores half-angles for some types) ----
-        # Source: FreeCAD Better Tool Library reverse-engineering of Fusion 360 geometry keys
-        if our_type in ("chamfer", "countersink", "centerdrill"):
-            # Fusion TA is half-angle for chamfer/countersink — double to get included angle
-            if tool.get("taper_angle"):
-                tool["taper_angle"] *= 2
-        if our_type in ("countersink", "centerdrill"):
-            # Fusion SIG is half-angle for countersink/centerdrill — double to get included angle
-            if tool.get("point_angle"):
-                tool["point_angle"] *= 2
-        # (drill/spot drill SIG is already the full included angle — no adjustment needed)
-
-        # Holders carry their own `unit` independent of the tool body.
-        holder_segs = holder.get("segments", []) if holder else []
-        if holder_segs:
-            holder_scale = _fusion_unit_scale(holder.get("unit"), machine_unit)
-            tool["holder_segments"] = [
-                {"height": s["height"] * holder_scale,
-                 "lower_diameter": s["lower-diameter"] * holder_scale,
-                 "upper_diameter": s["upper-diameter"] * holder_scale}
-                for s in holder_segs if "height" in s
-            ]
-        # Form-mill profile coords share the tool's unit; arcs add a `center` pair.
-        if our_type == "formmill":
-            raw_profile = geom.get("profile")
-            if raw_profile and isinstance(raw_profile, list):
-                scaled_profile = []
-                for seg in raw_profile:
-                    new_seg = dict(seg)
-                    if "end" in seg:
-                        new_seg["end"] = [seg["end"][0] * tool_scale,
-                                          seg["end"][1] * tool_scale]
-                    if "center" in seg:
-                        new_seg["center"] = [seg["center"][0] * tool_scale,
-                                             seg["center"][1] * tool_scale]
-                    scaled_profile.append(new_seg)
-                tool["profile"] = scaled_profile
-        # Preserve raw presets (speeds/feeds per material) for sidecar
-        if presets:
-            tool["presets"] = presets
-
-        t_int = int(tool_num)
-        if t_int in seen_nums:
-            skipped.append(tool)
-        else:
-            seen_nums[t_int] = len(tools)
-            tools.append(tool)
-    return tools, skipped
-
-
-@app.post("/import-tool-library")
+@app.post("/import-tool-library", dependencies=[Depends(require_token)])
 async def import_tool_library(file: UploadFile = File(...)):
     """Preview or apply a Fusion 360 tool library import.
 
@@ -4697,55 +3992,60 @@ async def import_tool_library(file: UploadFile = File(...)):
       ?apply=true  — actually write to tool table + library (default: preview only)
       ?overwrite=true — overwrite existing tools (default: skip)
     """
-    from starlette.requests import Request
+    raw = await file.read(MAX_TOOL_LIBRARY_SIZE + 1)
+    if len(raw) > MAX_TOOL_LIBRARY_SIZE:
+        raise HTTPException(status_code=413, detail="Tool library too large (max 16 MB)")
 
-    raw = await file.read()
-    if len(raw) > MAX_UPLOAD_SIZE:
-        raise HTTPException(status_code=413, detail="File too large")
-
+    loop = asyncio.get_event_loop()
+    machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
     try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
-
-    if "data" not in data or not isinstance(data["data"], list):
-        raise HTTPException(status_code=400, detail="Not a Fusion 360 tool library (missing 'data' array)")
-
-    parsed, skipped = _parse_fusion_library(data)
+        parsed, skipped = await _bulk.decode_fusion_offloaded(raw, machine_unit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not parsed and not skipped:
         raise HTTPException(status_code=400, detail="No tools found in library")
 
-    # Count existing tools for warning
+    # Count existing tools for warning (file read off the loop)
     tbl_path = get_tool_tbl_path()
     existing_count = 0
     if tbl_path:
         try:
-            existing_count = len(parse_tool_table(tbl_path))
-        except Exception:
-            pass
+            existing_count = len(await loop.run_in_executor(None, parse_tool_table, tbl_path))
+        except Exception as e:
+            _trace.emit_exc("tool_tbl.recount_failed", e, tbl_path=tbl_path)
 
-    preview = [{**t} for t in parsed]
-    skipped_preview = [{"T": t["T"], "description": t.get("description", ""),
-                        "type": t.get("type", ""), "fusion_type": t.get("fusion_type", "")}
-                       for t in skipped]
+    # Build + JSON-encode the (potentially 60k-tool) response OFF the loop: the
+    # harness showed the post-decode work was still tripping the watchdog after
+    # the subprocess fix — the remaining ~600 ms was THIS: a 60k-dict copy loop
+    # (pointless — `parsed` is wholly ours) plus FastAPI JSON-encoding the lot on
+    # the event loop. One offloaded closure produces the final bytes.
+    def _build_preview_body() -> bytes:
+        skipped_preview = [{"T": t["T"], "description": t.get("description", ""),
+                            "type": t.get("type", ""), "fusion_type": t.get("fusion_type", "")}
+                           for t in skipped]
+        return json.dumps({"ok": True, "tools": parsed, "total": len(parsed),
+                           "existing_count": existing_count,
+                           "skipped_duplicates": skipped_preview}).encode()
 
-    return {"ok": True, "tools": preview, "total": len(parsed),
-            "existing_count": existing_count,
-            "skipped_duplicates": skipped_preview}
+    body = await asyncio.to_thread(_build_preview_body)
+    return Response(content=body, media_type="application/json")
 
 
-@app.post("/import-tool-library/apply")
+@app.post("/import-tool-library/apply", dependencies=[Depends(require_token)])
 async def apply_tool_library_import(
     file: UploadFile = File(...),
 ):
     """Apply a Fusion 360 tool library import — replaces tool.tbl and tool_library.json."""
-    raw = await file.read()
-    try:
-        data = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError) as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON: {e}")
+    raw = await file.read(MAX_TOOL_LIBRARY_SIZE + 1)
+    if len(raw) > MAX_TOOL_LIBRARY_SIZE:
+        raise HTTPException(status_code=413, detail="Tool library too large (max 16 MB)")
 
-    parsed, _skipped = _parse_fusion_library(data)
+    loop = asyncio.get_event_loop()
+    machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
+    try:
+        parsed, _skipped = await _bulk.decode_fusion_offloaded(raw, machine_unit)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     if not parsed:
         raise HTTPException(status_code=400, detail="No tools found")
 
@@ -4753,33 +4053,36 @@ async def apply_tool_library_import(
     if not tbl_path:
         raise HTTPException(status_code=500, detail="Tool table path not available")
 
-    # Replace entire tool table and sidecar
-    tbl_tools = []
-    library: dict = {}
+    # Replace entire tool table and sidecar. The build loop is pure Python over
+    # up-to-60k tools — off the loop (same harness finding as the preview route).
+    def _build_apply_payload():
+        tbl_tools = []
+        library: dict = {}
+        for tool in parsed:
+            t_num = tool["T"]
+            z_init = tool.get("body_length") or tool.get("oal") or 0.0
+            tbl_tools.append({
+                "T": t_num,
+                "P": t_num,
+                "Z": float(z_init),
+                "D": tool["D"],
+                "remark": tool.get("description", ""),
+            })
+            key = str(t_num)
+            library[key] = {}
+            for field in _TOOL_META_FIELDS:
+                val = tool.get(field)
+                if val is not None:
+                    library[key][field] = val
+            if tool.get("presets"):
+                library[key]["presets"] = tool["presets"]
+        return tbl_tools, library
 
-    for tool in parsed:
-        t_num = tool["T"]
-        z_init = tool.get("body_length") or tool.get("oal") or 0.0
-        tbl_tools.append({
-            "T": t_num,
-            "P": t_num,
-            "Z": float(z_init),
-            "D": tool["D"],
-            "remark": tool.get("description", ""),
-        })
+    tbl_tools, library = await asyncio.to_thread(_build_apply_payload)
 
-        key = str(t_num)
-        library[key] = {}
-        for field in _TOOL_META_FIELDS:
-            val = tool.get(field)
-            if val is not None:
-                library[key][field] = val
-        if tool.get("presets"):
-            library[key]["presets"] = tool["presets"]
-
-    write_tool_table(tbl_path, tbl_tools)
-    await _reload_tool_table_and_bump()
-    save_tool_library(library)
+    # Serialize the whole replacement under _cmd_lock + off the event loop, so
+    # it can't race the WS tool handlers or call into NML unlocked (issue #24).
+    await _persist_imported_tools(tbl_path, tbl_tools, library)
 
     return {"ok": True, "added": len(parsed), "skipped": len(_skipped)}
 
@@ -4886,17 +4189,27 @@ def get_preview(request: Request, v: Optional[int] = None):
     accepts gzip and a pre-compressed copy exists, serve that instead — both
     variants are produced once per parse, so per-fetch CPU stays at zero.
     """
-    if _gcode_preview_bytes is None:
+    if not _bulk.preview_available():
         raise HTTPException(status_code=404, detail="No preview cached")
     t_start = time.monotonic()
     peak = _fanout_enter("preview")
     try:
         accept_enc = request.headers.get("accept-encoding", "")
-        use_gzip = "gzip" in accept_enc and _gcode_preview_bytes_gz is not None
-        body = _gcode_preview_bytes_gz if use_gzip else _gcode_preview_bytes
+        use_gzip = "gzip" in accept_enc and _bulk.preview_bytes_gz is not None
+        if use_gzip:
+            body = _bulk.preview_bytes_gz
+        elif _bulk.preview_bytes is not None:
+            body = _bulk.preview_bytes
+        else:
+            # Non-gzip client and the raw copy was dropped: decompress on demand.
+            # This is a SYNC endpoint (threadpool), so the loop is untouched.
+            # Loud, not silent — exotic clients paying ~100 ms is auditable.
+            body = gzip.decompress(_bulk.preview_bytes_gz)  # type: ignore[arg-type]
+            _trace.emit("preview.raw_decompress", level="info",
+                        bytes=len(body), peer=str(request.client.host if request.client else "?"))
         headers = {
             "Cache-Control": "public, max-age=31536000, immutable",
-            "X-Preview-Version": str(_gcode_preview_version),
+            "X-Preview-Version": str(_bulk.preview_version),
             "Vary": "Accept-Encoding",
         }
         if use_gzip:
@@ -4912,7 +4225,7 @@ def get_preview(request: Request, v: Optional[int] = None):
         if peak > 1 or handler_ms > 50:
             print(
                 f"[FANOUT] preview peak={peak} handler_ms={handler_ms:.0f} "
-                f"bytes={len(_gcode_preview_bytes)}B v={_gcode_preview_version}",
+                f"bytes={_bulk.preview_raw_len}B v={_bulk.preview_version}",
                 flush=True,
             )
 
@@ -4925,17 +4238,17 @@ def get_surface_points(v: Optional[int] = None):
     stall the event loop past the HAL heartbeat window. `v` is advisory —
     a cache-buster so each version is a distinct URL.
     """
-    if _surface_points_bytes is None:
+    if _bulk.surface_bytes is None:
         raise HTTPException(status_code=404, detail="No surface data")
     t_start = time.monotonic()
     peak = _fanout_enter("surface_points")
     try:
         return Response(
-            content=_surface_points_bytes,
+            content=_bulk.surface_bytes,
             media_type="application/x-msgpack",
             headers={
                 "Cache-Control": "public, max-age=31536000, immutable",
-                "X-Surface-Version": str(_surface_points_version),
+                "X-Surface-Version": str(_bulk.surface_version),
             },
         )
     finally:
@@ -4944,7 +4257,7 @@ def get_surface_points(v: Optional[int] = None):
         if peak > 1 or handler_ms > 50:
             print(
                 f"[FANOUT] surface_points peak={peak} handler_ms={handler_ms:.0f} "
-                f"bytes={len(_surface_points_bytes)}B v={_surface_points_version}",
+                f"bytes={len(_bulk.surface_bytes)}B v={_bulk.surface_version}",
                 flush=True,
             )
 
@@ -4956,17 +4269,17 @@ def get_comp_grid(v: Optional[int] = None):
     Same pattern as /surface_points — keeps the up-to-~80 KB grid off the
     single-threaded WS writer.
     """
-    if _comp_grid_bytes is None:
+    if _bulk.grid_bytes is None:
         raise HTTPException(status_code=404, detail="No comp grid")
     t_start = time.monotonic()
     peak = _fanout_enter("comp_grid")
     try:
         return Response(
-            content=_comp_grid_bytes,
+            content=_bulk.grid_bytes,
             media_type="application/x-msgpack",
             headers={
                 "Cache-Control": "public, max-age=31536000, immutable",
-                "X-Comp-Grid-Version": str(_comp_grid_version),
+                "X-Comp-Grid-Version": str(_bulk.grid_version),
             },
         )
     finally:
@@ -4975,7 +4288,7 @@ def get_comp_grid(v: Optional[int] = None):
         if peak > 1 or handler_ms > 50:
             print(
                 f"[FANOUT] comp_grid peak={peak} handler_ms={handler_ms:.0f} "
-                f"bytes={len(_comp_grid_bytes)}B v={_comp_grid_version}",
+                f"bytes={len(_bulk.grid_bytes)}B v={_bulk.grid_version}",
                 flush=True,
             )
 
@@ -5085,14 +4398,31 @@ def _parse_hal_params() -> list:
 
 async def _halshow_topology() -> dict:
     """Full HAL topology (pin/sig/param structure with links) via halcmd subprocess.
-    Run once per subscribe — cheap when amortized vs the live-update loop."""
+
+    Cached for the gateway lifetime (P5): the HAL graph is fixed at config load, so
+    we build it ONCE (3 halcmd subprocesses) and reuse it for every subscriber —
+    previously each new subscriber re-ran all three subprocesses. `_halshow_loop`
+    processes subscribers sequentially, so the first cache-miss build completes
+    before the next subscriber is served (no double-build). Force a rebuild via
+    `_invalidate_halshow_topology()` (the `halshow_refresh` command), e.g. after an
+    external HAL reload."""
+    global _halshow_topology_cache
+    if _halshow_topology_cache is not None:
+        return _halshow_topology_cache
     loop = asyncio.get_event_loop()
     pins, signals, params = await asyncio.gather(
         loop.run_in_executor(None, _parse_hal_pins),
         loop.run_in_executor(None, _parse_hal_signals),
         loop.run_in_executor(None, _parse_hal_params),
     )
-    return {"pins": pins, "signals": signals, "params": params}
+    _halshow_topology_cache = {"pins": pins, "signals": signals, "params": params}
+    return _halshow_topology_cache
+
+
+def _invalidate_halshow_topology() -> None:
+    """Drop the cached HAL topology so the next subscriber rebuilds it (P5)."""
+    global _halshow_topology_cache
+    _halshow_topology_cache = None
 
 
 async def _halshow_value_snapshot() -> dict:
@@ -5162,8 +4492,9 @@ async def _halshow_loop() -> None:
                             continue
                         try:
                             await ws_send_json(ws, msg)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            _trace.emit_exc("ws.halshow_send_failed", e,
+                                            client_id=cid)
             _halshow_last_values = new_values
 
             await asyncio.sleep(0.2)  # 5 Hz
@@ -5200,7 +4531,7 @@ async def get_g30():
 
 @app.websocket("/ws")
 async def ws_endpoint(ws: WebSocket):
-    _conn_t0 = time.monotonic()  # === TEMP LIFECYCLE PROBE anchor for [CONN] deltas ===
+    _conn_t0 = time.monotonic()  # === LIFECYCLE DIAGNOSTICS anchor for [CONN] deltas ===
     # Per-client init under the WS-init semaphore. Released at block
     # exit (before the recv loop) so live connections aren't capped by
     # WEBUI_WS_INIT_CONCURRENCY. With cached build_viewer_init() this
@@ -5208,12 +4539,20 @@ async def ws_endpoint(ws: WebSocket):
     # overload (e.g. >20 tabs reconnecting in lockstep).
     async with _ws_init_sem:
         await ws.accept()
-        armed = False  # connection-local arming
-
-        global _next_client_id, _estop_hold, _unacked_trip, _last_trip_count
-        global _gcode_preview_pending, _gcode_preview_version
-        global _gcode_last_file
-        global _gcode_preview_bytes, _gcode_preview_bytes_gz, _gcode_refresh_running
+        # ── Auth + origin gate (issue #17) ── reject BEFORE registering the
+        # client or starting any background loop. Browsers always send Origin
+        # on a WS handshake, so a foreign Origin that fails the check is a
+        # cross-origin hijack attempt; the token gates non-browser clients.
+        if not _ws_origin_ok(ws.headers.get("origin"), ws.headers.get("host")):
+            _trace.emit("ws.auth_rejected", level="warn", peer=_peer_of(ws), reason="origin")
+            await ws.close(code=1008)
+            return
+        if not token_ok(ws.query_params.get("token"), WEBUI_TOKEN):
+            _trace.emit("ws.auth_rejected", level="warn", peer=_peer_of(ws), reason="token")
+            await ws.close(code=1008)
+            return
+        global _next_client_id, _estop_hold, _unacked_trip
+        global _last_fault_latched, _trip_baseline_seen
         client_id = _next_client_id
         _next_client_id += 1
         client_ip = ws.client.host if ws.client else "unknown"
@@ -5222,6 +4561,7 @@ async def ws_endpoint(ws: WebSocket):
             ws=ws,
             last_hb=time.time(),
         )
+        client = _clients[client_id]  # M3 de-closure: per-connection state object
         await _cancel_disconnect_grace()
         _start_heartbeat()
         _start_status_poller()
@@ -5272,7 +4612,7 @@ async def ws_endpoint(ws: WebSocket):
         try:
             _set_phase(f"build_viewer_init client#{client_id}")
             await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-            viewer_init_sent = True  # prevents status_loop re-send; reset on LinuxCNC reconnect
+            client.viewer_init_sent = True  # NOTE: dead in practice — unconditionally reset to False below (pre-existing; post-poll re-send always fires)
             _trace.emit(
                 "ws.connect.viewer_init",
                 client_id=client_id,
@@ -5291,7 +4631,7 @@ async def ws_endpoint(ws: WebSocket):
             _set_phase(f"load_settings client#{client_id}")
             _init_settings = await asyncio.get_event_loop().run_in_executor(None, load_settings)
             _set_phase(f"send_settings_init client#{client_id}")
-            await ws_send_json(ws, {"type": "settings_init", "settings": _init_settings, "armed": armed})
+            await ws_send_json(ws, {"type": "settings_init", "settings": _init_settings, "armed": client.armed})
             _trace.emit(
                 "ws.connect.settings",
                 client_id=client_id,
@@ -5310,7 +4650,7 @@ async def ws_endpoint(ws: WebSocket):
         # Cold path (file loaded but not yet parsed): schedule a refresh; the
         # client's status_loop picks up the ping on the next version bump.
         # File *content* is fetched separately via GET /gcode.
-        _init_preview_ver = _gcode_preview_version
+        _init_preview_ver = _bulk.preview_version
         _t = time.monotonic()
         _gcode_path = "no-file"
         try:
@@ -5319,20 +4659,20 @@ async def ws_endpoint(ws: WebSocket):
             initial_file = safe_get("file", None)
             if initial_file:
                 cache_hit = (
-                    _gcode_preview_pending is not None
-                    and _gcode_preview_pending.get("file") == initial_file
-                    and _gcode_preview_bytes is not None
+                    _bulk.preview_pending is not None
+                    and _bulk.preview_pending.get("file") == initial_file
+                    and _bulk.preview_available()
                 )
                 if cache_hit:
                     await ws_send_json(ws, {
                         "type": "viewer_gcode_ready",
-                        "version": _gcode_preview_version,
+                        "version": _bulk.preview_version,
                         "file": initial_file,
                     })
                     _gcode_path = "cache-hit-sent"
-                elif not _gcode_refresh_running:
-                    _gcode_refresh_running = True
-                    register_bg_task(asyncio.create_task(_refresh_gcode_preview(initial_file)))
+                elif not _bulk.refresh_running:
+                    _bulk.refresh_running = True
+                    register_bg_task(asyncio.create_task(_bulk.refresh_gcode_preview(initial_file)))
                     _gcode_path = "refresh-scheduled"
                 else:
                     _gcode_path = "refresh-already-running"
@@ -5350,30 +4690,25 @@ async def ws_endpoint(ws: WebSocket):
             total_ms=round((time.monotonic() - _conn_t0) * 1000, 1),
         )
 
-        viewer_init_sent = False
-        _probe_results: dict = {}  # populated from shared poller probe updates
-        _prev_tc_req = False  # previous tool-change-requested state for edge detection
-        _prev_tool_num = None  # previous tool_number for metadata edge detection
-
+        client.viewer_init_sent = False  # force the post-poll viewer_init (see NOTE above)
 
         async def status_loop():
             _set_phase(f"status_loop.entry client#{client_id}")
-            nonlocal armed, viewer_init_sent, _probe_results, _prev_tc_req, _prev_tool_num
             global _tool_meta_dirty, _fb_scale, _spindle_load_pin
             loop = asyncio.get_event_loop()
-            _last_settings_ver = _settings_version
+            _last_settings_ver = _settings_store.version
             _last_gen = 0  # tracks which _status_gen we last processed
             _consec_fails = 0  # consecutive status_loop exceptions — bail after 10
             # Spindle feedback scale: 60 if pin outputs RPS (default), 1 if RPM
-            _ss_init = load_settings()
+            _ss_init = await asyncio.to_thread(load_settings)  # file read off the loop (B3)
             _machine_s = _ss_init.get("machine", {})
             _fb_scale = 1 if _machine_s.get("spindleFeedbackUnit") == "rpm" else 60
             _slp = _machine_s.get("spindleLoadPin", "")
             _spindle_load_pin = _slp if isinstance(_slp, str) and _HAL_PIN_RE.match(_slp) else ""
             _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
             _prev_encode_ms = 0.0  # encode_ms from previous cycle (wire-format serialise time)
-            _last_surface_version = 0  # tracks which _surface_points_version was last sent to this client
-            _last_comp_grid_version = 0  # tracks which _comp_grid_version was last sent to this client
+            _last_surface_version = 0  # tracks which _bulk.surface_version was last sent to this client
+            _last_comp_grid_version = 0  # tracks which _bulk.grid_version was last sent to this client
             _last_tool_table_version = 0  # tracks which _tool_table_version was last sent to this client
             _last_gcode_preview_version = _init_preview_ver  # initialized from connect-time snapshot
             # Experiment 2: status-delta per-client state
@@ -5383,18 +4718,16 @@ async def ws_endpoint(ws: WebSocket):
                 try:
                     # Not connected — disarm and send error to this client
                     if not lcnc_connected:
-                        if viewer_init_sent:
-                            viewer_init_sent = False
-                        if armed:
-                            armed = False
-                            if client_id in _clients:
-                                _clients[client_id].armed = False
+                        if client.viewer_init_sent:
+                            client.viewer_init_sent = False
+                        if client.armed:
+                            client.armed = False
                         try:
                             await ws_send_json(ws, {
                                 "type": "status_error",
                                 "error": "LinuxCNC not connected",
                                 "clients": [{"ip": c.ip, "armed": c.armed} for c in _clients.values()],
-                                "armed": armed,
+                                "armed": client.armed,
                             })
                         except Exception:
                             break
@@ -5419,6 +4752,13 @@ async def ws_endpoint(ws: WebSocket):
                         continue
                     _last_gen = _status_gen
                     pickup_ts = time.monotonic()
+                    # Phase-mark the per-client build (#35 fanout): with delta on,
+                    # _use_shared is False so each client copies the shared dict
+                    # (6005) + runs _diff_status_data (6066) + encodes its own
+                    # frame — the suspected steady-state stall. If this phase
+                    # dominates a lag.window, the fix is delta-off (shared-encode)
+                    # or a cheaper diff. ws_send_measured re-phases for encode/send.
+                    _set_phase("status_loop.build")
 
                     # Slow-consumer / hidden-tab skip: if a previous tick's
                     # send to this client is still in flight, OR the client's
@@ -5439,12 +4779,12 @@ async def ws_endpoint(ws: WebSocket):
                         continue
 
                     # Send viewer_init on first successful poll for this client
-                    if not viewer_init_sent:
+                    if not client.viewer_init_sent:
                         print(f"[VINIT] client#{client_id} sending viewer_init (post-poll), STAT={'OK' if STAT else 'None'}", flush=True)
                         _t = time.monotonic()
                         try:
                             await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-                            viewer_init_sent = True
+                            client.viewer_init_sent = True
                             _trace.emit(
                                 "ws.conn.viewer_init_late",
                                 client_id=client_id,
@@ -5459,7 +4799,7 @@ async def ws_endpoint(ws: WebSocket):
 
                     # Merge shared probe updates into per-client results
                     if _shared_probe_updates:
-                        _probe_results.update(_shared_probe_updates)
+                        client.probe_results.update(_shared_probe_updates)
 
                     # Build status message. When the wire format is msgpack and no
                     # delta is active, splice the poller's pre-encoded bytes via
@@ -5467,7 +4807,7 @@ async def ws_endpoint(ws: WebSocket):
                     # client. tool_meta now lives at top-level (not inside data),
                     # so tool-change ticks no longer mutate the shared dict and the
                     # shared-encode path stays engaged.
-                    _tool_meta_tick = (st.tool_number != _prev_tool_num or _tool_meta_dirty)
+                    _tool_meta_tick = (st.tool_number != client.prev_tool_num or _tool_meta_dirty)
                     _use_shared = (
                         _WIRE_FORMAT == "msgpack"
                         and not _STATUS_DELTA_ENABLED
@@ -5477,29 +4817,41 @@ async def ws_endpoint(ws: WebSocket):
                         status_data: Any = _msgspec.Raw(_shared_status_data_msgpack)
                     else:
                         status_data = _shared_status_dict.copy() if _shared_status_dict else st.__dict__.copy()
-                    status_msg: dict = {
-                        "type": "status",
-                        "data": status_data,
-                        "errors": _shared_errors,
-                        "clients": _shared_clients_list,
-                        "armed": armed,
-                    }
-                    if _unacked_trip is not None:
-                        status_msg["safety_trip"] = _unacked_trip
-                    if _reader_is_stale():
-                        status_msg["reader_stale"] = True
-                    if _probe_results:
-                        status_msg["probe_results"] = _probe_results
+                    # Envelope assembly moved to ws_fanout.build_status_envelope
+                    # (M3): safety metadata is named in the call — when trip /
+                    # stale / config-warning state rides the frame, it's visible
+                    # right here, not implied by a bus subscription.
+                    status_msg: dict = _ws_fanout_mod.build_status_envelope(
+                        status_data=status_data,
+                        errors=_shared_errors,
+                        clients_list=_shared_clients_list,
+                        armed=client.armed,
+                        safety_trip=_unacked_trip,
+                        reader_stale=_reader_is_stale(),
+                        config_warning=(
+                            {
+                                "reason": _config_warning_reason or _units_fallback_reason,
+                                "units": _units_fallback_active,
+                            }
+                            if (_units_fallback_active or _config_warning_active) else None
+                        ),
+                        probe_results=client.probe_results,
+                        rfl_status=_rfl_status,
+                    )
 
                     # Inject tool_meta on tool_number change or library edit (for
                     # 3D rendering). Lives at top level — sibling of `data` — so
                     # the shared-encode of `data` stays valid every tick.
                     if _tool_meta_tick:
-                        _prev_tool_num = st.tool_number
+                        client.prev_tool_num = st.tool_number
                         _tool_meta_dirty = False
                         if st.tool_number is not None:
                             try:
-                                _lib = load_tool_library()
+                                # Hot path (per tool-number change × client): read
+                                # off the loop. ToolLibraryStore is mtime-cached and
+                                # now lock-guarded (B3), so this is safe against a
+                                # concurrent WS tool-command write on another thread.
+                                _lib = await asyncio.to_thread(load_tool_library)
                                 _meta = _lib.get(str(st.tool_number), {})
                                 if _meta:
                                     _tm = {k: _meta[k] for k in (
@@ -5584,7 +4936,7 @@ async def ws_endpoint(ws: WebSocket):
                         _status_tick_stats["send_sum"] += _prev_send_ms
                         if _prev_send_ms > _status_tick_stats["send_max"]:
                             _status_tick_stats["send_max"] = _prev_send_ms
-                        # === TEMP STATUS-PAYLOAD PROBE === wire-size accounting.
+                        # === STATUS-PAYLOAD DIAGNOSTICS === wire-size accounting.
                         _status_tick_stats["bytes_sum"] += _bytes_sent
                         if _bytes_sent > _status_tick_stats["bytes_max"]:
                             _status_tick_stats["bytes_max"] = _bytes_sent
@@ -5596,8 +4948,8 @@ async def ws_endpoint(ws: WebSocket):
                         _log_timing({**status_msg["timing"], "send_ms": _prev_send_ms})
 
                     # Settings broadcast: send full settings when version changes
-                    if _last_settings_ver != _settings_version:
-                        _last_settings_ver = _settings_version
+                    if _last_settings_ver != _settings_store.version:
+                        _last_settings_ver = _settings_store.version
                         try:
                             _ss = await loop.run_in_executor(None, load_settings)
                             _machine_s = _ss.get("machine", {})
@@ -5610,16 +4962,16 @@ async def ws_endpoint(ws: WebSocket):
                             await ws_send_json(ws, {
                                 "type": "settings_changed",
                                 "settings": _ss,
-                                "armed": armed,
+                                "armed": client.armed,
                             })
                         except (OSError, json.JSONDecodeError, ValueError) as e:
                             _trace.emit("status.settings_changed_broadcast_failed", level="warn",
                                         exc=type(e).__name__, msg=str(e))
 
                     # Tool change: auto-deassert when request clears
-                    if _prev_tc_req and not st.tool_change_requested:
+                    if client.prev_tc_req and not st.tool_change_requested:
                         _hal_send({"tool_changed": False})
-                    _prev_tc_req = st.tool_change_requested
+                    client.prev_tc_req = st.tool_change_requested
 
                     # Viewer: gcode preview — send a tiny "ready" ping so each
                     # client fetches the cached msgpack bytes via GET /preview.
@@ -5627,18 +4979,18 @@ async def ws_endpoint(ws: WebSocket):
                     # the single-threaded WS writer stalled the event loop past
                     # the HAL heartbeat window. File content is fetched via
                     # GET /gcode; preview data is fetched via GET /preview.
-                    if _gcode_preview_version != _last_gcode_preview_version:
-                        _last_gcode_preview_version = _gcode_preview_version
-                        pending = _gcode_preview_pending
-                        if _gcode_preview_bytes is not None and pending is not None:
+                    if _bulk.preview_version != _last_gcode_preview_version:
+                        _last_gcode_preview_version = _bulk.preview_version
+                        pending = _bulk.preview_pending
+                        if _bulk.preview_available() and pending is not None:
                             try:
                                 await ws_send_json(ws, {
                                     "type": "viewer_gcode_ready",
-                                    "version": _gcode_preview_version,
+                                    "version": _bulk.preview_version,
                                     "file": pending.get("file"),
                                 })
                             except RuntimeError:
-                                pass
+                                pass  # safe-silent: WS closed between iteration start and send
                         else:
                             await ws_send_json(ws, {
                                 "type": "viewer_gcode",
@@ -5648,28 +5000,28 @@ async def ws_endpoint(ws: WebSocket):
                     # Surface points: cached msgpack lives on the server; send a
                     # tiny version ping so each client fetches via GET /surface_points
                     # off the WS writer.
-                    if _surface_points_version != _last_surface_version:
-                        _last_surface_version = _surface_points_version
-                        if _surface_points_bytes is not None:
+                    if _bulk.surface_version != _last_surface_version:
+                        _last_surface_version = _bulk.surface_version
+                        if _bulk.surface_bytes is not None:
                             try:
                                 await ws_send_json(ws, {
                                     "type": "surface_points_ready",
-                                    "version": _surface_points_version,
+                                    "version": _bulk.surface_version,
                                 })
                             except RuntimeError:
-                                pass
+                                pass  # safe-silent: WS closed between iteration start and send
 
                     # Compensation grid: same pattern — fetch via GET /comp_grid.
-                    if _comp_grid_version != _last_comp_grid_version:
-                        _last_comp_grid_version = _comp_grid_version
-                        if _comp_grid_bytes is not None:
+                    if _bulk.grid_version != _last_comp_grid_version:
+                        _last_comp_grid_version = _bulk.grid_version
+                        if _bulk.grid_bytes is not None:
                             try:
                                 await ws_send_json(ws, {
                                     "type": "comp_grid_ready",
-                                    "version": _comp_grid_version,
+                                    "version": _bulk.grid_version,
                                 })
                             except RuntimeError:
-                                pass
+                                pass  # safe-silent: WS closed between iteration start and send
 
                     # Tool table: ping clients to refetch via WS RPC `get_tool_table`.
                     # Bumped by _reload_tool_table_and_bump() after every save/add/
@@ -5682,31 +5034,79 @@ async def ws_endpoint(ws: WebSocket):
                                 "version": _tool_table_version,
                             })
                         except RuntimeError:
-                            pass
+                            pass  # safe-silent: WS closed between iteration start and send
 
-                    # Heartbeat timeout
+                    # Heartbeat timeout — per-client liveness signal.
+                    #
+                    # Per the architecture cleanup: a client-side heartbeat
+                    # stall is NOT a safety event. It is a UI event. The HAL
+                    # chain (oneshot.0 + trip-latch) is the real safety, and
+                    # it independently trips on gateway hang or all-clients-out.
+                    # Stalling on one armed client while others (or even just
+                    # viewers) keep the HAL chain alive must NOT abort a
+                    # running program. So: disarm the client + jog-stop any
+                    # in-flight jog from this client. No program abort.
                     if client_id in _clients:
                         if time.time() - _clients[client_id].last_hb > 3.0:
-                            if armed:
-                                # Armed client stalled — disarm and stop motion
-                                armed = False
-                                _clients[client_id].armed = False
+                            if client.armed:
+                                client.armed = False
                                 try:
                                     async with _get_cmd_lock():
-                                        await _disarm_safety_sequence()
-                                except Exception:
-                                    pass
+                                        await _jog_stop_for_client()
+                                except Exception as _e:
+                                    _trace.emit(
+                                        "safety.hb_stall_jog_stop_failed", level="error",
+                                        client_id=client_id, exc=type(_e).__name__, err=str(_e),
+                                    )
+                                # Unhealthy client \u2014 drop any armed-resume hold so a
+                                # reconnect can't silently restore armed; the
+                                # operator must explicitly re-arm (safety clarity).
+                                _consume_armed_resume_hold(_clients[client_id].session_id)
+                                # Forensics: arrival gaps (ms between the last hb
+                                # arrivals) + total frames received. "No frames at
+                                # all in the gap" = delivery-path stall (e.g. the
+                                # Vite dev proxy); "frames but no heartbeat" =
+                                # browser-side generation problem.
+                                _c = _clients[client_id]
+                                _now_m = time.monotonic()
+                                _ring = list(_c.hb_ring)
+                                _gaps = [round((_ring[i] - _ring[i - 1]) * 1000) for i in range(1, len(_ring))]
+                                _trace.emit(
+                                    "safety.hb_stall_disarmed",
+                                    client_id=client_id,
+                                    hb_age_ms=round((time.time() - _c.last_hb) * 1000),
+                                    last_hb_arrival_ms_ago=round((_now_m - _ring[-1]) * 1000) if _ring else None,
+                                    hb_arrival_gaps_ms=_gaps,
+                                    frames_rx_total=_c.frames_rx,
+                                )
                                 try:
                                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Heartbeat timeout \u2014 disarmed for safety", "armed": False})
-                                except Exception:
-                                    pass
+                                except Exception as _e:
+                                    # Server-side disarm already happened; the
+                                    # notification just didn't reach the client.
+                                    # UI may show stale armed state until the
+                                    # next status frame. Logged so the missed
+                                    # signal is auditable rather than silently
+                                    # lost.
+                                    _trace.emit(
+                                        "safety.disarm_notify_failed", level="warn",
+                                        client_id=client_id, exc=type(_e).__name__, err=str(_e),
+                                    )
                             else:
                                 # Non-armed client stalled — evict to keep _clients accurate
                                 # Closing WS triggers finally block → removes from _clients → updates HAL pins
                                 try:
                                     await ws.close(code=1000, reason="Heartbeat timeout")
-                                except Exception:
-                                    pass
+                                except Exception as _e:
+                                    # Close failure is recoverable (finally block
+                                    # still runs cleanup) but worth surfacing —
+                                    # repeated occurrences indicate the WS layer
+                                    # is unhealthy.
+                                    _trace.emit(
+                                        "ws.close_failed", level="warn",
+                                        client_id=client_id, reason="hb_stall_nonarmed",
+                                        exc=type(_e).__name__, err=str(_e),
+                                    )
                                 return  # exit status_loop; finally block handles cleanup
 
                     # Full iteration completed without exception — reset failure counter.
@@ -5732,6 +5132,11 @@ async def ws_endpoint(ws: WebSocket):
         status_task = register_bg_task(asyncio.create_task(status_loop()))
 
     _disc_reason = "unknown"
+    # Captured on `cmd:"hello"`; the finally block uses this to register
+    # the armed-resume hold so the next reconnect of the same tab can
+    # silently inherit armed. Stays None for old clients that don't send
+    # hello (they lose armed on reconnect, same as today).
+    _disc_session_id: Optional[str] = None
     try:
         while True:
             _set_phase(f"ws.receive_text client#{client_id}")
@@ -5742,12 +5147,78 @@ async def ws_endpoint(ws: WebSocket):
                 await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Invalid JSON"})
                 continue
             _set_phase(f"handle_msg cmd={msg.get('cmd', '?')} client#{client_id}")
+            if client_id in _clients:
+                _clients[client_id].frames_rx += 1  # hb-stall forensics: ANY frame counts as delivery
 
             if msg.get("cmd") == "heartbeat":
                 if client_id in _clients:
                     _clients[client_id].last_hb = time.time()
                     _clients[client_id].hb_mono = time.monotonic()
+                    _clients[client_id].hb_ring.append(time.monotonic())
                 await ws_send_json(ws, {"type": "pong"})
+                continue
+
+            if msg.get("cmd") == "hello":
+                # Tab handshake: captures session_id for armed-resume across
+                # brief reconnects (Ctrl-R, Wi-Fi blip, screen-lock close).
+                # Decision tree, each branch traced — no silent fallbacks.
+                #
+                # Phase 2 / E4: peek first so denial events distinguish
+                # "no hold ever existed" from "hold expired" from "hold
+                # would have granted but a safety trip is pending". The
+                # previous ordering (unacked-trip-before-peek) emitted
+                # `resume_denied_unacked_trip` for fresh tabs that never
+                # had a hold — misleading.
+                _sid = msg.get("session")
+                if isinstance(_sid, str) and _sid:
+                    _disc_session_id = _sid
+                    if client_id in _clients:
+                        _clients[client_id].session_id = _sid
+                want_resume = bool(msg.get("resume_armed", False))
+                if want_resume:
+                    if not _sid:
+                        _trace.emit(
+                            "session.hello_missing",
+                            client_id=client_id, reason="resume_requested_without_session_id",
+                        )
+                    else:
+                        _hold_state = _peek_armed_resume_hold(_sid)
+                        if _hold_state == "no_match":
+                            _trace.emit(
+                                "session.resume_denied_no_match",
+                                client_id=client_id, session_id=_sid,
+                            )
+                        elif _hold_state == "expired":
+                            # Consume the stale hold so it doesn't linger.
+                            _consume_armed_resume_hold(_sid)
+                            _trace.emit(
+                                "session.resume_denied_expired",
+                                client_id=client_id, session_id=_sid,
+                            )
+                        elif _hold_state == "granted":
+                            # Within grace. Trip check applies here, not earlier:
+                            # an unacked trip blocks a real resume, but it should
+                            # not poison the trace for a fresh tab with no hold.
+                            if _unacked_trip is not None:
+                                # Don't consume — once the operator acks the
+                                # trip and reconnects again (still within
+                                # original window), they should still resume.
+                                # Note: in practice the grace window is short
+                                # so this is unlikely to matter; the choice
+                                # here favours operator-friendly behaviour.
+                                _trace.emit(
+                                    "session.resume_denied_unacked_trip",
+                                    client_id=client_id, session_id=_sid,
+                                )
+                            else:
+                                _consume_armed_resume_hold(_sid)
+                                client.armed = True
+                                client.last_hb = time.time()
+                                _trace.emit(
+                                    "session.resume_granted",
+                                    client_id=client_id, session_id=_sid,
+                                )
+                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "arm":
@@ -5762,32 +5233,53 @@ async def ws_endpoint(ws: WebSocket):
                         "error": "Safety trip not acknowledged",
                     })
                     continue
-                armed = want_armed
-                if client_id in _clients:
-                    _clients[client_id].armed = armed
-                    _clients[client_id].last_hb = time.time()  # reset on arm change
-                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
+                _was_armed = client.armed
+                client.armed = want_armed
+                client.last_hb = time.time()  # reset on arm change
+                # Symmetry with auto-disarm paths (Phase 2 / E1.2 + E2):
+                # explicit disarm must jog-stop any in-flight jog from this
+                # client AND register an armed-resume hold (so a deliberate
+                # disarm-then-Ctrl-R can still restore armed state). Closes
+                # the released-jog-button hazard and matches the "all paths
+                # to disarmed do the same thing" principle.
+                if _was_armed and not client.armed:
+                    if CMD is not None and not _shutting_down:
+                        try:
+                            async with _get_cmd_lock():
+                                await _jog_stop_for_client()
+                        except Exception as _e:
+                            _trace.emit(
+                                "safety.explicit_disarm_jog_stop_failed", level="error",
+                                client_id=client_id, exc=type(_e).__name__, err=str(_e),
+                            )
+                    _register_armed_resume_hold(_disc_session_id, client_id)
+                    _trace.emit(
+                        "safety.explicit_disarmed",
+                        client_id=client_id,
+                    )
+                elif not _was_armed and client.armed:
+                    _trace.emit(
+                        "safety.explicit_armed",
+                        client_id=client_id,
+                    )
+                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "safety_trip_ack":
+                # Clearing the banner is independent of clearing the latch: the
+                # HAL latch stays set (fault-out TRUE) until the operator's
+                # E-Stop Reset. Because evaluate_trip_latch only re-banners on a
+                # clean FALSE→TRUE transition, the still-TRUE level after this ack
+                # produces no edge and the ack sticks; a genuinely new trip
+                # (latch reset → FALSE, then TRUE again) still fires.
                 _unacked_trip = None
-                # If trip-count advanced between the original trip and this
-                # ack (additional trips fired while the banner was up), the
-                # next status_poller tick would see trip_count > _last_trip_count
-                # and re-set _unacked_trip immediately. Sync _last_trip_count
-                # to the reader's current value so the ack actually clears.
-                # A genuinely-new trip after this ack will still fire because
-                # the reader counter will increment past this value.
-                _current_trip_count = _reader_get("trip_count")
-                if _current_trip_count is not None:
-                    _last_trip_count = _current_trip_count
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 
             if msg.get("cmd") == "get_settings":
                 _loop = asyncio.get_event_loop()
                 _ss = await _loop.run_in_executor(None, load_settings)
-                await ws_send_json(ws, {"type": "settings_init", "settings": _ss, "armed": armed})
+                await ws_send_json(ws, {"type": "settings_init", "settings": _ss, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "save_settings":
@@ -5796,8 +5288,23 @@ async def ws_endpoint(ws: WebSocket):
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": f"Unknown settings section: {section}"})
                     continue
                 _loop = asyncio.get_event_loop()
-                await _loop.run_in_executor(None, save_settings_section, section, msg.get("data"))
+                try:
+                    await _loop.run_in_executor(None, save_settings_section, section, msg.get("data"))
+                except Exception as _se:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": f"{type(_se).__name__}: {_se}"})
+                    continue
                 await ws_send_json(ws, {"type": "reply", "ok": True})
+                continue
+
+            if msg.get("cmd") == "client_diag":
+                # Periodic browser-side diagnostics (heap, Three.js counters,
+                # connection state). Forwarded straight to the trace bus so a
+                # renderer crash ("Aw Snap") still leaves a usable timeline in
+                # trace.ndjson — the gateway file outlives the browser.
+                data = msg.get("data")
+                if isinstance(data, dict):
+                    _trace.emit("client.diag", client_id=client_id, **data)
+                # Fire-and-forget — no reply, no ack, to keep this off the hot path.
                 continue
 
             if msg.get("cmd") == "timing_log":
@@ -5806,7 +5313,15 @@ async def ws_endpoint(ws: WebSocket):
                 if _timing_log_enabled:
                     from datetime import datetime
                     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-                    _timing_log_path = f"/tmp/lcnc-timing-{stamp}.jsonl"
+                    base = _trace.log_dir()
+                    if not base:
+                        _trace.emit("timing.log_no_log_dir", level="error")
+                        _timing_log_enabled = False
+                        await ws_send_json(ws, {"type": "reply", "ok": False, "enabled": False})
+                        continue
+                    timing_dir = os.path.join(base, "timing")
+                    os.makedirs(timing_dir, exist_ok=True)
+                    _timing_log_path = os.path.join(timing_dir, f"timing-{stamp}.jsonl")
                     _trace.emit("timing.log_started", path=_timing_log_path)
                 else:
                     if _timing_log_path:
@@ -5824,6 +5339,14 @@ async def ws_endpoint(ws: WebSocket):
                     # Drop any stale flag so subscriber gets a fresh snapshot
                     _halshow_topology_sent.pop(client_id, None)
                     _ensure_halshow_loop()
+                await ws_send_json(ws, {"type": "reply", "ok": True})
+                continue
+
+            if msg.get("cmd") == "halshow_refresh":
+                # Force a topology rebuild (P5) — e.g. after an external HAL reload.
+                # Clears every subscriber's sent-flag so the rebuilt graph re-sends.
+                _invalidate_halshow_topology()
+                _halshow_topology_sent.clear()
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 
@@ -5851,7 +5374,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "simulate_probe_trip":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 if not lcnc_connected:
@@ -5885,7 +5408,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "confirm_tool_change":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 if not lcnc_connected:
@@ -5897,7 +5420,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "set_compensation":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 enable = bool(msg.get("enable", False))
@@ -5907,28 +5430,49 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "set_compensation_method":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
-                method = int(msg.get("method", 2))
+                # Validated inline: this handler runs BEFORE the handle_command
+                # dispatch boundary, so a bad cast here would escape to the
+                # WebSocketDisconnect/RuntimeError catch and tear the socket
+                # down instead of returning a bounded error (issue #27).
+                try:
+                    method = finite_int(msg.get("method", 2))
+                except (ValueError, TypeError) as _e:
+                    await ws_send_json(ws, {"type": "reply", "ok": False, "error": f"Invalid method: {_e}"})
+                    continue
                 _loop = asyncio.get_event_loop()
                 await _loop.run_in_executor(None, _hal_send, {"compensation_method": method})
                 await ws_send_json(ws, {"type": "reply", "ok": True})
                 continue
 
             _set_phase(f"handle_command cmd={msg.get('cmd', '?')} client#{client_id}")
-            reply = await handle_command(msg, armed)
-            if msg.get("cmd") == "unload_file" and reply.get("ok"):
-                # reset_interpreter doesn't clear stat.file, so the shared
-                # poller's file-change edge won't fire. Clear the shared
-                # cache and bump the version so every client's status_loop
-                # sends an empty viewer_gcode on the next cycle.
-                _gcode_preview_pending = None
-                _gcode_preview_bytes = None
-                _gcode_preview_bytes_gz = None
-                _gcode_preview_version += 1
-                _gcode_last_file = None
-            await ws_send_json(ws, {"type": "reply", **reply})
+            try:
+                reply = await handle_command(msg, client.armed)
+            except (ValueError, TypeError, KeyError, PermissionError, OverflowError) as _val_e:
+                # Malformed payload or failed precondition (bad numeric cast,
+                # missing field, not-armed). Return a bounded structured error
+                # rather than letting it bubble out of the receive loop — an
+                # uncaught exception here would tear down the socket and trip
+                # the armed-disconnect side effects in `finally` (issue #27).
+                _trace.emit("ws.command_invalid", level="warn",
+                            client_id=client_id, cmd=msg.get("cmd"),
+                            exc=type(_val_e).__name__, msg=str(_val_e))
+                reply = {"ok": False, "error": f"{type(_val_e).__name__}: {_val_e}"}
+            else:
+                if msg.get("cmd") == "unload_file" and reply.get("ok"):
+                    # reset_interpreter doesn't clear stat.file, so the shared
+                    # poller's file-change edge won't fire. Clear the shared
+                    # cache and bump the version so every client's status_loop
+                    # sends an empty viewer_gcode on the next cycle.
+                    _bulk.preview_pending = None
+                    _bulk.preview_bytes = None
+                    _bulk.preview_bytes_gz = None
+                    _bulk.preview_version += 1
+                    _bulk.last_file = None
+                    _bulk.last_mtime = None
+            await ws_send_json(ws, {"type": "reply", "cmd": msg.get("cmd"), **reply})
 
     except (WebSocketDisconnect, RuntimeError) as _disc_e:
         _set_phase(f"ws_endpoint.WebSocketDisconnect_caught client#{client_id}")
@@ -5936,22 +5480,54 @@ async def ws_endpoint(ws: WebSocket):
     finally:
         _finally_t0 = time.monotonic()
         _set_phase(f"ws_endpoint.finally.entry client#{client_id}")
+        # Capture heartbeat freshness BEFORE removing the client (review #1): the
+        # resume-hold decision below needs it, and popping first made the later
+        # lookup always miss → 1e9 → even a healthy Ctrl-R reconnect could never
+        # register an armed-resume hold.
+        _last_hb_at_drop = _clients[client_id].last_hb if client_id in _clients else None
         _clients.pop(client_id, None)
         _halshow_topology_sent.pop(client_id, None)
-        # Safety: stop all motion if this armed client disconnects.
-        # During global lifespan shutdown we already broadcast server_shutdown
-        # and closed WS sockets — N clients each acquiring _cmd_lock to call
-        # CMD.abort() while LinuxCNC is itself tearing down would stall the
-        # shutdown path. Lifespan owns the global stop instead.
-        if armed and CMD is not None and not _shutting_down:
-            _set_phase(f"ws_endpoint.finally.armed_motion_abort client#{client_id}")
+        # Disconnect of an armed client: jog-stop any in-flight jog this
+        # client started, then register a 10s armed-resume hold keyed by
+        # session_id so a Ctrl-R / Wi-Fi blip can transparently re-arm.
+        #
+        # We do NOT abort a running program here. Per the architecture
+        # cleanup: client liveness is not safety. The HAL chain (oneshot.0
+        # + trip-latch) is the real safety, and it independently trips on
+        # gateway hang or all-clients-out (via _start_disconnect_grace).
+        # A single armed client dropping while viewers (or even nothing)
+        # remain must not abort the program — if everyone is gone, HAL
+        # grace expires and the trip-latch handles it for real.
+        #
+        # During global lifespan shutdown the gateway has already broadcast
+        # server_shutdown and closed sockets; skip the jog-stop in that
+        # window so N clients don't all serialize on _cmd_lock during a
+        # LinuxCNC teardown.
+        if client.armed and CMD is not None and not _shutting_down:
+            _set_phase(f"ws_endpoint.finally.armed_jog_stop client#{client_id}")
             try:
                 async with _get_cmd_lock():
-                    _set_phase(f"ws_endpoint.finally.armed_abort.cmd_lock_held client#{client_id}")
+                    _set_phase(f"ws_endpoint.finally.armed_jog_stop.cmd_lock_held client#{client_id}")
                     STAT.poll()
-                    await _disarm_safety_sequence()
-            except Exception:
-                pass
+                    await _jog_stop_for_client()
+            except Exception as _e:
+                _trace.emit(
+                    "safety.disconnect_jog_stop_failed", level="error",
+                    client_id=client_id, exc=type(_e).__name__, err=str(_e),
+                )
+            # Only arm-resume a client that was beating normally right up to the
+            # drop (clean Ctrl-R / wifi blip). A client whose heartbeat was already
+            # lagging was struggling/overloaded — don't silently auto-restore armed
+            # on reconnect; the operator must explicitly re-arm (safety clarity).
+            _hb_age = (time.time() - _last_hb_at_drop) if _last_hb_at_drop is not None else 1e9
+            if _hb_age <= _RESUME_MAX_HB_AGE:
+                _register_armed_resume_hold(_disc_session_id, client_id)
+                _trace.emit("safety.disconnect_disarmed", client_id=client_id)
+            else:
+                _trace.emit(
+                    "safety.disconnect_disarmed_no_resume", level="warn",
+                    client_id=client_id, hb_age_ms=round(_hb_age * 1000),
+                )
         _set_phase(f"ws_endpoint.finally.cancel_status_task client#{client_id}")
         status_task.cancel()
         # Clear estop hold if no clients remain
@@ -5991,24 +5567,28 @@ def _camera_init() -> bool:
     global _camera
     if cv2 is None:
         return False
-    if _camera is not None:
-        return _camera.isOpened()
     source = os.environ.get("LCNC_CAMERA_SOURCE", "")
     if not source:
         return False
-    try:
-        src: Any = int(source)
-    except ValueError:
-        src = source
-    _camera = cv2.VideoCapture(src)
-    res = os.environ.get("LCNC_CAMERA_RESOLUTION", "1280x720")
-    try:
-        w, h = (int(x) for x in res.split("x"))
-        _camera.set(cv2.CAP_PROP_FRAME_WIDTH, w)
-        _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
-    except ValueError:
-        pass
-    return _camera.isOpened()
+    # Hold _camera_lock across the whole init: two concurrent /camera requests
+    # are each dispatched to the threadpool, so without the lock both could
+    # construct a VideoCapture and leak one device handle. Double-check inside.
+    with _camera_lock:
+        if _camera is not None:
+            return _camera.isOpened()
+        try:
+            src: Any = int(source)
+        except ValueError:
+            src = source
+        _camera = cv2.VideoCapture(src)
+        res = os.environ.get("LCNC_CAMERA_RESOLUTION", "1280x720")
+        try:
+            w, h = (int(x) for x in res.split("x"))
+            _camera.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            _camera.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+        except ValueError:
+            pass  # safe-silent: malformed resolution string, camera keeps default
+        return _camera.isOpened()
 
 def _camera_grab_jpeg(quality: int = 80) -> Optional[bytes]:
     """Grab one frame, return JPEG bytes or None."""
@@ -6028,6 +5608,16 @@ def _camera_release():
             _camera.release()
             _camera = None
 
+
+# Single-producer camera fan-out (P3 / M5) — the async lifecycle lives in
+# camera_broker.py; the device-touching cv2 I/O + bg-task registry are injected.
+_camera_broker = CameraBroker(
+    grab_jpeg=_camera_grab_jpeg,
+    device_init=_camera_init,
+    device_release=_camera_release,
+    register_bg_task=register_bg_task,
+)
+
 # ---- Server-Side Settings Endpoints ----
 
 @app.get("/settings")
@@ -6037,19 +5627,27 @@ async def get_settings():
     return {"ok": True, "settings": data}
 
 
-@app.put("/settings/{section}")
-@app.post("/settings/{section}")  # POST used by sendBeacon on page exit
+@app.put("/settings/{section}", dependencies=[Depends(require_token)])
+@app.post("/settings/{section}", dependencies=[Depends(require_token)])  # POST used by sendBeacon on page exit
 async def put_settings_section(section: str, request: Request):
     if section not in _VALID_SETTINGS_SECTIONS:
-        return {"ok": False, "error": f"Unknown section: {section}"}
-    body = await request.json()
-    data = body.get("data")
+        return JSONResponse({"ok": False, "error": f"Unknown section: {section}"}, status_code=400)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"ok": False, "error": "Invalid JSON body"}, status_code=400)
+    if not isinstance(body, dict) or "data" not in body:
+        return JSONResponse({"ok": False, "error": "Missing 'data'"}, status_code=400)
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(None, save_settings_section, section, data)
+    try:
+        await loop.run_in_executor(None, save_settings_section, section, body["data"])
+    except Exception as e:
+        # e.g. refuse-to-clobber when settings.json is corrupt — surface it.
+        return JSONResponse({"ok": False, "error": f"{type(e).__name__}: {e}"}, status_code=409)
     return {"ok": True}
 
 
-@app.delete("/settings")
+@app.delete("/settings", dependencies=[Depends(require_token)])
 async def delete_settings():
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(None, reset_settings)
@@ -6058,22 +5656,20 @@ async def delete_settings():
 
 @app.get("/camera/stream")
 async def camera_stream():
-    loop = asyncio.get_event_loop()
-    ok = await loop.run_in_executor(None, _camera_init)
+    # One shared producer feeds all viewers (P3): subscribing starts it on the
+    # first viewer; the `finally` releases this viewer's slot so the device is
+    # freed a short grace after the last one leaves.
+    ok = await _camera_broker.subscribe()
     if not ok:
         return JSONResponse({"error": "No camera configured"}, status_code=503)
-    fps = int(os.environ.get("LCNC_CAMERA_FPS", "15"))
-    delay = 1.0 / fps
 
     async def generate():
-        while True:
-            jpeg = await loop.run_in_executor(None, _camera_grab_jpeg)
-            if jpeg is None:
-                await asyncio.sleep(delay)
-                continue
-            yield (b"--frame\r\n"
-                   b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
-            await asyncio.sleep(delay)
+        try:
+            async for jpeg in _camera_broker.frames():
+                yield (b"--frame\r\n"
+                       b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n")
+        finally:
+            _camera_broker.unsubscribe()
 
     return StreamingResponse(
         generate(),
@@ -6092,4 +5688,28 @@ async def camera_status():
 # and mount("/") is a catch-all that would swallow WebSocket connections.
 _DIST_DIR = os.environ.get("LCNC_WEBUI_DIST_DIR")
 if _DIST_DIR and Path(_DIST_DIR).is_dir():
+    # Serve index.html ourselves so we can inject the auth token (issue #17):
+    # the SPA reads window.__LCNC_TOKEN__ and presents it on the WS URL + REST
+    # headers. Anyone the gateway serves the page to is already a client it
+    # chose to serve, so handing them the LAN-admission token in that page does
+    # not weaken it against the real threats (cross-origin WS hijack, which
+    # can't read this page cross-origin, and unauthenticated REST mutation).
+    def _serve_index() -> Response:
+        try:
+            html = (Path(_DIST_DIR) / "index.html").read_text(encoding="utf-8")
+        except Exception:
+            raise HTTPException(status_code=404, detail="index.html not found")
+        inject = f"<script>window.__LCNC_TOKEN__ = {json.dumps(WEBUI_TOKEN)};</script>"
+        html = html.replace("</head>", inject + "</head>", 1) if "</head>" in html else inject + html
+        return Response(content=html, media_type="text/html", headers={"Cache-Control": "no-cache"})
+
+    @app.get("/")
+    async def spa_index():
+        return _serve_index()
+
+    @app.get("/index.html")
+    async def spa_index_html():
+        return _serve_index()
+
+    # Catch-all for assets — MUST come after the explicit index routes above.
     app.mount("/", StaticFiles(directory=_DIST_DIR, html=True), name="spa")

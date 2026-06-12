@@ -6,6 +6,7 @@ import { initServerDefaults } from './defaults'
 import { VALID_GATES } from './permissions'
 import { initDragScroll } from './dragScroll'
 import { initTouchDetect } from './touchDetect'
+import { startClientDiag } from './clientDiag'
 
 const SERVER_SECTIONS = ["macros", "machine", "camera", "mdi", "gamepad", "keyboard", "probe", "toolsetter", "display", "viewer", "panels"];
 
@@ -21,7 +22,18 @@ async function bootstrap() {
     console.error("[settings] initial fetch failed; deferring to WS settings_init:", e);
   }
 
-  const migrations: Promise<void>[] = [];
+  // Strip a localStorage key for one server section only AFTER its save lands.
+  // A failed save keeps the data locally so the next boot retries it, instead
+  // of wiping it from both places (the old code stripped before awaiting).
+  async function migrateSection(section: string, data: any): Promise<boolean> {
+    try {
+      await saveSettingsSection(section, data);
+      return true;
+    } catch (e) {
+      console.warn(`[migrate] ${section} save failed — kept in localStorage for retry`, e);
+      return false;
+    }
+  }
 
   // One-time migration: lcnc-defaults localStorage → server for server sections
   // Only run if REST fetch succeeded (otherwise we'd migrate stale data)
@@ -29,18 +41,20 @@ async function bootstrap() {
     const raw = localStorage.getItem("lcnc-defaults");
     if (raw) {
       const local = JSON.parse(raw);
-      for (const key of SERVER_SECTIONS) {
+      const failed = new Set<string>();
+      await Promise.all(SERVER_SECTIONS.map(async (key) => {
         if (local[key] && !serverSettings[key]) {
           serverSettings[key] = local[key];
-          migrations.push(saveSettingsSection(key, local[key]));
+          if (!(await migrateSection(key, local[key]))) failed.add(key);
         }
-      }
-      // Strip server sections from localStorage
-      const localOnly: Record<string, any> = {};
+      }));
+      // Rewrite localStorage keeping local-only sections AND any server section
+      // whose migration failed (so it isn't lost and retries next boot).
+      const remaining: Record<string, any> = {};
       for (const [k, v] of Object.entries(local as Record<string, any>)) {
-        if (!SERVER_SECTIONS.includes(k)) localOnly[k] = v;
+        if (!SERVER_SECTIONS.includes(k) || failed.has(k)) remaining[k] = v;
       }
-      localStorage.setItem("lcnc-defaults", JSON.stringify(localOnly));
+      localStorage.setItem("lcnc-defaults", JSON.stringify(remaining));
     }
   } catch (e) {
     console.warn("[migrate] lcnc-defaults migration failed", e);
@@ -52,9 +66,10 @@ async function bootstrap() {
     if (probeRaw && !serverSettings.probe) {
       const probeLocal = JSON.parse(probeRaw);
       serverSettings.probe = probeLocal;
-      migrations.push(saveSettingsSection("probe", probeLocal));
+      if (await migrateSection("probe", probeLocal)) localStorage.removeItem("lcnc-probe-params");
+    } else if (probeRaw) {
+      localStorage.removeItem("lcnc-probe-params"); // server already has it — local copy stale
     }
-    if (probeRaw) localStorage.removeItem("lcnc-probe-params");
   } catch (e) {
     console.warn("[migrate] lcnc-probe-params migration failed", e);
   }
@@ -66,24 +81,18 @@ async function bootstrap() {
       const tsLocal = JSON.parse(tsRaw);
       delete tsLocal.toolNumber; // toolNumber lives in App.vue
       serverSettings.toolsetter = tsLocal;
-      migrations.push(saveSettingsSection("toolsetter", tsLocal));
+      if (await migrateSection("toolsetter", tsLocal)) localStorage.removeItem("lcnc-toolsetter-params");
+    } else if (tsRaw) {
+      localStorage.removeItem("lcnc-toolsetter-params"); // server already has it — local copy stale
     }
-    if (tsRaw) localStorage.removeItem("lcnc-toolsetter-params");
   } catch (e) {
     console.warn("[migrate] lcnc-toolsetter-params migration failed", e);
-  }
-
-  if (migrations.length) {
-    try {
-      await Promise.all(migrations);
-    } catch (e) {
-      console.error("[settings] migration failed — some local data may not have reached the server:", e);
-    }
   }
 
   initServerDefaults(serverSettings, fetchOk);
   createApp(App).mount('#app');
   initDragScroll();
+  startClientDiag();
 
   if (import.meta.env.DEV) {
     function auditElement(el: HTMLElement) {

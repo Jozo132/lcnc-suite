@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """LCNC suite trace bundler — merge structured + legacy logs by wall time.
 
-Reads:
-  - /tmp/lcnc-trace.log           (NDJSON; gateway, hal_reader, hal_watchdog,
-                                   launcher proc.status, browser telemetry)
-  - /tmp/lcnc-gateway.log         (legacy text; uses [+Nms] mono offsets)
-  - /tmp/lcnc-hal-watchdog.log    (legacy text; HB-RECV / HB-RISING)
-  - /tmp/lcnc-launcher.log        (legacy text; [HH:MM:SS.mmm])
-  - /tmp/lcnc-hal-sample.csv      (halsampler -t output, prefixed sample number)
+Reads (paths resolved via lcnc_paths.resolve(), default <install-dir>/runlogs):
+  - trace.ndjson         (structured stream; gateway, hal_reader, hal_watchdog,
+                          launcher proc.status, browser telemetry)
+  - gateway.log          (uvicorn stdout/stderr; uses [+Nms] mono offsets)
+  - hal_watchdog.log     (HB-RECV / HB-RISING instrumentation)
+  - launcher.log         (bash launcher; [HH:MM:SS.mmm])
+  - hal_sample.csv       (halsampler -t output, prefixed sample number)
 
-Writes (default):
-  - /tmp/lcnc-trace-merged.ndjson — full structured stream
-  - /tmp/lcnc-trace-merged.log    — human-readable, timeline-sorted
+Writes (default — in same log dir):
+  - trace-merged.ndjson — full structured stream
+  - trace-merged.log    — human-readable, timeline-sorted
 
 Usage:
   python3 trace-bundle.py                  # whole capture
@@ -19,7 +19,7 @@ Usage:
   python3 trace-bundle.py --window=trip-5s..trip+1s
   python3 trace-bundle.py --window=12345..23456  (mono ms range)
   python3 trace-bundle.py --phases-only    # only phase + lag events
-  python3 trace-bundle.py --out /tmp/lcnc-trip-XXX/  # output dir
+  python3 trace-bundle.py --out /path/to/dir/  # output dir
 
 Designed to fail-soft: a missing input file is logged once and skipped, not
 fatal — even a partial timeline is more useful than no timeline.
@@ -34,11 +34,21 @@ import sys
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-TRACE_PATH = "/tmp/lcnc-trace.log"
-GATEWAY_LOG = "/tmp/lcnc-gateway.log"
-WATCHDOG_LOG = "/tmp/lcnc-hal-watchdog.log"
-LAUNCHER_LOG = "/tmp/lcnc-launcher.log"
-HAL_SAMPLE_CSV = "/tmp/lcnc-hal-sample.csv"
+# Resolve via the shared resolver so this script tracks env / INI overrides
+# the same way gateway/hal_reader/hal_watchdog do.
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "lcnc-gateway"))
+try:
+    import lcnc_paths
+    _LOG_DIR = lcnc_paths.resolve()[0]
+except Exception:
+    # Mirror the resolver's derived default: <install-dir>/runlogs.
+    _LOG_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "runlogs"))
+
+TRACE_PATH = os.path.join(_LOG_DIR, "trace.ndjson")
+GATEWAY_LOG = os.path.join(_LOG_DIR, "gateway.log")
+WATCHDOG_LOG = os.path.join(_LOG_DIR, "hal_watchdog.log")
+LAUNCHER_LOG = os.path.join(_LOG_DIR, "launcher.log")
+HAL_SAMPLE_CSV = os.path.join(_LOG_DIR, "hal_sample.csv")
 
 
 def _safe_open(path: str):
@@ -50,7 +60,7 @@ def _safe_open(path: str):
 
 
 def load_trace_ndjson() -> List[dict]:
-    """Read structured /tmp/lcnc-trace.log. Returns events with t_wall_ns."""
+    """Read structured trace.ndjson. Returns events with t_wall_ns."""
     f = _safe_open(TRACE_PATH)
     if f is None:
         return []
@@ -367,8 +377,8 @@ def main() -> int:
         ]
 
     os.makedirs(args.out, exist_ok=True)
-    nd_path = os.path.join(args.out, "lcnc-trace-merged.ndjson")
-    log_path = os.path.join(args.out, "lcnc-trace-merged.log")
+    nd_path = os.path.join(args.out, "trace-merged.ndjson")
+    log_path = os.path.join(args.out, "trace-merged.log")
     write_ndjson(all_events, nd_path)
     write_log(all_events, log_path)
 

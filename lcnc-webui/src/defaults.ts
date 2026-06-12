@@ -1,4 +1,15 @@
 import { ref } from "vue";
+import { withToken } from "./auth";
+import { resetServerSettings } from "./lcncApi";
+
+// lcncWs registers its WS settings-saver here so this module can flush a save
+// WITHOUT importing lcncWs (which imports defaults) — removes the import cycle and
+// the ineffective-dynamic-import build warning (P6). Registered when lcncWs loads
+// (app startup), long before any user-triggered save flush.
+let _settingsSaver: ((section: string, data: any) => void) | null = null;
+export function registerSettingsSaver(fn: (section: string, data: any) => void): void {
+  _settingsSaver = fn;
+}
 
 // ─── Input step constants ─────────────────────────────────────────
 export const STEP_DEFAULT = 1;
@@ -80,7 +91,13 @@ export function initServerDefaults(data: Record<string, any>, fetchOk: boolean):
   if (fetchOk) serverSettingsReady.value = true;
 }
 
-/** Called from lcncWs.ts on settings_init (connect) or settings_changed (broadcast). */
+/**
+ * Called from lcncWs.ts on settings_init (connect) or settings_changed (broadcast).
+ * Full-replace is intentional and load-bearing: the gateway ALWAYS sends the
+ * complete per-INI settings blob on both messages (gateway.py status_loop
+ * "send full settings when version changes" + settings_init). Do NOT change
+ * this to a merge — a merge would resurrect a section the operator deleted.
+ */
 export function updateServerCache(data: Record<string, any>): void {
   _cache = { ...data };
   serverSettingsReady.value = true;
@@ -90,8 +107,10 @@ export function updateServerCache(data: Record<string, any>): void {
 /** Flush pending debounced saves via sendBeacon (called on page hide). */
 function flushPendingSaves(): void {
   for (const [section, data] of _pendingSaves) {
+    // sendBeacon can't set headers, so the token rides in the query string
+    // (the require_token dependency accepts ?token= as well as the header).
     navigator.sendBeacon(
-      `/settings/${section}`,
+      withToken(`/settings/${section}`),
       new Blob([JSON.stringify({ data })], { type: "application/json" }),
     );
   }
@@ -102,9 +121,14 @@ function flushPendingSaves(): void {
   }
 }
 
-document.addEventListener("visibilitychange", () => {
+const _onVisibilityFlush = () => {
   if (document.visibilityState === "hidden") flushPendingSaves();
-});
+};
+document.addEventListener("visibilitychange", _onVisibilityFlush);
+// Remove on HMR dispose so reloads don't stack duplicate flush listeners (#32).
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => document.removeEventListener("visibilitychange", _onVisibilityFlush));
+}
 
 function readAll(): Record<string, any> {
   if (!_cache) _cache = {};
@@ -144,8 +168,14 @@ export function saveSection(key: string, data: any): void {
   clearTimeout(_saveTimers[key]);
   _saveTimers[key] = setTimeout(() => {
     _pendingSaves.delete(key);
-    // Dynamic import to avoid circular dependency at module load time
-    import("./lcncWs").then(({ saveSettings }) => saveSettings(key, data));
+    if (_settingsSaver) {
+      _settingsSaver(key, data);  // registered by lcncWs (avoids the import cycle)
+    } else {
+      // No silent drop: lcncWs registers at module load, so this "can't happen" —
+      // which is exactly why it must be loud if it does (the save would vanish).
+      // console.error is captured by the error.console telemetry hook → auditable.
+      console.error(`[settings] save DROPPED — no saver registered (section=${key})`);
+    }
   }, 300);
 }
 
@@ -195,6 +225,7 @@ export interface MachineDefaults {
   runFromLine: boolean;
   rflSpindleDir: SpindleDir;
   rflSpindleRpm: number;
+  rflSafeZ: boolean;          // retract to G53 Z0 before a run-from-line start
   spindleFeedbackUnit: SpindleFeedbackUnit;
   spindleLoadPin: string;
 }
@@ -204,6 +235,7 @@ const MACHINE_FALLBACK: MachineDefaults = {
   runFromLine: false,
   rflSpindleDir: "forward",
   rflSpindleRpm: 10000,
+  rflSafeZ: true,
   spindleFeedbackUnit: "rps",
   spindleLoadPin: "",
 };
@@ -216,6 +248,7 @@ registerSection<MachineDefaults>("machine", MACHINE_FALLBACK, (saved, fb) => {
     ...saved,
     toolChangeMode: (saved.toolChangeMode === "m600" ? "m600" : "m6g43") as ToolChangeMode,
     rflSpindleDir: (dir === "off" || dir === "forward" || dir === "reverse" ? dir : fb.rflSpindleDir) as SpindleDir,
+    rflSafeZ: typeof (saved as any).rflSafeZ === "boolean" ? (saved as any).rflSafeZ : fb.rflSafeZ,
     spindleFeedbackUnit: (saved.spindleFeedbackUnit === "rpm" ? "rpm" : "rps") as SpindleFeedbackUnit,
   };
 });
@@ -296,9 +329,10 @@ const VALID_THEMES = new Set<string>(["auto", "light", "dark", "hc-light", "hc-d
 export interface DisplayDefaults {
   theme: ThemeMode;
   startFullscreen: boolean;
+  keepAwake: boolean;
 }
 
-const DISPLAY_FALLBACK: DisplayDefaults = { theme: "auto", startFullscreen: false };
+const DISPLAY_FALLBACK: DisplayDefaults = { theme: "auto", startFullscreen: false, keepAwake: true };
 
 registerSection<DisplayDefaults>("display", DISPLAY_FALLBACK, (saved, fb) => {
   if (!saved) return { ...fb };
@@ -307,6 +341,7 @@ registerSection<DisplayDefaults>("display", DISPLAY_FALLBACK, (saved, fb) => {
     ...fb,
     ...saved,
     theme: (VALID_THEMES.has(t) ? t : fb.theme) as ThemeMode,
+    keepAwake: typeof saved.keepAwake === "boolean" ? saved.keepAwake : fb.keepAwake,
   };
 });
 
@@ -361,16 +396,10 @@ export function saveMacrosDefaults(data: MacrosDefaults): void {
   saveSection("macros", data);
 }
 
-/** Extract unique placeholder names from a macro command string. */
-export function extractParams(command: string): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const match of command.matchAll(/\{(\w+)\}/g)) {
-    const name = match[1]!;
-    if (!seen.has(name)) { seen.add(name); result.push(name); }
-  }
-  return result;
-}
+// Pure macro-param helpers live in a side-effect-free module so they're
+// unit-testable without importing this file's page-lifecycle listeners.
+// Re-exported here for back-compat with existing `from "./defaults"` imports.
+export { extractParams, syncMacroParams } from "./macroParams";
 
 // ─── Camera section ─────────────────────────────────────────────
 
@@ -769,9 +798,7 @@ export function resetAllDefaults(): void {
   localStorage.removeItem("lcnc-toolsetter-params");
   localStorage.removeItem("lcnc-probe-params");
   _cache = null;
-  import("./lcncApi").then(({ resetServerSettings }) =>
-    resetServerSettings().catch((e) =>
-      console.error("[settings] server reset failed:", e),
-    ),
+  resetServerSettings().catch((e) =>
+    console.error("[settings] server reset failed:", e),
   );
 }

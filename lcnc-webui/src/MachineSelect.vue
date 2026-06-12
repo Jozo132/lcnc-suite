@@ -3,6 +3,10 @@ import { computed } from 'vue';
 import { usePermissions } from './permissions';
 import { INPUT_DEFS, INPUT_SIZE_STYLES, type InputType, type InputDef } from './machineControls';
 
+// Match the other Machine* wrappers: bind $attrs explicitly on <select> rather
+// than letting Vue also fall them through to the root (which would double-bind).
+defineOptions({ inheritAttrs: false });
+
 const props = defineProps<{
   gate: InputType;
   disabled?: boolean;

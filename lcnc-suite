@@ -42,10 +42,13 @@ if [[ -n "$INI_FILE" ]]; then
   CAM_FPS="${LCNC_CAMERA_FPS:-$(ini_get CAMERA_FPS)}"
   WIRE_FORMAT="${WEBUI_WIRE_FORMAT:-$(ini_get WEBUI_WIRE_FORMAT)}"
   STATUS_DELTA="${WEBUI_STATUS_DELTA:-$(ini_get WEBUI_STATUS_DELTA)}"
-  UVLOOP_ON="${WEBUI_UVLOOP:-$(ini_get WEBUI_UVLOOP)}"
   ADAPTIVE_POLL="${WEBUI_ADAPTIVE_POLL:-$(ini_get WEBUI_ADAPTIVE_POLL)}"
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-$(ini_get WEBUI_IDLE_POLL_HZ)}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-$(ini_get WEBUI_WS_INIT_CONCURRENCY)}"
+  ASYNCIO_DEBUG="${WEBUI_ASYNCIO_DEBUG:-$(ini_get WEBUI_ASYNCIO_DEBUG)}"
+  GC_FREEZE="${WEBUI_GC_FREEZE:-$(ini_get WEBUI_GC_FREEZE)}"
+  TOKEN="${LCNC_WEBUI_TOKEN:-$(ini_get WEBUI_TOKEN)}"
+  ALLOWED_ORIGINS="${LCNC_WEBUI_ALLOWED_ORIGINS:-$(ini_get WEBUI_ALLOWED_ORIGINS)}"
 else
   HOST="${LCNC_WEBUI_HOST:-}"
   PORT="${LCNC_WEBUI_PORT:-}"
@@ -56,10 +59,13 @@ else
   CAM_FPS="${LCNC_CAMERA_FPS:-}"
   WIRE_FORMAT="${WEBUI_WIRE_FORMAT:-}"
   STATUS_DELTA="${WEBUI_STATUS_DELTA:-}"
-  UVLOOP_ON="${WEBUI_UVLOOP:-}"
   ADAPTIVE_POLL="${WEBUI_ADAPTIVE_POLL:-}"
   IDLE_POLL_HZ="${WEBUI_IDLE_POLL_HZ:-}"
   WS_INIT_CONC="${WEBUI_WS_INIT_CONCURRENCY:-}"
+  ASYNCIO_DEBUG="${WEBUI_ASYNCIO_DEBUG:-}"
+  GC_FREEZE="${WEBUI_GC_FREEZE:-}"
+  TOKEN="${LCNC_WEBUI_TOKEN:-}"
+  ALLOWED_ORIGINS="${LCNC_WEBUI_ALLOWED_ORIGINS:-}"
 fi
 
 # Apply defaults
@@ -70,6 +76,23 @@ DEV="${DEV:-0}"
 
 VITE_PORT="5173"
 
+# ── Fail closed: refuse to expose the control plane on a non-loopback
+# interface without an auth token (issue #17). A LAN-reachable gateway with
+# no token is an unauthenticated machine-control surface. Loopback-only
+# (127.0.0.1 / ::1 / localhost) needs no token — single-operator/dev kiosk.
+case "$HOST" in
+  127.0.0.1|::1|localhost) ;;  # loopback — token optional
+  *)
+    if [[ -z "$TOKEN" ]]; then
+      echo "ERROR: WEBUI_HOST='$HOST' exposes the gateway on the network but no WEBUI_TOKEN is set." >&2
+      echo "Set WEBUI_TOKEN in the INI [DISPLAY] section (or the LCNC_WEBUI_TOKEN env) to a shared" >&2
+      echo "secret, or bind WEBUI_HOST to 127.0.0.1 for a local-only kiosk." >&2
+      echo "Refusing to start an unauthenticated machine-control surface." >&2
+      exit 1
+    fi
+    ;;
+esac
+
 # Pass INI path if available
 [[ -n "$INI_FILE" ]] && export LCNC_INI_FILE="$INI_FILE"
 
@@ -78,10 +101,9 @@ VITE_PORT="5173"
 [[ -n "$CAM_RES" ]] && export LCNC_CAMERA_RESOLUTION="$CAM_RES"
 [[ -n "$CAM_FPS" ]] && export LCNC_CAMERA_FPS="$CAM_FPS"
 
-# Perf experiment flags (all optional — unset = default OFF)
+# Perf/behavior flags (optional; unset = gateway defaults: delta ON, msgpack, adaptive-poll OFF)
 [[ -n "$WIRE_FORMAT"   ]] && export WEBUI_WIRE_FORMAT="$WIRE_FORMAT"
 [[ -n "$STATUS_DELTA"  ]] && export WEBUI_STATUS_DELTA="$STATUS_DELTA"
-[[ -n "$UVLOOP_ON"     ]] && export WEBUI_UVLOOP="$UVLOOP_ON"
 [[ -n "$ADAPTIVE_POLL" ]] && export WEBUI_ADAPTIVE_POLL="$ADAPTIVE_POLL"
 [[ -n "$IDLE_POLL_HZ"  ]] && export WEBUI_IDLE_POLL_HZ="$IDLE_POLL_HZ"
 # Cap simultaneous WS-init handshakes. Default (set in gateway.py) is 20,
@@ -91,6 +113,27 @@ VITE_PORT="5173"
 # loop and trip the HAL safety chain. Higher values = lower per-tab
 # connect latency but bigger CPU peaks.
 [[ -n "$WS_INIT_CONC"  ]] && export WEBUI_WS_INIT_CONCURRENCY="$WS_INIT_CONC"
+# Diagnostic (issue #35): 1 = asyncio slow-callback logging (>50ms) to name what
+# stalls the event loop. Adds per-callback overhead (observer effect) — leave OFF
+# in normal operation; enable only for a profiling session.
+[[ -n "$ASYNCIO_DEBUG" ]] && export WEBUI_ASYNCIO_DEBUG="$ASYNCIO_DEBUG"
+# Diagnostic/opt (mmw#4): 1 = gc.collect()+gc.freeze() after startup so gen-2
+# GC stops re-scanning the never-garbage startup heap. Default OFF — A/B on the
+# target (gen-2 duration drop + RSS stays flat) before trusting it.
+[[ -n "$GC_FREEZE" ]] && export WEBUI_GC_FREEZE="$GC_FREEZE"
+
+# ── Auth / origin controls (issue #17) ──
+# Pre-shared token (required to connect + arm when bound non-loopback) and the
+# Origin allow-list. DEV is exported so the gateway can admit the Vite :5173
+# origin in development mode.
+[[ -n "$TOKEN"           ]] && export LCNC_WEBUI_TOKEN="$TOKEN"
+[[ -n "$ALLOWED_ORIGINS" ]] && export LCNC_WEBUI_ALLOWED_ORIGINS="$ALLOWED_ORIGINS"
+export LCNC_WEBUI_DEV="$DEV"
+# In dev mode the page is served by Vite, not the gateway, so the token can't be
+# injected into index.html. Expose it to the Vite build env as VITE_WEBUI_TOKEN
+# (Vite's loadEnv picks up VITE_-prefixed process env vars) so the dev frontend
+# reads it via import.meta.env. Harmless in prod (baked at build, unused there).
+[[ -n "$TOKEN"           ]] && export VITE_WEBUI_TOKEN="$TOKEN"
 
 # ── Ensure NVM Node is on PATH (LinuxCNC may launch with minimal PATH) ──
 if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
@@ -100,14 +143,31 @@ fi
 # ── Activate Python venv ──
 source "$GATEWAY_DIR/.venv/bin/activate"
 
+# ── Resolve log directory once, share with Python via env so all four
+# processes (launcher, gateway, hal_reader, hal_watchdog) agree.
+# Precedence: $LCNC_LOG_DIR → INI [DISPLAY] LOG_DIR → <install-dir>/runlogs.
+LCNC_RESOLVED_LOG_DIR="$(python3 -c "import sys; sys.path.insert(0, '$GATEWAY_DIR'); import lcnc_paths; print(lcnc_paths.resolve()[0])")"
+export LCNC_RESOLVED_LOG_DIR
+
+# ── Fail loudly if the resolved log dir can't be created/written. This is
+# the single loud boundary: the Python processes keep their never-raise
+# contract and trust the dir exists. There is no /tmp fallback — an
+# unwritable log dir is a broken install, caught here before any
+# gateway/HAL process starts (and before the machine is live).
+if ! mkdir -p "$LCNC_RESOLVED_LOG_DIR" 2>/dev/null || [[ ! -w "$LCNC_RESOLVED_LOG_DIR" ]]; then
+  echo "ERROR: log directory not writable: $LCNC_RESOLVED_LOG_DIR" >&2
+  echo "Fix permissions, or set LOG_DIR in the INI [DISPLAY] section / LCNC_LOG_DIR env." >&2
+  exit 1
+fi
+
 # ── Diagnostic launcher log — bypasses the tee pipe entirely so we
 # can see what the launcher is doing even if tee blocks. Append-per-
 # call (no exec >FD redirect) so each line hits disk via its own
 # open/write/close — no stdio buffer that could be lost on SIGKILL.
-LCNC_LAUNCHER_LOG="/tmp/lcnc-launcher.log"
+LCNC_LAUNCHER_LOG="$LCNC_RESOLVED_LOG_DIR/launcher.log"
 : > "$LCNC_LAUNCHER_LOG"
 _log() { printf '[%s] %s\n' "$(date +%H:%M:%S.%3N)" "$*" >> "$LCNC_LAUNCHER_LOG"; }
-_log "launcher start pid=$$"
+_log "launcher start pid=$$ log_dir=$LCNC_RESOLVED_LOG_DIR"
 
 # ── Log gateway stdout/stderr to /tmp so we can read it after the fact
 # without needing the launching terminal. Two independent isolations:
@@ -127,9 +187,11 @@ _log "launcher start pid=$$"
 #
 # Named FIFO (not >(setsid tee …)) because process substitution leaves
 # a hidden FD inside bash that defeats the reparent-to-PID-1 trick.
-LCNC_LOG="/tmp/lcnc-gateway.log"
+LCNC_LOG="$LCNC_RESOLVED_LOG_DIR/gateway.log"
 [[ -f "$LCNC_LOG" ]] && mv "$LCNC_LOG" "${LCNC_LOG}.prev"
 : > "$LCNC_LOG"
+# FIFO stays in /tmp — it must live on tmpfs (NFS / weird filesystems
+# break mkfifo behavior); only the tee *output target* moves.
 LCNC_FIFO="$(mktemp -u /tmp/lcnc-fifo.XXXXXX)"
 mkfifo -m 600 "$LCNC_FIFO"
 ( setsid tee -a "$LCNC_LOG" < "$LCNC_FIFO" & )
@@ -142,15 +204,14 @@ _log "tee started via FIFO=$LCNC_FIFO (setsid + reparented to init)"
 # = killed by signal (rc-128 = signal number).
 trap '_EXIT_RC=$?; rm -f "$LCNC_FIFO" 2>/dev/null; _log "EXIT trap fired rc=$_EXIT_RC"' EXIT
 
-# ── uvicorn loop selection (Experiment 3: uvloop opt-in) ──
-# Force --loop asyncio unless WEBUI_UVLOOP=1, so A/B comparisons aren't
-# muddied by uvicorn auto-detecting uvloop on hosts that happen to have it
-# installed. When the flag is on, uvloop is explicitly selected.
-if [[ "${UVLOOP_ON:-}" == "1" ]]; then
-  UVICORN_LOOP=(--loop uvloop)
-else
-  UVICORN_LOOP=(--loop asyncio)
-fi
+# ── uvicorn loop: stdlib asyncio, pinned ──
+# uvloop was A/B-tested (Experiment 3) and REJECTED: it produced 600 ms–1.6 s
+# event-loop stalls and repeated HAL watchdog false-trips on this workload.
+# Pinning --loop asyncio also stops uvicorn auto-detecting uvloop on hosts that
+# happen to have it installed. Do not reintroduce a flag for this — a one-flag
+# switch onto a loop that false-trips the safety chain is a footgun, not an
+# option (see memory: project_uvloop_causes_watchdog_trips).
+UVICORN_LOOP=(--loop asyncio)
 
 # Force colored output even though stdout is piped through tee above —
 # uvicorn/Click auto-disable ANSI codes on non-TTY, which swallows the
@@ -168,6 +229,15 @@ UVICORN_COLOR=(--use-colors)
 # out." 1 s is enough for the shutdown log line to flush, short
 # enough to feel instant. Validated against probe data 2026-05-01.
 UVICORN_GRACEFUL=(--timeout-graceful-shutdown 1)
+
+# Disable WebSocket per-message-deflate. uvicorn defaults it ON (the websockets
+# lib + browsers negotiate it), so every status frame was zlib-compressed
+# synchronously inside the WS task on the event loop — CPU that eats the HAL
+# heartbeat margin. Our frames are already-compact binary msgpack and the big
+# payloads (preview) go over HTTP with their own gzip, so on a LAN/localhost
+# control surface this trades a bandwidth saving we don't need for loop-CPU we
+# do. (A bandwidth-constrained remote link is not the deployment.)
+UVICORN_WS=(--ws-per-message-deflate false)
 
 # Bounded SIGTERM→SIGKILL escalation. The gateway's clean shutdown path
 # (uvicorn graceful drain + FastAPI lifespan teardown) only works while
@@ -211,7 +281,7 @@ _wait_or_kill() {
 # (lcnc_webui.hal). If halsampler isn't on PATH (older LinuxCNC, or
 # packaging miss), we skip silently — gateway operation is unaffected.
 SAMPLER_PID=""
-HAL_SAMPLE_PATH="/tmp/lcnc-hal-sample.csv"
+HAL_SAMPLE_PATH="$LCNC_RESOLVED_LOG_DIR/hal_sample.csv"
 
 _start_hal_sampler() {
     local mode="$1"
@@ -260,7 +330,7 @@ _stop_hal_sampler() {
 }
 
 # === TEMP PROC-STATUS PROBE === sample /proc/<gateway_pid>/status every 1s
-# and append a structured event to /tmp/lcnc-trace.log so the bundler can
+# and append a structured event to trace.ndjson so the bundler can
 # correlate gateway memory / context-switch counts against [LAG] events.
 # Cheap (~50us per sample) and runs in a separate bash subshell so a hang
 # in the proc read can't block our trap path.
@@ -284,13 +354,21 @@ _start_proc_status_loop() {
                         nonvoluntary_ctxt*)  nvol=$(echo "$line"         | awk '{print $2}') ;;
                     esac
                 done < "/proc/$gw_pid/status"
+                # schedstat field 2 = cumulative ns the gateway was runnable
+                # but waiting for a CPU (run-queue wait). Rising fast between
+                # samples = CPU starvation — the direct signal behind the
+                # event-loop stalls that lag.window catches only after the fact.
+                local rq_wait_ns="0"
+                if [[ -r "/proc/$gw_pid/schedstat" ]]; then
+                    read -r _ss_oncpu rq_wait_ns _ss_slices < "/proc/$gw_pid/schedstat" 2>/dev/null || rq_wait_ns="0"
+                fi
                 # NDJSON line — same schema as gateway/hal_reader emit.
                 # Atomic O_APPEND under PIPE_BUF (4 KB) so this can't tear.
                 local now_ns
                 now_ns=$(date +%s%N)
-                printf '{"t_wall_ns":%s,"t_mono_ms":0,"proc":"launcher","pid":%s,"tag":"proc.status","level":"info","gw_pid":%s,"vm_rss_kb":%s,"threads":%s,"voluntary_ctxt":%s,"nonvoluntary_ctxt":%s}\n' \
-                    "$now_ns" "$$" "$gw_pid" "$rss" "$thr" "$vol" "$nvol" \
-                    >> /tmp/lcnc-trace.log 2>/dev/null || true
+                printf '{"t_wall_ns":%s,"t_mono_ms":0,"proc":"launcher","pid":%s,"tag":"proc.status","level":"info","gw_pid":%s,"vm_rss_kb":%s,"threads":%s,"voluntary_ctxt":%s,"nonvoluntary_ctxt":%s,"rq_wait_ns":%s}\n' \
+                    "$now_ns" "$$" "$gw_pid" "$rss" "$thr" "$vol" "$nvol" "$rq_wait_ns" \
+                    >> "$LCNC_RESOLVED_LOG_DIR/trace.ndjson" 2>/dev/null || true
             fi
             sleep 1
         done
@@ -357,7 +435,7 @@ if [[ "$DEV" == "1" ]]; then
   # the trap above can signal it. Gateway exit (clean or crash) propagates:
   # we kill Vite, wait for reaping, and exit with the gateway's status.
   # No respawn — crash is operator-diagnosable, not silently retried.
-  setsid python3 -m uvicorn gateway:app --host "$HOST" --port "$PORT" --app-dir "$GATEWAY_DIR" "${UVICORN_LOOP[@]}" "${UVICORN_COLOR[@]}" "${UVICORN_GRACEFUL[@]}" &
+  setsid python3 -m uvicorn gateway:app --host "$HOST" --port "$PORT" --app-dir "$GATEWAY_DIR" "${UVICORN_LOOP[@]}" "${UVICORN_COLOR[@]}" "${UVICORN_GRACEFUL[@]}" "${UVICORN_WS[@]}" &
   GATEWAY_PID=$!
   _log "DEV gateway started pid=$GATEWAY_PID"
   _start_hal_sampler "DEV"
@@ -438,7 +516,7 @@ trap _term INT TERM
 # wait returns, the launcher exits with the gateway's status, which
 # triggers LinuxCNC's Cleanup phase. No respawn — crash is operator-
 # diagnosable, not silently retried.
-setsid python3 -m uvicorn gateway:app --host "$HOST" --port "$PORT" --app-dir "$GATEWAY_DIR" "${UVICORN_LOOP[@]}" "${UVICORN_COLOR[@]}" "${UVICORN_GRACEFUL[@]}" &
+setsid python3 -m uvicorn gateway:app --host "$HOST" --port "$PORT" --app-dir "$GATEWAY_DIR" "${UVICORN_LOOP[@]}" "${UVICORN_COLOR[@]}" "${UVICORN_GRACEFUL[@]}" "${UVICORN_WS[@]}" &
 GATEWAY_PID=$!
 _log "PROD gateway started pid=$GATEWAY_PID"
 _start_hal_sampler "PROD"

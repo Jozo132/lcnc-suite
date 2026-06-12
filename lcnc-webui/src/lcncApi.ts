@@ -2,14 +2,24 @@
  * REST API helpers for file upload/listing.
  * Complements lcncWs.ts (which handles WebSocket).
  */
+import { authHeaders } from "./auth";
 
 function getBaseUrl(): string {
   return location.origin;
 }
 
 async function throwHttpError(resp: Response): Promise<never> {
-  const body = await resp.json();
-  throw new Error(body.detail || `HTTP ${resp.status}`);
+  // A non-JSON error body (proxy 502 HTML page, empty body) would make
+  // resp.json() throw a SyntaxError that masks the real HTTP status. Fall
+  // back to the status line so the caller sees "HTTP 502", not a parse error.
+  let detail: string | undefined;
+  try {
+    const body = await resp.json();
+    detail = body?.detail;
+  } catch {
+    detail = undefined;
+  }
+  throw new Error(detail || `HTTP ${resp.status}`);
 }
 
 export interface FileEntry {
@@ -49,10 +59,15 @@ export interface SaveResponse {
 }
 
 export async function saveFile(path: string, content: string): Promise<SaveResponse> {
-  const resp = await fetch(`${getBaseUrl()}/save`, {
+  // Raw-body PUT, NOT JSON: JSON.stringify of a multi-MB editor save blocked the
+  // browser main thread for seconds (escaping + reallocating the whole file) and
+  // starved the client heartbeat. The browser sends the string body directly (UTF-8)
+  // with no stringify pass; the path rides the query string.
+  const url = `${getBaseUrl()}/save?path=${encodeURIComponent(path)}`;
+  const resp = await fetch(url, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, content }),
+    headers: { "Content-Type": "text/plain; charset=utf-8", ...authHeaders() },
+    body: content,
   });
   if (!resp.ok) await throwHttpError(resp);
   return resp.json();
@@ -86,14 +101,14 @@ export async function fetchSettings(): Promise<Record<string, any>> {
 export async function saveSettingsSection(section: string, data: any): Promise<void> {
   const resp = await fetch(`${getBaseUrl()}/settings/${section}`, {
     method: "PUT",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders() },
     body: JSON.stringify({ data }),
   });
   if (!resp.ok) await throwHttpError(resp);
 }
 
 export async function resetServerSettings(): Promise<void> {
-  const resp = await fetch(`${getBaseUrl()}/settings`, { method: "DELETE" });
+  const resp = await fetch(`${getBaseUrl()}/settings`, { method: "DELETE", headers: authHeaders() });
   if (!resp.ok) await throwHttpError(resp);
 }
 
@@ -102,6 +117,7 @@ export async function uploadFile(file: File): Promise<UploadResponse> {
   formData.append("file", file);
   const resp = await fetch(`${getBaseUrl()}/upload`, {
     method: "POST",
+    headers: authHeaders(),
     body: formData,
   });
   if (!resp.ok) await throwHttpError(resp);

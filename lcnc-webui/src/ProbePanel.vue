@@ -2,6 +2,7 @@
 import { ref, computed, inject, onMounted, onUnmounted, watch, type Ref } from "vue";
 import MachineBtn from "./MachineBtn.vue";
 import { fmtNum } from "./format";
+import { AXIS_HEX, AXIS_CSS } from "./axisColors";
 import MachineInput from "./MachineInput.vue";
 import MachineToggle from "./MachineToggle.vue";
 import MachineRadio from "./MachineRadio.vue";
@@ -358,7 +359,6 @@ let _svCamera: any = null;
 let _svControls: any = null;
 let _svLabels: any[] = [];    // Text objects — disposed on rebuild
 let _svItems: any[] = [];     // all scene children added during rebuild
-let _svAnimId = 0;
 let _svRo: ResizeObserver | null = null;
 let _threeCleanup: (() => void) | null = null;
 let _renderTimer: ReturnType<typeof setTimeout> | null = null;
@@ -371,6 +371,17 @@ function scheduleRender() {
       render3DSurface(props.surfacePoints!);
     }
   }, 150);
+}
+
+// Render-on-demand (like the main viewer): render once on a data change and on
+// OrbitControls 'change' (user interaction), NOT a continuous rAF loop. The old loop
+// re-rendered the heavy surface every frame forever — even with the probing tab
+// hidden — dropping frames until a browser reload. enableDamping is off, so there's
+// no inertia to animate; 'change' covers all camera motion.
+function _svRenderOnce() {
+  if (!_svRenderer || !_svScene || !_svCamera) return;
+  for (const lbl of _svLabels) lbl.quaternion.copy(_svCamera.quaternion);
+  _svRenderer.render(_svScene, _svCamera);
 }
 
 function render3DSurface(pts: [number, number, number][]) {
@@ -413,13 +424,8 @@ function render3DSurface(pts: [number, number, number][]) {
         _svControls.enablePan = true;
         _svControls.screenSpacePanning = true;
 
-        function animate() {
-          _svAnimId = requestAnimationFrame(animate);
-          for (const lbl of _svLabels) lbl.quaternion.copy(_svCamera!.quaternion);
-          _svControls!.update();
-          _svRenderer!.render(_svScene, _svCamera);
-        }
-        animate();
+        // Render-on-demand: only when the user moves the camera (no rAF loop).
+        _svControls.addEventListener("change", _svRenderOnce);
 
         _svRo = new ResizeObserver(() => {
           const cw = container.clientWidth || 1;
@@ -428,11 +434,12 @@ function render3DSurface(pts: [number, number, number][]) {
           _svCamera!.aspect = cw / ch;
           _svCamera!.updateProjectionMatrix();
           _svRenderer!.setSize(cw, ch);
+          _svRenderOnce();
         });
         _svRo.observe(container);
 
         _threeCleanup = () => {
-          cancelAnimationFrame(_svAnimId);
+          _svControls?.removeEventListener("change", _svRenderOnce);
           _svRo?.disconnect(); _svRo = null;
           for (const lbl of _svLabels) { _svScene?.remove(lbl); lbl.dispose(); }
           _svLabels = [];
@@ -452,6 +459,7 @@ function render3DSurface(pts: [number, number, number][]) {
           if (Array.isArray(obj.material)) obj.material.forEach((m: any) => m.dispose());
           else obj.material.dispose();
         }
+        if (typeof obj.dispose === "function") obj.dispose();  // InstancedMesh.instanceMatrix
       }
       for (const lbl of _svLabels) { _svScene.remove(lbl); lbl.dispose(); }
       _svLabels = [];
@@ -473,16 +481,10 @@ function render3DSurface(pts: [number, number, number][]) {
         for (let ix = 0; ix < nx; ix++) {
           const vi = iy * nx + ix;
           let z = grid.zi[ix]?.[iy];
-          if (z == null || !isFinite(z)) {
-            // Outside convex hull — nearest raw point
-            const gx = grid.x[ix]!, gy = grid.y[iy]!;
-            let bestD2 = Infinity, bestZ = 0;
-            for (const p of pts) {
-              const d2 = (gx - p[0]) ** 2 + (gy - p[1]) ** 2;
-              if (d2 < bestD2) { bestD2 = d2; bestZ = p[2]; }
-            }
-            z = bestZ;
-          }
+          // Complete grid expected — out-of-hull cells are filled server-side now
+          // (compensation.py nearest backfill; a95fc7d "no IDW fallback"). A residual
+          // null only means a stale/pre-fix grid file → render flat, no main-thread scan.
+          if (z == null || !isFinite(z)) z = 0;
           if (z < gridZMin) gridZMin = z;
           if (z > gridZMax) gridZMax = z;
           posArr.setX(vi, grid.x[ix]! - grid.x[0]! - (gxRange / 2));
@@ -516,36 +518,53 @@ function render3DSurface(pts: [number, number, number][]) {
       _svScene.add(mesh);
       _svItems.push(mesh);
 
-      // Add measured points as red spheres + Z value labels
+      // Measured points as ONE InstancedMesh (same fix as the main viewer, F7):
+      // one draw call instead of N scene meshes. With dense maps (the 5000-point
+      // test grid) per-point meshes made rotate/zoom visibly choppy here while
+      // the main viewer stayed fluent.
       const dotGeom = new THREE.SphereGeometry(Math.min(xRange, yRange) * 0.015, 8, 8);
       const dotMat = new THREE.MeshBasicMaterial({ color: 0xff3333 });
       const zScale = Math.min(xRange, yRange) * 0.3;
       const labelFs = Math.max(xRange, yRange) * 0.03;
-      for (const p of pts) {
-        const sx = p[0] - xMin - xRange / 2;
-        const sy = p[1] - yMin - yRange / 2;
-        const sz = (p[2] - zMin) / zRange * zScale;
-        const dot = new THREE.Mesh(dotGeom, dotMat);
-        dot.position.set(sx, sy, sz);
-        _svScene.add(dot);
-        _svItems.push(dot);
-
-        const lbl = new Text();
-        lbl.text = p[2].toFixed(3);
-        lbl.fontSize = labelFs;
-        lbl.color = fgColor;
-        lbl.anchorX = "center";
-        lbl.anchorY = "middle";
-        lbl.outlineWidth = "4%";
-        lbl.outlineColor = bgColor;
-        lbl.depthWrite = false;
-        lbl.position.set(sx, sy, sz + zScale * 0.08 + Math.min(xRange, yRange) * 0.025);
-        lbl.sync();
-        _svScene.add(lbl);
-        _svLabels.push(lbl);
+      const dots = new THREE.InstancedMesh(dotGeom, dotMat, pts.length);
+      const _m = new THREE.Matrix4();
+      for (let i = 0; i < pts.length; i++) {
+        const p = pts[i]!;
+        _m.makeTranslation(p[0] - xMin - xRange / 2, p[1] - yMin - yRange / 2,
+                           (p[2] - zMin) / zRange * zScale);
+        dots.setMatrixAt(i, _m);
       }
-      // dotGeom/dotMat are shared across all dots; push sentinel so rebuild disposes them
-      _svItems.push({ geometry: dotGeom, material: dotMat });
+      dots.instanceMatrix.needsUpdate = true;
+      _svScene.add(dots);
+      _svItems.push(dots);
+
+      // Z-value labels: each is a separate GPU text object (own draw call) AND is
+      // billboarded per rendered frame — thousands are both unreadable and the
+      // dominant rotate/zoom cost. Real probe maps are tens-to-hundreds of points;
+      // past the threshold the numbers are visual noise, so skip them (loudly).
+      const LABELS_MAX = 250;
+      if (pts.length <= LABELS_MAX) {
+        for (const p of pts) {
+          const sx = p[0] - xMin - xRange / 2;
+          const sy = p[1] - yMin - yRange / 2;
+          const sz = (p[2] - zMin) / zRange * zScale;
+          const lbl = new Text();
+          lbl.text = p[2].toFixed(3);
+          lbl.fontSize = labelFs;
+          lbl.color = fgColor;
+          lbl.anchorX = "center";
+          lbl.anchorY = "middle";
+          lbl.outlineWidth = "4%";
+          lbl.outlineColor = bgColor;
+          lbl.depthWrite = false;
+          lbl.position.set(sx, sy, sz + zScale * 0.08 + Math.min(xRange, yRange) * 0.025);
+          lbl.sync();
+          _svScene.add(lbl);
+          _svLabels.push(lbl);
+        }
+      } else {
+        console.info(`[surface] ${pts.length} probe points > ${LABELS_MAX} — per-point Z labels hidden for readability/performance`);
+      }
 
       // Lighting
       const ambient = new THREE.AmbientLight(0xffffff, 0.5);
@@ -558,17 +577,17 @@ function render3DSurface(pts: [number, number, number][]) {
       // X/Y/Z axis arrows with labels
       const arrowLen = Math.max(xRange, yRange) * 0.18;
       const arrowOrigin = new THREE.Vector3(-xRange / 2 - arrowLen * 0.3, -yRange / 2 - arrowLen * 0.3, 0);
-      const xArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), arrowOrigin, arrowLen, 0xff4444, arrowLen * 0.15, arrowLen * 0.08);
-      const yArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), arrowOrigin, arrowLen, 0x44ff44, arrowLen * 0.15, arrowLen * 0.08);
-      const zArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), arrowOrigin, arrowLen, 0x4488ff, arrowLen * 0.15, arrowLen * 0.08);
+      const xArrow = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), arrowOrigin, arrowLen, AXIS_HEX.x, arrowLen * 0.15, arrowLen * 0.08);
+      const yArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 1, 0), arrowOrigin, arrowLen, AXIS_HEX.y, arrowLen * 0.15, arrowLen * 0.08);
+      const zArrow = new THREE.ArrowHelper(new THREE.Vector3(0, 0, 1), arrowOrigin, arrowLen, AXIS_HEX.z, arrowLen * 0.15, arrowLen * 0.08);
       _svScene.add(xArrow, yArrow, zArrow);
       _svItems.push(xArrow, yArrow, zArrow);
 
       const axisFs = arrowLen * 0.35;
       for (const [text, color, offset] of [
-        ["X", "#ff4444", new THREE.Vector3(arrowLen * 1.15, 0, 0)],
-        ["Y", "#44ff44", new THREE.Vector3(0, arrowLen * 1.15, 0)],
-        ["Z", "#4488ff", new THREE.Vector3(0, 0, arrowLen * 1.15)],
+        ["X", AXIS_CSS.x, new THREE.Vector3(arrowLen * 1.15, 0, 0)],
+        ["Y", AXIS_CSS.y, new THREE.Vector3(0, arrowLen * 1.15, 0)],
+        ["Z", AXIS_CSS.z, new THREE.Vector3(0, 0, arrowLen * 1.15)],
       ] as [string, string, InstanceType<typeof THREE.Vector3>][]) {
         const lbl = new Text();
         lbl.text = text;
@@ -595,6 +614,7 @@ function render3DSurface(pts: [number, number, number][]) {
       _svCamera.position.copy(center).addScaledVector(dir, dist);
       _svControls.target.copy(center);
       _svControls.update();
+      _svRenderOnce();  // render-on-demand: paint the new data once
     });
 }
 
@@ -1401,7 +1421,7 @@ function fmtR(key: string): string {
   align-items: center;
   gap: var(--gap-controls);
   font-size: var(--fs-base);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
 }
 
 
@@ -1451,7 +1471,7 @@ function fmtR(key: string): string {
 
 .prVal {
   font-size: var(--fs-md);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   font-weight: var(--fw-semibold);
 }
 

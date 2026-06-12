@@ -11,16 +11,17 @@ import MachineColor from "./MachineColor.vue";
 import {
   loadViewerDefaults, saveViewerDefaults,
   loadMachineDefaults, saveMachineDefaults,
-  loadMacrosDefaults, saveMacrosDefaults, extractParams,
+  loadMacrosDefaults, saveMacrosDefaults, syncMacroParams,
   loadDisplayDefaults, saveDisplayDefaults, settingsVersion, serverSettingsReady,
   loadCameraDefaults, saveCameraDefaults,
   type Layer, type ColorDefaults,
   type TrackMode, type Projection, type ToolChangeMode, type SpindleDir, type SpindleFeedbackUnit,
-  type ThemeMode, type MacroDef, type MacroParam, type GamepadDefaults,
+  type ThemeMode, type MacroDef, type GamepadDefaults,
   GAMEPAD_FALLBACK,
   STEP_RPM,
   loadKeyboardDefaults, type KeyboardDefaults, DEFAULT_KB_MAPPING,
 } from "./defaults";
+import { enableWakeLock, disableWakeLock } from "./wakeLock";
 import { ChevronUp, ChevronDown, Pencil, Trash2 } from "lucide-vue-next";
 import DebugTab from "./DebugTab.vue";
 import HalshowTab from "./HalshowTab.vue";
@@ -31,6 +32,7 @@ import GamepadTab from "./GamepadTab.vue";
 const themeMode = inject<Ref<ThemeMode>>("themeMode", ref("auto") as Ref<ThemeMode>);
 const setTheme = inject<(mode: ThemeMode) => void>("setTheme", () => {});
 const startFullscreen = ref(loadDisplayDefaults().startFullscreen);
+const keepAwake = ref(loadDisplayDefaults().keepAwake);
 const machineParts = inject<ComputedRef<Array<{ id: string; group: string | null; direction: string | null }>>>("machineParts", computed(() => []));
 const setMachinePartColor = inject<(id: string, color: string | null) => void>("setMachinePartColor", () => {});
 const setMachineEdges = inject<(on: boolean) => void>("setMachineEdges", () => {});
@@ -41,14 +43,18 @@ const updateMacros = inject<(macros: MacroDef[]) => void>("updateMacros", () => 
 const macros = ref<MacroDef[]>(loadMacrosDefaults().macros);
 const editingMacro = ref<MacroDef | null>(null);
 
-const editingMacroParams = computed<MacroParam[]>(() => {
-  if (!editingMacro.value) return [];
-  const names = extractParams(editingMacro.value.command);
-  const existing = new Map(editingMacro.value.params.map(p => [p.name, p]));
-  const result = names.map(name => existing.get(name) || { name, label: name, default: "" });
-  editingMacro.value.params = result;
-  return result;
-});
+// Keep the macro's params in sync with the {placeholders} in its command as the
+// user types. A watcher (not a computed) owns this mutation; the template binds
+// to editingMacro.params directly. syncMacroParams preserves edits to params
+// that remain, so editing a param then changing the command keeps the edit
+// (issue #26).
+watch(
+  () => editingMacro.value?.command,
+  () => {
+    const m = editingMacro.value;
+    if (m) m.params = syncMacroParams(m.command, m.params);
+  },
+);
 
 function addMacro() {
   editingMacro.value = {
@@ -60,17 +66,21 @@ function addMacro() {
 }
 
 function editMacro(m: MacroDef) {
-  editingMacro.value = { ...m, params: m.params.map(p => ({ ...p })) };
+  const copy = { ...m, params: m.params.map(p => ({ ...p })) };
+  // Reconcile params with the command on open: the watch fires only when the
+  // command STRING changes, so switching between macros with identical commands
+  // (but drifted stored params) wouldn't otherwise sync the editor (review #4).
+  copy.params = syncMacroParams(copy.command, copy.params);
+  editingMacro.value = copy;
 }
 
 function saveMacro() {
   if (!editingMacro.value) return;
   const m = editingMacro.value;
   if (!m.name.trim() || !m.command.trim()) return;
-  // Sync params from command placeholders
-  const paramNames = extractParams(m.command);
-  const existingMap = new Map(m.params.map(p => [p.name, p]));
-  m.params = paramNames.map(name => existingMap.get(name) || { name, label: name, default: "" });
+  // The editor watcher already keeps params in sync with the command; re-run
+  // here to cover a save fired right after a command edit (idempotent).
+  m.params = syncMacroParams(m.command, m.params);
   const idx = macros.value.findIndex(x => x.id === m.id);
   if (idx >= 0) macros.value[idx] = m;
   else macros.value.push(m);
@@ -149,7 +159,7 @@ function resetViewer() {
 function resetMachine() {
   saveMachineDefaults({
     toolChangeMode: "m6g43", runFromLine: false,
-    rflSpindleDir: "forward", rflSpindleRpm: 10000,
+    rflSpindleDir: "forward", rflSpindleRpm: 10000, rflSafeZ: true,
     spindleFeedbackUnit: "rps", spindleLoadPin: "",
   });
   const md = loadMachineDefaults();
@@ -166,10 +176,20 @@ function saveStartFullscreen() {
   saveDisplayDefaults({ ...loadDisplayDefaults(), startFullscreen: startFullscreen.value });
 }
 
+function saveKeepAwake() {
+  saveDisplayDefaults({ ...loadDisplayDefaults(), keepAwake: keepAwake.value });
+  // Apply immediately — the WS open path also reads this on next reconnect,
+  // but toggling at runtime should acquire/release without waiting.
+  if (keepAwake.value) void enableWakeLock();
+  else disableWakeLock();
+}
+
 function resetDisplay() {
   setTheme("auto");
   startFullscreen.value = false;
-  saveDisplayDefaults({ theme: "auto", startFullscreen: false });
+  keepAwake.value = true;
+  saveDisplayDefaults({ theme: "auto", startFullscreen: false, keepAwake: true });
+  void enableWakeLock();
 }
 
 function resetGamepad() {
@@ -289,6 +309,7 @@ function saveMachine() {
     runFromLine: runFromLine.value,
     rflSpindleDir: rflSpindleDir.value,
     rflSpindleRpm: rflSpindleRpm.value,
+    rflSafeZ: loadMachineDefaults().rflSafeZ,  // managed from the RFL dialog, preserved here
     spindleFeedbackUnit: spindleFeedbackUnit.value,
     spindleLoadPin: spindleLoadPin.value,
   });
@@ -315,6 +336,7 @@ watch(settingsVersion, () => {
   projection.value = vd.projection;
   const dd = loadDisplayDefaults();
   startFullscreen.value = dd.startFullscreen;
+  keepAwake.value = dd.keepAwake;
   if (_camSkipNext > 0) { _camSkipNext--; }
   else {
     const cd = loadCameraDefaults();
@@ -573,7 +595,14 @@ function resetMachineColor(id: string) {
           <div class="stack-controls">
             <div class="sub">Run from Line</div>
             <div class="settingDesc">Allow starting program execution from a selected line in the code viewer.</div>
-            <MachineToggle gate="displaySetting" v-model="runFromLine" @update:modelValue="emit('setRunFromLine', runFromLine); saveMachine()" label="Enable run from line" />
+            <MachineToggle gate="displaySetting" v-model="runFromLine" @update:modelValue="emit('setRunFromLine', runFromLine); saveMachine()" label="Enable run from line (advanced — use with care)" />
+            <div v-if="runFromLine" class="dialogBody">
+              ⚠ Run-from-line is inherently risky: LinuxCNC reconstructs program
+              state by skimming, entry moves follow modal axis words, and skipped
+              passes may leave uncut material. The dialog guards tool changes and
+              start position where it can, but it cannot cover every program —
+              not recommended for unattended use.
+            </div>
             <div v-if="runFromLine" class="rflDefaults">
               <div class="settingDesc">Default spindle preset for run-from-line dialog.</div>
               <div class="rflRow">
@@ -612,6 +641,11 @@ function resetMachineColor(id: string) {
           <div class="stack-controls">
             <div class="sub">Fullscreen</div>
             <MachineToggle gate="displaySetting" v-model="startFullscreen" @update:modelValue="saveStartFullscreen" label="Start in fullscreen mode" />
+          </div>
+          <div class="sep"></div>
+          <div class="stack-controls">
+            <div class="sub">Keep Screen Awake</div>
+            <MachineToggle gate="displaySetting" v-model="keepAwake" @update:modelValue="saveKeepAwake" label="Prevent screen lock while connected" />
           </div>
           <div class="resetRow">
             <MachineBtn type="reset" @click="resetTarget = 'display'">Reset Display</MachineBtn>
@@ -659,9 +693,9 @@ function resetMachineColor(id: string) {
                   Use <code>{"{name}"}</code> for parameters. Users will be prompted for values.
                 </div>
 
-                <div v-if="editingMacroParams.length > 0" class="macroParamEditor">
+                <div v-if="editingMacro.params.length > 0" class="macroParamEditor">
                   <div class="sub">Parameters</div>
-                  <div v-for="p in editingMacroParams" :key="p.name" class="macroParamEditRow">
+                  <div v-for="p in editingMacro.params" :key="p.name" class="macroParamEditRow">
                     <code class="macroParamBadge">{{"{"}}{{ p.name }}{{"}"}}</code>
                     <MachineInput gate="macroEdit" type="text" v-model="p.label" placeholder="Display label" />
                     <MachineInput gate="macroEdit" type="text" v-model="p.default" placeholder="Default value" />
@@ -757,13 +791,6 @@ function resetMachineColor(id: string) {
   justify-content: flex-end;
 }
 
-.scrollContent {
-  overflow-y: auto;
-  height: 100%;
-  position: relative;
-}
-
-
 /* .section — replaced by stack-controls utility (same shape) */
 
 .wpColumns {
@@ -836,7 +863,7 @@ function resetMachineColor(id: string) {
 
 .camOverlayValue {
   font-size: var(--fs-sm);
-  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
   opacity: var(--opacity-muted);
   min-width: 32px;
   text-align: right;
@@ -890,7 +917,6 @@ function resetMachineColor(id: string) {
   font-weight: var(--fw-semibold);
 }
 .macroSettingsCmd {
-  font-family: var(--font-mono);
   font-size: var(--fs-sm);
   opacity: var(--opacity-muted);
   overflow: hidden;
@@ -922,7 +948,6 @@ function resetMachineColor(id: string) {
   margin-top: var(--gap-tight);
 }
 .macroParamBadge {
-  font-family: var(--font-mono);
   font-size: var(--fs-sm);
   min-width: 70px;
   flex-shrink: 0;

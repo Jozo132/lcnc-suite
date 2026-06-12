@@ -41,7 +41,7 @@ export type WsCommand =
   | { cmd: "unhome_all" }
   // Program execution
   | { cmd: "cycle_start" }
-  | { cmd: "auto_run"; line: number; spindle_dir?: string; spindle_speed?: number }
+  | { cmd: "auto_run"; line: number; spindle_dir?: string; spindle_speed?: number; pre_tool?: number; safe_z?: boolean; entry_x?: number; entry_y?: number; entry_wcs?: string; entry_units?: string }
   | { cmd: "auto_step" }
   | { cmd: "cycle_pause" }
   | { cmd: "cycle_resume" }
@@ -75,6 +75,7 @@ export type WsCommand =
   | { cmd: "get_tool_table" }
   | { cmd: "save_tool"; tool_number: number; [key: string]: any }
   | { cmd: "add_tool"; tool_number: number; [key: string]: any }
+  | { cmd: "renumber_tool"; old_tool_number: number; tool_number: number; [key: string]: any }
   | { cmd: "delete_tool"; tool_number: number }
   | { cmd: "tool_change"; tool_number: number }
   // Coolant
@@ -106,6 +107,10 @@ export type WsCommand =
   | { cmd: "save_settings"; section: string; data: any }
   // Timing
   | { cmd: "timing_log"; enable: boolean }
+  // Client-side diagnostics (heap, Three.js renderer info, etc.) — logged
+  // server-side to trace.ndjson so a renderer crash ("Aw Snap") still
+  // leaves a usable timeline.
+  | { cmd: "client_diag"; data: Record<string, any> }
   // Halshow (Settings → Halshow tab) live updates
   | { cmd: "halshow_live"; on: boolean }
   // Tab visibility — gateway pauses status fan-out to hidden tabs to keep
@@ -113,3 +118,20 @@ export type WsCommand =
   | { cmd: "tab_visibility"; hidden: boolean }
   // Safety trip acknowledgment (clears sticky trip, re-allows arming)
   | { cmd: "safety_trip_ack" };
+
+// Commands safe to queue while the socket is closed and replay after reconnect
+// (issue #18). Read-only / telemetry only — everything else (motion, mode,
+// spindle, overrides, tool/file/settings mutations) is DROPPED on a closed
+// socket so a stale operator action can't replay into a fresh connection.
+const QUEUE_SAFE_CMDS = new Set<string>([
+  "heartbeat",
+  "client_diag",
+  "timing_log",
+  "tab_visibility",
+  "halshow_live",
+  "safety_trip_ack",
+]);
+
+export function isQueueSafe(cmd: string): boolean {
+  return cmd.startsWith("get_") || QUEUE_SAFE_CMDS.has(cmd);
+}
