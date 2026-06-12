@@ -14,6 +14,7 @@ import fake_linuxcnc
 linuxcnc = fake_linuxcnc.install()   # MUST precede `import gateway`
 import gateway  # noqa: E402  (import after the fake is installed)
 import fusion_import  # noqa: E402
+import bulk_pipeline  # noqa: E402
 
 
 def _run(coro):
@@ -507,7 +508,7 @@ class TestTerminateParseProc(unittest.TestCase):
                 return self.returncode
 
         p = _Proc()
-        _run(gateway._terminate_parse_proc(p))
+        _run(bulk_pipeline.terminate_parse_proc(p))
         self.assertTrue(p.terminated)
         self.assertFalse(p.killed)  # exited on SIGTERM → no kill needed
 
@@ -527,7 +528,7 @@ class TestTerminateParseProc(unittest.TestCase):
             def wait(self):
                 return 0
 
-        _run(gateway._terminate_parse_proc(_Dead()))  # no exception == clean no-op
+        _run(bulk_pipeline.terminate_parse_proc(_Dead()))  # no exception == clean no-op
 
     def test_kills_a_child_that_ignores_sigterm(self):
         import threading
@@ -553,7 +554,7 @@ class TestTerminateParseProc(unittest.TestCase):
                 return self.returncode
 
         p = _Stubborn()
-        _run(gateway._terminate_parse_proc(p))
+        _run(bulk_pipeline.terminate_parse_proc(p))
         self.assertTrue(p.killed)
 
     def test_shutdown_reaps_child_after_owner_cancel(self):
@@ -568,25 +569,25 @@ class TestTerminateParseProc(unittest.TestCase):
         import asyncio
 
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        gateway._gcode_parse_proc = proc
+        gateway._bulk.gcode_parse_proc = proc
         try:
             async def _owner():
                 try:
                     await asyncio.sleep(30)          # mimic awaiting the parse worker
                 finally:
-                    gateway._gcode_parse_proc = None  # _refresh's finally clears it
+                    gateway._bulk.gcode_parse_proc = None  # _refresh's finally clears it
 
             async def _drive():
                 task = gateway.register_bg_task(asyncio.ensure_future(_owner()))
                 await asyncio.sleep(0.02)             # let the owner reach its await
-                captured = gateway._gcode_parse_proc  # <-- capture BEFORE cancel (the fix)
+                captured = gateway._bulk.gcode_parse_proc  # <-- capture BEFORE cancel (the fix)
                 task.cancel()
                 try:
                     await task
                 except asyncio.CancelledError:
                     pass
-                self.assertIsNone(gateway._gcode_parse_proc)  # owner cleared the global
-                await gateway._terminate_parse_proc(captured)  # captured handle still reaps it
+                self.assertIsNone(gateway._bulk.gcode_parse_proc)  # owner cleared the global
+                await bulk_pipeline.terminate_parse_proc(captured)  # captured handle still reaps it
 
             _run(_drive())
             self.assertIsNotNone(proc.poll(), "orphaned parse child was not reaped on shutdown")
@@ -595,7 +596,7 @@ class TestTerminateParseProc(unittest.TestCase):
                 proc.kill()
                 proc.wait()
             gateway._bg_tasks.clear()
-            gateway._gcode_parse_proc = None
+            gateway._bulk.gcode_parse_proc = None
 
 
 if __name__ == "__main__":
@@ -610,11 +611,11 @@ class TestFusionWorkerSubprocess(unittest.TestCase):
         lib = ('{"data":[{"type":"flat end mill","unit":"millimeters",'
                '"post-process":{"number":3},"geometry":{"DC":6.0},'
                '"description":"6mm endmill"}]}').encode()
-        parsed, skipped = gateway._run_fusion_worker_blocking(lib, "mm", timeout=30.0)
+        parsed, skipped = gateway._bulk._run_fusion_worker_blocking(lib, "mm", timeout=30.0)
         self.assertEqual(parsed[0]["T"], 3)
         self.assertEqual(parsed[0]["D"], 6.0)
         self.assertEqual(skipped, [])
 
     def test_worker_invalid_library_maps_to_valueerror(self):
         with self.assertRaises(ValueError):
-            gateway._run_fusion_worker_blocking(b'{"nope":1}', "mm", timeout=30.0)
+            gateway._bulk._run_fusion_worker_blocking(b'{"nope":1}', "mm", timeout=30.0)

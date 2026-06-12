@@ -54,6 +54,7 @@ from tool_table import (
 from settings_store import SettingsStore, VALID_SECTIONS as _VALID_SETTINGS_SECTIONS
 import status_runtime as _status_runtime_mod
 from status_runtime import StatusPayload
+import bulk_pipeline as _bulk_mod
 from tool_store import ToolLibraryStore
 from camera_broker import CameraBroker
 from fusion_import import decode_fusion_blob
@@ -639,6 +640,19 @@ def _phase_ring_snapshot() -> List[Tuple[float, str]]:
     return _phase_ring[_phase_ring_idx:] + _phase_ring[:_phase_ring_idx]
 
 
+# ---- M4 bulk pipeline instance ----
+# Versioned immutable cached payloads (preview/surface/grid) + the parse
+# subprocess lifecycle. Reassigned-scalar state lives as instance ATTRIBUTES
+# (not rebinds — rebinding wouldn't track reassignment), so call sites read
+# _bulk.<attr> directly. Deps late-bound: STAT rebinds on reconnect, and
+# get_machine_units/_build_wcs_rotation_patches are defined further down.
+_bulk = _bulk_mod.BulkPipeline(
+    get_stat=lambda: STAT,
+    get_machine_units=lambda: get_machine_units(),
+    build_wcs_rotation_patches=lambda: _build_wcs_rotation_patches(),
+)
+
+
 # ---- M3 fanout instance ----
 # Send mechanics + client registry + tick stats live on the instance; the
 # registry/stats dict objects are stable so these rebinds stay valid.
@@ -924,14 +938,6 @@ _shared_timing: dict = {}  # poll_ms, errors_ms, parse_ms, poller_ts
 # Reference is swapped atomically before _status_event.set(), so readers
 # always see a consistent list for the duration of their iteration.
 _shared_clients_list: list = []
-_surface_points_pending: list | None = None  # latest surface scan points; None = never scanned
-_surface_points_version: int = int(time.time())  # bumped each time new data is ready; seeded from startup so ?v= URLs don't collide across restarts
-_surface_initialized: bool = False           # True after startup file-read attempted
-_comp_grid_pending: dict | None = None       # latest parsed probe-results-grid.json
-_comp_grid_version: int = int(time.time())   # bumped each time new grid is ready; seeded from startup so ?v= URLs don't collide across restarts
-_comp_grid_initialized: bool = False         # True after startup file-read attempted
-_last_comp_hal_ver: int | None = None        # last seen compensation.grid-version HAL value
-_caches_ini: Optional[str] = None            # INI path the surface/comp caches were populated for; on change they're invalidated (issue #29)
 _tool_table_version: int = int(time.time())  # bumped after every CMD.load_tool_table(); per-client trackers in status_loop send a `tool_table_changed` ping so other clients refetch
 
 # Halshow live loop — pushes value deltas to clients viewing the Settings → Halshow tab.
@@ -941,45 +947,6 @@ _halshow_loop_task: Optional[asyncio.Task] = None
 _halshow_last_values: dict = {}                # "section/name" → last broadcast value (delta source)
 _halshow_topology_sent: dict = {}              # client_id → True once topology has been delivered
 _halshow_topology_cache: Optional[dict] = None  # built-once HAL graph (P5); HAL graph is static post-boot
-
-# Shared gcode preview — parsed once in a subprocess (gcode_parse_worker.py)
-# on file/rotation change. The parsed result (multi-MB polylines) is NOT
-# broadcast over the WS — N × ws.send_bytes(2.7 MB) saturates the event-loop
-# writer and trips the heartbeat watchdog. Instead: pre-encode the bytes, serve
-# them via GET /preview (uvicorn streamed response runs off the WS writer),
-# and broadcast a tiny JSON ping per version so clients know to fetch.
-_gcode_preview_pending: Optional[dict] = None   # {"file"} metadata only — the polyline lives in _gcode_preview_bytes (worker passthrough); consumers only read .get("file")
-_gcode_preview_version: int = int(time.time()) # bumps on file change (or unload); seeded from startup so ?v= URLs don't collide across restarts
-_gcode_last_file: Optional[str] = None          # edge detection in poller
-_gcode_last_mtime: Optional[float] = None       # re-parse on in-place edits of the same path
-_gcode_refresh_running: bool = False            # single-flight guard
-# The parse worker's msgpack output, published verbatim (passthrough — never
-# decoded on the gateway). Served over HTTP by GET /preview so the 2.7 MB
-# polyline payload never touches the WS writer.
-_gcode_preview_bytes: Optional[bytes] = None   # raw copy kept ONLY when no gz exists (<4 KiB payloads)
-_gcode_preview_raw_len: int = 0                # uncompressed size (for traces; raw copy usually dropped)
-
-
-def _preview_available() -> bool:
-    """A preview is servable when either variant exists — the raw copy is
-    dropped once the gz exists (every real browser sends Accept-Encoding: gzip;
-    a rare non-gzip client gets an on-demand decompress in get_preview)."""
-    return _gcode_preview_bytes is not None or _gcode_preview_bytes_gz is not None
-# Same payload pre-compressed once per parse so each client doesn't pay the
-# gzip cost on every fetch. /preview picks one based on Accept-Encoding.
-_gcode_preview_bytes_gz: Optional[bytes] = None
-
-# Pre-encoded msgpack bytes of the surface_points / comp_grid data dicts.
-# Served over HTTP by GET /surface_points and GET /comp_grid so the 10-80 KB
-# per-client fan-out never touches the single-threaded WS writer. Clients
-# receive a tiny *_ready JSON ping on version bump and fetch the cached
-# bytes out of band.
-_surface_points_bytes: Optional[bytes] = None
-_comp_grid_bytes: Optional[bytes] = None
-
-# Path to the subprocess parse worker (spawned via subprocess.Popen in a worker
-# thread — see _run_gcode_worker_blocking, B7).
-_GCODE_WORKER_PATH = str(BASE_DIR / "gcode_parse_worker.py")
 
 # Safety-trip sticky notification: populated when _status_poller() observes the
 # servo-thread HAL latch (webui-hb-latch.fault-out) go FALSE→TRUE after a known-
@@ -1044,50 +1011,6 @@ def _log_timing(timing: dict):
 _PID_CHECK_INTERVAL = 5.0  # seconds between pgrep PID checks
 
 
-def _read_probe_results_file() -> list:
-    """Read probe-results.txt and return list of [x, y, z] triples."""
-    ini_path = getattr(STAT, "ini_filename", None)
-    if not ini_path:
-        return []
-    path = os.path.join(os.path.dirname(ini_path), "probe-results.txt")
-    points = []
-    skipped = 0
-    sample_err: Optional[str] = None
-    if os.path.isfile(path):
-        with open(path) as f:
-            for line in f:
-                parts = line.strip().split()
-                if len(parts) >= 3:
-                    try:
-                        points.append([float(parts[0]), float(parts[1]), float(parts[2])])
-                    except ValueError as e:
-                        skipped += 1
-                        if sample_err is None:
-                            sample_err = str(e)[:200]
-    if skipped:
-        _trace.emit("surface.point_parse_failed", level="warn",
-                    path=path, skipped=skipped, sample_err=sample_err,
-                    parsed=len(points))
-    return points
-
-
-def _read_comp_grid_file() -> "dict | None":
-    """Read probe-results-grid.json and return parsed dict, or None if unavailable."""
-    ini_path = getattr(STAT, "ini_filename", None)
-    if not ini_path:
-        return None
-    path = os.path.join(os.path.dirname(ini_path), "probe-results-grid.json")
-    if not os.path.isfile(path):
-        return None
-    with open(path) as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError as e:
-            _trace.emit("probe.results_grid_corrupt", level="warn",
-                        exc=type(e).__name__, msg=str(e))
-            return None
-
-
 # Probe result widget names from DEBUG EVAL messages → friendly keys.
 # Used by _status_poller below; declared here so the reference at use site
 # isn't a forward-reference into the file.
@@ -1125,14 +1048,7 @@ async def _status_poller():
     """
     global _shared_status, _shared_status_dict, _shared_errors, _shared_probe_updates, _errors_total
     global _status_gen, lcnc_connected, STAT, CMD, ERR, _reconnect_fails, _shared_timing
-    global _surface_points_pending, _surface_points_version, _surface_initialized
-    global _comp_grid_pending, _comp_grid_version, _comp_grid_initialized, _last_comp_hal_ver
-    global _caches_ini
     global _status_event, _shared_clients_list
-    global _gcode_preview_pending, _gcode_preview_version
-    global _gcode_last_file, _gcode_last_mtime, _gcode_refresh_running
-    global _gcode_preview_bytes, _gcode_preview_bytes_gz
-    global _surface_points_bytes, _comp_grid_bytes
     loop = asyncio.get_event_loop()
     _poll_fails = 0
     _last_pid_check = 0.0
@@ -1246,39 +1162,39 @@ async def _status_poller():
             # and bump versions so clients refetch — the init blocks below then
             # reload from the new config's result files (or stay empty).
             _cur_ini = getattr(STAT, "ini_filename", None)
-            if _cur_ini and _caches_ini is not None and _caches_ini != _cur_ini:
-                _surface_initialized = False
-                _comp_grid_initialized = False
-                _surface_points_pending = None
-                _surface_points_bytes = None
-                _comp_grid_pending = None
-                _comp_grid_bytes = None
-                _surface_points_version += 1
-                _comp_grid_version += 1
-                _trace.emit("cache.ini_changed_invalidated", old=_caches_ini, new=_cur_ini)
+            if _cur_ini and _bulk.caches_ini is not None and _bulk.caches_ini != _cur_ini:
+                _bulk.surface_initialized = False
+                _bulk.grid_initialized = False
+                _bulk.surface_pending = None
+                _bulk.surface_bytes = None
+                _bulk.grid_pending = None
+                _bulk.grid_bytes = None
+                _bulk.surface_version += 1
+                _bulk.grid_version += 1
+                _trace.emit("cache.ini_changed_invalidated", old=_bulk.caches_ini, new=_cur_ini)
             if _cur_ini:
-                _caches_ini = _cur_ini
+                _bulk.caches_ini = _cur_ini
 
             # Startup init: push existing probe-results.txt to new clients on first connect
-            if not _surface_initialized and getattr(STAT, "ini_filename", None):
-                pts = await asyncio.to_thread(_read_probe_results_file)
+            if not _bulk.surface_initialized and getattr(STAT, "ini_filename", None):
+                pts = await asyncio.to_thread(_bulk.read_probe_results_file)
                 if pts:
-                    _surface_points_pending = pts
-                    _surface_points_bytes = await asyncio.to_thread(
+                    _bulk.surface_pending = pts
+                    _bulk.surface_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, pts
                     )
-                    _surface_points_version += 1
-                _surface_initialized = True
+                    _bulk.surface_version += 1
+                _bulk.surface_initialized = True
 
             # Scan completion: re-read file and push updated data to all clients
             if surface_scan_done:
-                pts = await asyncio.to_thread(_read_probe_results_file)
+                pts = await asyncio.to_thread(_bulk.read_probe_results_file)
                 if pts:
-                    _surface_points_pending = pts
-                    _surface_points_bytes = await asyncio.to_thread(
+                    _bulk.surface_pending = pts
+                    _bulk.surface_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, pts
                     )
-                    _surface_points_version += 1
+                    _bulk.surface_version += 1
                 # Tell compensation.py the file is complete and ready to load.
                 # Wrapped: compensation.py may not be loaded in all configs.
                 try:
@@ -1289,55 +1205,55 @@ async def _status_poller():
                                 hint="compensation.py not loaded?")
 
             # Comp grid startup init: push existing probe-results-grid.json on first connect
-            if not _comp_grid_initialized and getattr(STAT, "ini_filename", None):
+            if not _bulk.grid_initialized and getattr(STAT, "ini_filename", None):
                 t_read = time.monotonic()
-                grid = await asyncio.to_thread(_read_comp_grid_file)
+                grid = await asyncio.to_thread(_bulk.read_comp_grid_file)
                 t_read_done = time.monotonic()
                 if grid:
-                    _comp_grid_pending = grid
-                    _comp_grid_bytes = await asyncio.to_thread(
+                    _bulk.grid_pending = grid
+                    _bulk.grid_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, grid
                     )
                     t_enc_done = time.monotonic()
-                    _comp_grid_version += 1
+                    _bulk.grid_version += 1
                     print(
-                        f"[COMP] publish v={_comp_grid_version} trigger=init "
+                        f"[COMP] publish v={_bulk.grid_version} trigger=init "
                         f"file_ms={(t_read_done - t_read)*1000:.0f} "
                         f"encode_ms={(t_enc_done - t_read_done)*1000:.0f} "
-                        f"bytes={len(_comp_grid_bytes)}B "
+                        f"bytes={len(_bulk.grid_bytes)}B "
                         f"total_ms={(t_enc_done - t_read)*1000:.0f}",
                         flush=True,
                     )
-                _last_comp_hal_ver = st.comp_grid_version  # sync — prevents re-fire below
-                _comp_grid_initialized = True
+                _bulk.last_comp_hal_ver = st.comp_grid_version  # sync — prevents re-fire below
+                _bulk.grid_initialized = True
 
             # Comp grid update: detect via compensation.grid-version HAL pin
-            if _comp_grid_initialized and st.comp_grid_version is not None \
-                    and st.comp_grid_version != _last_comp_hal_ver:
+            if _bulk.grid_initialized and st.comp_grid_version is not None \
+                    and st.comp_grid_version != _bulk.last_comp_hal_ver:
                 t_read = time.monotonic()
-                grid = await asyncio.to_thread(_read_comp_grid_file)
+                grid = await asyncio.to_thread(_bulk.read_comp_grid_file)
                 t_read_done = time.monotonic()
                 if grid:
-                    _comp_grid_pending = grid
-                    _comp_grid_bytes = await asyncio.to_thread(
+                    _bulk.grid_pending = grid
+                    _bulk.grid_bytes = await asyncio.to_thread(
                         _msgspec.msgpack.encode, grid
                     )
                     t_enc_done = time.monotonic()
-                    _comp_grid_version += 1
+                    _bulk.grid_version += 1
                     print(
-                        f"[COMP] publish v={_comp_grid_version} trigger=hal "
+                        f"[COMP] publish v={_bulk.grid_version} trigger=hal "
                         f"hal_ver={st.comp_grid_version} "
                         f"file_ms={(t_read_done - t_read)*1000:.0f} "
                         f"encode_ms={(t_enc_done - t_read_done)*1000:.0f} "
-                        f"bytes={len(_comp_grid_bytes)}B "
+                        f"bytes={len(_bulk.grid_bytes)}B "
                         f"total_ms={(t_enc_done - t_read)*1000:.0f}",
                         flush=True,
                     )
-                _last_comp_hal_ver = st.comp_grid_version
+                _bulk.last_comp_hal_ver = st.comp_grid_version
 
             # Gcode preview: parse once (in subprocess) on file change, share
             # to all clients via version counter. Single-flight via
-            # _gcode_refresh_running so rapid-fire loads don't stack
+            # _bulk.refresh_running so rapid-fire loads don't stack
             # subprocesses. Parse output is WCS-invariant (worker un-rotates
             # and un-offsets), so rotation edits and WCS switches never
             # trigger a re-parse — frontend re-applies LIVE origin+rotation
@@ -1351,23 +1267,23 @@ async def _status_poller():
                     _cur_mtime = os.path.getmtime(st.active_file)
                 except OSError:
                     # File momentarily absent (e.g. mid atomic-write swap).
-                    # Leave _gcode_last_mtime as-is; next tick re-checks.
-                    _cur_mtime = _gcode_last_mtime
+                    # Leave _bulk.last_mtime as-is; next tick re-checks.
+                    _cur_mtime = _bulk.last_mtime
             else:
                 _cur_mtime = None
             file_changed = bool(st.active_file) and (
-                st.active_file != _gcode_last_file or _cur_mtime != _gcode_last_mtime
+                st.active_file != _bulk.last_file or _cur_mtime != _bulk.last_mtime
             )
-            if file_changed and not _gcode_refresh_running:
-                _gcode_refresh_running = True
-                register_bg_task(asyncio.create_task(_refresh_gcode_preview(st.active_file)))
-            elif not st.active_file and _gcode_last_file is not None:
-                _gcode_preview_pending = None
-                _gcode_preview_bytes = None
-                _gcode_preview_bytes_gz = None
-                _gcode_preview_version += 1
-                _gcode_last_file = None
-                _gcode_last_mtime = None
+            if file_changed and not _bulk.refresh_running:
+                _bulk.refresh_running = True
+                register_bg_task(asyncio.create_task(_bulk.refresh_gcode_preview(st.active_file)))
+            elif not st.active_file and _bulk.last_file is not None:
+                _bulk.preview_pending = None
+                _bulk.preview_bytes = None
+                _bulk.preview_bytes_gz = None
+                _bulk.preview_version += 1
+                _bulk.last_file = None
+                _bulk.last_mtime = None
 
             # Safety-trip detection via the servo-thread HAL latch level
             # (webui-hb-latch.fault-out, issue #34). The latch is sticky and
@@ -2512,7 +2428,7 @@ async def _handle_command_impl(msg: Dict[str, Any], armed: bool):
             return {"ok": True, "tools": merged, "current_tool": current_tool}
 
         if cmd == "get_probe_results":
-            pts = await asyncio.to_thread(_read_probe_results_file)
+            pts = await asyncio.to_thread(_bulk.read_probe_results_file)
             return {"ok": True, "points": pts}
 
         if cmd == "get_comp_grid":
@@ -3601,154 +3517,6 @@ def _build_wcs_rotation_patches() -> Dict[str, str]:
     return patches
 
 
-_gcode_parse_proc: Optional[subprocess.Popen] = None  # tracked so lifespan can terminate it
-
-
-def _run_gcode_worker_blocking(ctx_bytes: bytes, timeout: float):
-    """Spawn the parse worker and run it to completion. Runs in a worker thread
-    (via asyncio.to_thread) so the fork happens OFF the event loop — B7.
-
-    asyncio.create_subprocess_exec forks the (large) gateway process
-    synchronously on the loop; under load that copy-on-write fork + pipe
-    registration stalled the loop ~60 ms (#35 attribution: a 62 ms
-    _SelectorTransport._add_reader). stdlib subprocess.Popen here forks inside
-    the thread (the fork syscall releases the GIL, so the loop keeps running) and
-    uses posix_spawn where the platform allows, which is cheaper still. The Popen
-    handle is published to _gcode_parse_proc so lifespan shutdown can terminate an
-    in-flight parse. Returns (returncode, stdout, stderr); raises
-    subprocess.TimeoutExpired on timeout (child already killed + reaped)."""
-    global _gcode_parse_proc
-    proc = subprocess.Popen(
-        [sys.executable, _GCODE_WORKER_PATH],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    _gcode_parse_proc = proc
-    try:
-        stdout, stderr = proc.communicate(input=ctx_bytes, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.communicate()  # reap the killed child so it doesn't zombie
-        raise
-    return proc.returncode, stdout, stderr
-
-
-async def _refresh_gcode_preview(filepath: str):
-    """Parse filepath in an isolated subprocess and publish the result.
-
-    Called from _status_poller on file change. Single-flight via
-    _gcode_refresh_running — the caller sets the flag before scheduling, this
-    coroutine clears it on exit. The subprocess has its own Python interpreter
-    and its own GIL, so _heartbeat_loop keeps ticking through the parse even
-    for multi-second programs.
-    """
-    global _gcode_preview_pending, _gcode_preview_version
-    global _gcode_last_file, _gcode_last_mtime, _gcode_refresh_running
-    global _gcode_preview_bytes, _gcode_preview_bytes_gz, _gcode_parse_proc
-    t_start = time.monotonic()
-    # Snapshot mtime BEFORE the parse: if an edit lands while the subprocess is
-    # running, we record the pre-parse mtime, so the poller's next tick still
-    # sees a mismatch and re-parses the newest content rather than missing it.
-    try:
-        _mtime_at_parse: Optional[float] = os.path.getmtime(filepath)
-    except OSError:
-        _mtime_at_parse = None
-    try:
-        ini_path = getattr(STAT, "ini_filename", None) if STAT is not None else None
-        if not ini_path:
-            return
-        active_idx = getattr(STAT, "g5x_index", None) if STAT is not None else None
-        patches = _build_wcs_rotation_patches()
-        ctx = {
-            "file": filepath,
-            "ini_path": ini_path,
-            "units": get_machine_units(),
-            "var_patches": patches,
-            "g5x_index": active_idx if isinstance(active_idx, int) else 1,
-        }
-        ctx_bytes = _msgpack_encoder.encode(ctx)
-        _trace.emit("gcode.spawn_start",
-                    file=os.path.basename(filepath), active_idx=active_idx)
-
-        t_spawn = time.monotonic()
-        # Spawn + run the worker entirely off the event loop (B7): the fork no
-        # longer stalls the loop. communicate() (write ctx, read stdout/stderr,
-        # wait) and the 60 s timeout all run in the thread.
-        try:
-            returncode, stdout, stderr = await asyncio.to_thread(
-                _run_gcode_worker_blocking, ctx_bytes, 60.0)
-        except subprocess.TimeoutExpired:
-            _trace.emit("gcode.parse_timeout", level="warn", file=filepath)
-            return
-        t_communicated = time.monotonic()
-        if returncode != 0:
-            err_tail = stderr.decode(errors="replace")[:500] if stderr else ""
-            _trace.emit("gcode.parse_worker_failed", level="warn",
-                        rc=returncode, stderr_tail=err_tail)
-            return
-        # Surface worker-side timing + lift the partial-parse marker into a
-        # structured event WITHOUT decoding the (multi-MB) stdout payload.
-        if stderr:
-            for ln in stderr.decode(errors="replace").splitlines():
-                if not ln.strip():
-                    continue
-                if ln.startswith("__PARTIAL__"):
-                    _p = ln.split("\t", 2)
-                    _trace.emit("gcode.parse_partial", level="warn", file=filepath,
-                                error=_p[2] if len(_p) > 2 else "",
-                                error_line=_p[1] if len(_p) > 1 else "")
-                else:
-                    _trace.emit("gcode.worker_log", line=ln)
-        _trace.emit("gcode.worker_done",
-                    parse_ms=round((t_communicated - t_spawn) * 1000, 1),
-                    stdout_bytes=len(stdout))
-        if not stdout:
-            _trace.emit("gcode.preview_refresh_failed", level="warn",
-                        file=filepath, exc="EmptyOutput", msg="worker emitted no bytes")
-            return
-
-        # PASSTHROUGH (mmw#4 / GC): the worker already emits the EXACT GET /preview
-        # wire shape (incl. "file"), so we publish its bytes verbatim — no decode +
-        # re-encode. Decoding inflated the payload into hundreds of thousands of
-        # tiny [x,y,z] list objects purely to re-serialize them, and that fresh
-        # live-object population is what drove gen-0/gen-1 GC scans to 50-120 ms
-        # (the HB-WAKEs). Nothing in the gateway reads the polylines as Python
-        # objects — both consumers only need `file` — so we keep just that. gzip
-        # runs on the opaque bytes off-thread (GIL-releasing C, allocates no
-        # tracked objects). Clients fetch over HTTP (GET /preview), off the WS writer.
-        t_gz0 = time.monotonic()
-        preview_bytes_gz: Optional[bytes] = None
-        if len(stdout) >= 4096:
-            preview_bytes_gz = await asyncio.to_thread(gzip.compress, stdout, 6)
-        t_gz_done = time.monotonic()
-        # Publish metadata + bytes together before bumping the version so
-        # GET /preview readers never see stale bytes under a new version.
-        _gcode_preview_pending = {"file": filepath}
-        global _gcode_preview_raw_len
-        _gcode_preview_raw_len = len(stdout)
-        # Keep the raw copy ONLY when no gz exists: every real browser accepts
-        # gzip, so holding raw + gz resident (~22 MB on a heavy file) paid for a
-        # variant that was practically never served.
-        _gcode_preview_bytes = None if preview_bytes_gz is not None else stdout
-        _gcode_preview_bytes_gz = preview_bytes_gz
-        _gcode_preview_version += 1
-        _gcode_last_file = filepath
-        _gcode_last_mtime = _mtime_at_parse
-        _trace.emit("gcode.publish",
-                    version=_gcode_preview_version,
-                    gzip_ms=round((t_gz_done - t_gz0) * 1000, 1),
-                    bytes=len(stdout),
-                    bytes_gz=len(preview_bytes_gz) if preview_bytes_gz else 0,
-                    total_ms=round((t_gz_done - t_start) * 1000, 1))
-    except Exception as e:
-        _trace.emit("gcode.preview_refresh_failed", level="warn",
-                    file=filepath, exc=type(e).__name__, msg=str(e))
-    finally:
-        _gcode_refresh_running = False
-        _gcode_parse_proc = None
-
-
 # ---- Lifespan shutdown registry ----
 # Long-lived tasks register themselves here so the FastAPI lifespan can cancel
 # them on shutdown. uvicorn replaces our module-level signal handlers, so the
@@ -3761,23 +3529,6 @@ def register_bg_task(t: asyncio.Task) -> asyncio.Task:
     _bg_tasks.add(t)
     t.add_done_callback(_bg_tasks.discard)
     return t
-
-
-async def _terminate_parse_proc(proc) -> None:
-    """Terminate an in-flight G-code parse subprocess, bounded so a stuck child can't
-    hang the deterministic shutdown: SIGTERM, wait ≤1 s, then SIGKILL. wait() is a
-    blocking stdlib Popen call (B7), so it's offloaded via to_thread. No-op when the
-    proc is None or already exited. Callers pass a LOCAL handle (captured before any
-    concurrent _refresh_gcode_preview finally can clear the global), so the child is
-    always either live (terminate works) or already reaped (poll short-circuits)."""
-    if proc is None or proc.poll() is not None:
-        return
-    proc.terminate()
-    try:
-        await asyncio.wait_for(asyncio.to_thread(proc.wait), timeout=1.0)
-    except asyncio.TimeoutError:
-        proc.kill()
-        await asyncio.to_thread(proc.wait)
 
 
 @asynccontextmanager
@@ -3877,13 +3628,13 @@ async def lifespan(app: "FastAPI"):
             print(f"[SHUTDOWN] {_elapsed()} WS close timed out", flush=True)
         print(f"[SHUTDOWN] {_elapsed()} closed {len(snapshot)} WS connection(s)", flush=True)
 
-    _shutdown_fusion_proc = _fusion_import_proc  # (fusion worker — same race as review #2)
+    _shutdown_fusion_proc = _bulk.fusion_import_proc  # (fusion worker — same race as review #2)
     # Capture the in-flight parse handle BEFORE cancelling background tasks
-    # (review #2): cancelling _refresh_gcode_preview runs its finally, which
-    # clears _gcode_parse_proc — but the to_thread worker + subprocess keep
+    # (review #2): cancelling _bulk.refresh_gcode_preview runs its finally, which
+    # clears _bulk.gcode_parse_proc — but the to_thread worker + subprocess keep
     # running. Reading the global in step 6 would then see None and orphan the
     # child. Hold the handle here so step 6 can still terminate it.
-    _shutdown_parse_proc = _gcode_parse_proc
+    _shutdown_parse_proc = _bulk.gcode_parse_proc
 
     # 3. Cancel background tasks. Must precede step 4: _disconnect_grace and
     # _heartbeat_loop continuously toggle the heartbeat field via _hal_send;
@@ -3918,18 +3669,18 @@ async def lifespan(app: "FastAPI"):
     print(f"[SHUTDOWN] {_elapsed()} HAL sockets disconnected", flush=True)
 
     # 6. Terminate the gcode parse subprocess if still alive, using the handle
-    # captured before step 3 (review #2). _terminate_parse_proc bounds the wait
+    # captured before step 3 (review #2). _bulk_mod.terminate_parse_proc bounds the wait
     # (to_thread); terminating the child unblocks the orphaned communicate() thread.
     if _shutdown_fusion_proc is not None:
         try:
-            await _terminate_parse_proc(_shutdown_fusion_proc)
+            await _bulk_mod.terminate_parse_proc(_shutdown_fusion_proc)
             print(f"[SHUTDOWN] {_elapsed()} fusion import worker handled", flush=True)
         except Exception as e:
             print(f"[SHUTDOWN] {_elapsed()} fusion worker terminate failed: {e}", flush=True)
     proc = _shutdown_parse_proc
     if proc is not None:
         try:
-            await _terminate_parse_proc(proc)
+            await _bulk_mod.terminate_parse_proc(proc)
             print(f"[SHUTDOWN] {_elapsed()} gcode parse subprocess handled rc={proc.returncode}", flush=True)
         except Exception as e:
             print(f"[SHUTDOWN] {_elapsed()} gcode proc terminate failed: {e}", flush=True)
@@ -4233,55 +3984,6 @@ async def save_gcode(request: Request, path: str = Query(...)):
 
 # ---- Fusion 360 Tool Library Import ----
 
-_FUSION_WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fusion_import.py")
-_FUSION_INLINE_MAX = 1 << 20   # <=1 MiB decodes in ~15 ms — a thread is fine
-_fusion_import_proc: Optional[subprocess.Popen] = None  # lifespan termination handle
-
-
-def _run_fusion_worker_blocking(raw: bytes, machine_unit: str, timeout: float):
-    """Run the fusion_import worker to completion in a SUBPROCESS (own GIL).
-
-    The perf-matrix harness proved the in-thread path trips the HAL watchdog at
-    the size cap: decode+transform of a near-16 MB library is ~243 ms of
-    GIL-held CPU plus the GC pressure of ~60k fresh dicts — a thread cannot
-    isolate that from the event loop. Same lifecycle pattern as the gcode parse
-    worker (B7): Popen inside a to_thread, bounded communicate, handle published
-    for lifespan termination. Raises ValueError for an invalid library (HTTP
-    400 at the route), RuntimeError for worker failures (HTTP 500)."""
-    global _fusion_import_proc
-    import msgspec as _ms
-    proc = subprocess.Popen(
-        [sys.executable, _FUSION_WORKER_PATH],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    _fusion_import_proc = proc
-    try:
-        ctx = _ms.msgpack.encode({"raw": raw, "unit": machine_unit})
-        try:
-            stdout, stderr = proc.communicate(input=ctx, timeout=timeout)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.communicate()
-            raise RuntimeError(f"fusion import worker timeout after {timeout:.0f}s")
-        err_tail = (stderr or b"").decode(errors="replace").strip()[:500]
-        if proc.returncode == 4:
-            raise ValueError(err_tail or "Invalid tool library")
-        if proc.returncode != 0:
-            raise RuntimeError(f"fusion import worker rc={proc.returncode}: {err_tail}")
-        out = _ms.msgpack.decode(stdout)
-        return out["parsed"], out["skipped"]
-    finally:
-        _fusion_import_proc = None
-
-
-async def _decode_fusion_offloaded(raw: bytes, machine_unit: str):
-    """Size-routed offload: small blobs in a thread (cheap, common case); large
-    blobs in the subprocess worker (the only true GIL isolation)."""
-    if len(raw) <= _FUSION_INLINE_MAX:
-        return await asyncio.to_thread(decode_fusion_blob, raw, machine_unit)
-    _trace.emit("fusion.worker_offload", bytes=len(raw))
-    return await asyncio.to_thread(_run_fusion_worker_blocking, raw, machine_unit, 60.0)
-
-
 @app.post("/import-tool-library", dependencies=[Depends(require_token)])
 async def import_tool_library(file: UploadFile = File(...)):
     """Preview or apply a Fusion 360 tool library import.
@@ -4297,7 +3999,7 @@ async def import_tool_library(file: UploadFile = File(...)):
     loop = asyncio.get_event_loop()
     machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
     try:
-        parsed, skipped = await _decode_fusion_offloaded(raw, machine_unit)
+        parsed, skipped = await _bulk.decode_fusion_offloaded(raw, machine_unit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not parsed and not skipped:
@@ -4341,7 +4043,7 @@ async def apply_tool_library_import(
     loop = asyncio.get_event_loop()
     machine_unit = get_ini_config().get("linear_units", "mm")  # on loop (cached; may STAT.poll once)
     try:
-        parsed, _skipped = await _decode_fusion_offloaded(raw, machine_unit)
+        parsed, _skipped = await _bulk.decode_fusion_offloaded(raw, machine_unit)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     if not parsed:
@@ -4487,27 +4189,27 @@ def get_preview(request: Request, v: Optional[int] = None):
     accepts gzip and a pre-compressed copy exists, serve that instead — both
     variants are produced once per parse, so per-fetch CPU stays at zero.
     """
-    if not _preview_available():
+    if not _bulk.preview_available():
         raise HTTPException(status_code=404, detail="No preview cached")
     t_start = time.monotonic()
     peak = _fanout_enter("preview")
     try:
         accept_enc = request.headers.get("accept-encoding", "")
-        use_gzip = "gzip" in accept_enc and _gcode_preview_bytes_gz is not None
+        use_gzip = "gzip" in accept_enc and _bulk.preview_bytes_gz is not None
         if use_gzip:
-            body = _gcode_preview_bytes_gz
-        elif _gcode_preview_bytes is not None:
-            body = _gcode_preview_bytes
+            body = _bulk.preview_bytes_gz
+        elif _bulk.preview_bytes is not None:
+            body = _bulk.preview_bytes
         else:
             # Non-gzip client and the raw copy was dropped: decompress on demand.
             # This is a SYNC endpoint (threadpool), so the loop is untouched.
             # Loud, not silent — exotic clients paying ~100 ms is auditable.
-            body = gzip.decompress(_gcode_preview_bytes_gz)  # type: ignore[arg-type]
+            body = gzip.decompress(_bulk.preview_bytes_gz)  # type: ignore[arg-type]
             _trace.emit("preview.raw_decompress", level="info",
                         bytes=len(body), peer=str(request.client.host if request.client else "?"))
         headers = {
             "Cache-Control": "public, max-age=31536000, immutable",
-            "X-Preview-Version": str(_gcode_preview_version),
+            "X-Preview-Version": str(_bulk.preview_version),
             "Vary": "Accept-Encoding",
         }
         if use_gzip:
@@ -4523,7 +4225,7 @@ def get_preview(request: Request, v: Optional[int] = None):
         if peak > 1 or handler_ms > 50:
             print(
                 f"[FANOUT] preview peak={peak} handler_ms={handler_ms:.0f} "
-                f"bytes={_gcode_preview_raw_len}B v={_gcode_preview_version}",
+                f"bytes={_bulk.preview_raw_len}B v={_bulk.preview_version}",
                 flush=True,
             )
 
@@ -4536,17 +4238,17 @@ def get_surface_points(v: Optional[int] = None):
     stall the event loop past the HAL heartbeat window. `v` is advisory —
     a cache-buster so each version is a distinct URL.
     """
-    if _surface_points_bytes is None:
+    if _bulk.surface_bytes is None:
         raise HTTPException(status_code=404, detail="No surface data")
     t_start = time.monotonic()
     peak = _fanout_enter("surface_points")
     try:
         return Response(
-            content=_surface_points_bytes,
+            content=_bulk.surface_bytes,
             media_type="application/x-msgpack",
             headers={
                 "Cache-Control": "public, max-age=31536000, immutable",
-                "X-Surface-Version": str(_surface_points_version),
+                "X-Surface-Version": str(_bulk.surface_version),
             },
         )
     finally:
@@ -4555,7 +4257,7 @@ def get_surface_points(v: Optional[int] = None):
         if peak > 1 or handler_ms > 50:
             print(
                 f"[FANOUT] surface_points peak={peak} handler_ms={handler_ms:.0f} "
-                f"bytes={len(_surface_points_bytes)}B v={_surface_points_version}",
+                f"bytes={len(_bulk.surface_bytes)}B v={_bulk.surface_version}",
                 flush=True,
             )
 
@@ -4567,17 +4269,17 @@ def get_comp_grid(v: Optional[int] = None):
     Same pattern as /surface_points — keeps the up-to-~80 KB grid off the
     single-threaded WS writer.
     """
-    if _comp_grid_bytes is None:
+    if _bulk.grid_bytes is None:
         raise HTTPException(status_code=404, detail="No comp grid")
     t_start = time.monotonic()
     peak = _fanout_enter("comp_grid")
     try:
         return Response(
-            content=_comp_grid_bytes,
+            content=_bulk.grid_bytes,
             media_type="application/x-msgpack",
             headers={
                 "Cache-Control": "public, max-age=31536000, immutable",
-                "X-Comp-Grid-Version": str(_comp_grid_version),
+                "X-Comp-Grid-Version": str(_bulk.grid_version),
             },
         )
     finally:
@@ -4586,7 +4288,7 @@ def get_comp_grid(v: Optional[int] = None):
         if peak > 1 or handler_ms > 50:
             print(
                 f"[FANOUT] comp_grid peak={peak} handler_ms={handler_ms:.0f} "
-                f"bytes={len(_comp_grid_bytes)}B v={_comp_grid_version}",
+                f"bytes={len(_bulk.grid_bytes)}B v={_bulk.grid_version}",
                 flush=True,
             )
 
@@ -4851,9 +4553,6 @@ async def ws_endpoint(ws: WebSocket):
             return
         global _next_client_id, _estop_hold, _unacked_trip
         global _last_fault_latched, _trip_baseline_seen
-        global _gcode_preview_pending, _gcode_preview_version
-        global _gcode_last_file, _gcode_last_mtime
-        global _gcode_preview_bytes, _gcode_preview_bytes_gz, _gcode_refresh_running
         client_id = _next_client_id
         _next_client_id += 1
         client_ip = ws.client.host if ws.client else "unknown"
@@ -4951,7 +4650,7 @@ async def ws_endpoint(ws: WebSocket):
         # Cold path (file loaded but not yet parsed): schedule a refresh; the
         # client's status_loop picks up the ping on the next version bump.
         # File *content* is fetched separately via GET /gcode.
-        _init_preview_ver = _gcode_preview_version
+        _init_preview_ver = _bulk.preview_version
         _t = time.monotonic()
         _gcode_path = "no-file"
         try:
@@ -4960,20 +4659,20 @@ async def ws_endpoint(ws: WebSocket):
             initial_file = safe_get("file", None)
             if initial_file:
                 cache_hit = (
-                    _gcode_preview_pending is not None
-                    and _gcode_preview_pending.get("file") == initial_file
-                    and _preview_available()
+                    _bulk.preview_pending is not None
+                    and _bulk.preview_pending.get("file") == initial_file
+                    and _bulk.preview_available()
                 )
                 if cache_hit:
                     await ws_send_json(ws, {
                         "type": "viewer_gcode_ready",
-                        "version": _gcode_preview_version,
+                        "version": _bulk.preview_version,
                         "file": initial_file,
                     })
                     _gcode_path = "cache-hit-sent"
-                elif not _gcode_refresh_running:
-                    _gcode_refresh_running = True
-                    register_bg_task(asyncio.create_task(_refresh_gcode_preview(initial_file)))
+                elif not _bulk.refresh_running:
+                    _bulk.refresh_running = True
+                    register_bg_task(asyncio.create_task(_bulk.refresh_gcode_preview(initial_file)))
                     _gcode_path = "refresh-scheduled"
                 else:
                     _gcode_path = "refresh-already-running"
@@ -5008,10 +4707,10 @@ async def ws_endpoint(ws: WebSocket):
             _spindle_load_pin = _slp if isinstance(_slp, str) and _HAL_PIN_RE.match(_slp) else ""
             _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
             _prev_encode_ms = 0.0  # encode_ms from previous cycle (wire-format serialise time)
-            _last_surface_version = 0  # tracks which _surface_points_version was last sent to this client
-            _last_comp_grid_version = 0  # tracks which _comp_grid_version was last sent to this client
+            _last_surface_version = 0  # tracks which _bulk.surface_version was last sent to this client
+            _last_bulk.grid_version = 0  # tracks which _bulk.grid_version was last sent to this client
             _last_tool_table_version = 0  # tracks which _tool_table_version was last sent to this client
-            _last_gcode_preview_version = _init_preview_ver  # initialized from connect-time snapshot
+            _last_bulk.preview_version = _init_preview_ver  # initialized from connect-time snapshot
             # Experiment 2: status-delta per-client state
             _last_status_data: Optional[Dict[str, Any]] = None
             _cycles_since_full = 0
@@ -5280,14 +4979,14 @@ async def ws_endpoint(ws: WebSocket):
                     # the single-threaded WS writer stalled the event loop past
                     # the HAL heartbeat window. File content is fetched via
                     # GET /gcode; preview data is fetched via GET /preview.
-                    if _gcode_preview_version != _last_gcode_preview_version:
-                        _last_gcode_preview_version = _gcode_preview_version
-                        pending = _gcode_preview_pending
-                        if _preview_available() and pending is not None:
+                    if _bulk.preview_version != _last_bulk.preview_version:
+                        _last_bulk.preview_version = _bulk.preview_version
+                        pending = _bulk.preview_pending
+                        if _bulk.preview_available() and pending is not None:
                             try:
                                 await ws_send_json(ws, {
                                     "type": "viewer_gcode_ready",
-                                    "version": _gcode_preview_version,
+                                    "version": _bulk.preview_version,
                                     "file": pending.get("file"),
                                 })
                             except RuntimeError:
@@ -5301,25 +5000,25 @@ async def ws_endpoint(ws: WebSocket):
                     # Surface points: cached msgpack lives on the server; send a
                     # tiny version ping so each client fetches via GET /surface_points
                     # off the WS writer.
-                    if _surface_points_version != _last_surface_version:
-                        _last_surface_version = _surface_points_version
-                        if _surface_points_bytes is not None:
+                    if _bulk.surface_version != _last_surface_version:
+                        _last_surface_version = _bulk.surface_version
+                        if _bulk.surface_bytes is not None:
                             try:
                                 await ws_send_json(ws, {
                                     "type": "surface_points_ready",
-                                    "version": _surface_points_version,
+                                    "version": _bulk.surface_version,
                                 })
                             except RuntimeError:
                                 pass  # safe-silent: WS closed between iteration start and send
 
                     # Compensation grid: same pattern — fetch via GET /comp_grid.
-                    if _comp_grid_version != _last_comp_grid_version:
-                        _last_comp_grid_version = _comp_grid_version
-                        if _comp_grid_bytes is not None:
+                    if _bulk.grid_version != _last_bulk.grid_version:
+                        _last_bulk.grid_version = _bulk.grid_version
+                        if _bulk.grid_bytes is not None:
                             try:
                                 await ws_send_json(ws, {
                                     "type": "comp_grid_ready",
-                                    "version": _comp_grid_version,
+                                    "version": _bulk.grid_version,
                                 })
                             except RuntimeError:
                                 pass  # safe-silent: WS closed between iteration start and send
@@ -5767,12 +5466,12 @@ async def ws_endpoint(ws: WebSocket):
                     # poller's file-change edge won't fire. Clear the shared
                     # cache and bump the version so every client's status_loop
                     # sends an empty viewer_gcode on the next cycle.
-                    _gcode_preview_pending = None
-                    _gcode_preview_bytes = None
-                    _gcode_preview_bytes_gz = None
-                    _gcode_preview_version += 1
-                    _gcode_last_file = None
-                    _gcode_last_mtime = None
+                    _bulk.preview_pending = None
+                    _bulk.preview_bytes = None
+                    _bulk.preview_bytes_gz = None
+                    _bulk.preview_version += 1
+                    _bulk.last_file = None
+                    _bulk.last_mtime = None
             await ws_send_json(ws, {"type": "reply", "cmd": msg.get("cmd"), **reply})
 
     except (WebSocketDisconnect, RuntimeError) as _disc_e:
