@@ -450,16 +450,18 @@ def _prune_armed_resume_holds() -> None:
     for sid in expired:
         del _armed_resume_holds[sid]
 
-# ---- HAL watchdog socket client ----
-# The watchdog is loaded by LinuxCNC HAL config (loadusr -W hal_watchdog.py).
-# Gateway connects to its Unix socket to send heartbeat/connected updates.
+# ---- HAL IPC: watchdog + reader sockets ----
+# Extracted to hal_bridge.py (M6). The bridge owns both Unix-socket clients
+# (watchdog sends, reader snapshots + RPC, snapshot freshness); the heartbeat
+# coroutine below stays HERE and only hands values to it — the bridge must
+# never produce a heartbeat. The instance + legacy-name rebinds (_hal_send,
+# _reader_get, ...) live after _set_phase, a constructor dependency; every
+# function in between resolves those globals at call time.
 import sys
 import signal
-import socket as _socket
 
+import hal_bridge as _hal_bridge_mod
 
-_HAL_SOCK_PATH = "/tmp/webui-safety.sock"
-_hal_sock: Optional[_socket.socket] = None
 _hal_last_hb = False
 _disconnect_grace_task: Optional[asyncio.Task] = None
 _DISCONNECT_GRACE_SEC = 3.0  # covers 2s frontend reconnect delay
@@ -471,110 +473,6 @@ _estop_hold = False  # hold connected=FALSE during UI e-stop
 # their own larger timeouts (5s) because the interpreter can legitimately
 # take longer to acknowledge a parsed block.
 _CMD_WAIT_TIMEOUT = 2.0
-
-def _hal_connect():
-    """Connect to the HAL watchdog Unix socket. Non-fatal if unavailable.
-
-    Socket is set to a tight (50 ms) sendall timeout so that, if the kernel
-    Unix-socket send buffer fills (e.g. watchdog process scheduling-delayed
-    during a cold-start handshake storm), our heartbeat task does NOT block
-    the entire asyncio loop waiting for buffer space. A timed-out sendall
-    raises socket.timeout, which we catch and treat as a dropped heartbeat
-    — the watchdog will correctly trip if heartbeats stop reaching it. The
-    timeout is generous compared to the 33 ms heartbeat cadence and tiny
-    compared to the 500 ms HAL trip threshold; we lose at most one
-    heartbeat to detect backpressure.
-    """
-    global _hal_sock
-    if _hal_sock is not None:
-        return  # already connected
-    try:
-        _hal_sock = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
-        _hal_sock.connect(_HAL_SOCK_PATH)
-        _hal_sock.settimeout(0.05)
-        _trace.emit("hal.socket_connected")
-    except Exception as e:
-        _trace.emit("hal.socket_connect_failed", level="error",
-                    exc=type(e).__name__, msg=str(e))
-        _hal_sock = None
-
-def _hal_disconnect():
-    """Disconnect from the HAL watchdog socket."""
-    global _hal_sock
-    if _hal_sock is not None:
-        try:
-            _hal_sock.close()
-        except Exception:
-            pass  # safe-silent: socket cleanup, already-closed is fine
-        _hal_sock = None
-
-# hal.send_summary is emitted once per N sends (N=30 ≈ 1 s at heartbeat
-# cadence) by the shared Aggregator. `slow_count` is tallied locally
-# (it isn't an avg/max metric) and reset by the extra-fields callable
-# at emit time. `tcp_outq` is read fresh on each emit so the kernel
-# buffer state is captured at summary-publication time, not at
-# Aggregator construction.
-_hal_send_slow_count = 0
-
-
-def _hal_send_extras() -> dict:
-    global _hal_send_slow_count
-    out = {"slow_count": _hal_send_slow_count, "tcp_outq": _hal_tcp_outq()}
-    _hal_send_slow_count = 0
-    return out
-
-
-_hal_send_agg = _trace.Aggregator(
-    "hal.send_summary", every=30, extra_fields=_hal_send_extras
-)
-
-
-def _hal_send(msg: dict):
-    """Send a pin-update message to the HAL watchdog via socket."""
-    global _hal_sock, _hal_send_slow_count
-    if _hal_sock is None:
-        _hal_connect()
-    if _hal_sock is not None:
-        _send_t0 = time.monotonic()
-        try:
-            _hal_sock.sendall((json.dumps(msg) + "\n").encode())
-        except _socket.timeout:
-            # Kernel send buffer full — watchdog process is scheduling-
-            # delayed (or hung). Drop this message and DON'T block the loop
-            # waiting for buffer space. Heartbeat task continues firing; if
-            # the watchdog truly isn't reading, the trip will fire correctly
-            # via oneshot.0.out going FALSE on its own. This converts a
-            # multi-second loop stall into a logged drop of one heartbeat.
-            _send_dt_to = (time.monotonic() - _send_t0) * 1000
-            _trace.emit("hal.send_timeout", level="warn",
-                        send_ms=round(_send_dt_to, 1),
-                        msg_keys=list(msg.keys()))
-            return
-        except (OSError, BrokenPipeError):
-            _hal_sock = None  # will reconnect on next send
-            _trace.emit("hal.send_disconnect", level="warn",
-                        msg_keys=list(msg.keys()))
-            return
-        _send_dt = (time.monotonic() - _send_t0) * 1000
-        if _send_dt > 30:
-            _trace.emit("hal.send_slow", level="warn",
-                        send_ms=round(_send_dt, 1),
-                        msg_keys=list(msg.keys()))
-            _hal_send_slow_count += 1
-        _hal_send_agg.record(ms=_send_dt)
-
-
-try:
-    import fcntl as _fcntl
-    import struct as _struct
-    _SIOCOUTQ = 0x5411  # Linux: bytes in TCP send buffer not yet acked
-    _SIOCINQ = 0x541B   # Linux: bytes in TCP recv buffer not yet read
-except Exception:
-    _fcntl = None
-    _struct = None
-    _SIOCOUTQ = 0
-    _SIOCINQ = 0
-
 
 def _snapshot_trip(trip_ts_ns: int) -> None:
     """Write a forensic bundle when a HAL safety trip fires. Runs in a
@@ -618,108 +516,16 @@ def _snapshot_trip(trip_ts_ns: int) -> None:
                     out_dir=out_dir, exc=type(e).__name__, msg=str(e))
 
 
-def _hal_tcp_outq() -> int:
-    """Bytes queued in the kernel send buffer for _hal_sock. Linux only.
-    Returns -1 on any failure. Cheap (one ioctl, ~1 us)."""
-    if _hal_sock is None or _fcntl is None or _struct is None:
-        return -1
-    try:
-        buf = bytearray(4)
-        _fcntl.ioctl(_hal_sock.fileno(), _SIOCOUTQ, buf)
-        return _struct.unpack("I", bytes(buf))[0]
-    except Exception:
-        return -1
-
-
-# ---- HAL reader (sibling process: webui-reader) ----
-# hal_reader.py owns the `webui-reader` HAL component and pushes a snapshot
-# of the pins poll_status() needs at 30 Hz. The gateway never imports `hal`;
-# all HAL access goes over this socket.  set_p() and halshow_dump() are
-# served as request/reply on the same socket.
-_READER_SOCK_PATH = "/tmp/webui-reader.sock"
-# Single-rebind state: (snapshot, monotonic_ts). Both halves always come from
-# the same tick — no torn reads even if a future caller reads both values
-# across an `await`.
-_reader_state: Optional[Tuple[dict, float]] = None
-_reader_writer: Optional[asyncio.StreamWriter] = None
-_reader_lock = asyncio.Lock()
-_reader_pending: Dict[int, asyncio.Future] = {}
-_reader_next_id = 0
-# A snapshot is "stale" if no message has arrived within this window.
-# The reader pushes at 30 Hz (~33 ms) so 2 s = ~60 missed ticks.
-_READER_STALE_SEC = 2.0
-
-
-async def _reader_recv_loop():
-    """Connect to hal_reader.py and dispatch incoming messages.
-
-    Snapshots update _reader_state. Replies resolve pending futures keyed by
-    request id. Reconnects on socket close with a 1 s backoff.
-    """
-    global _reader_writer, _reader_state
-    while True:
-        _set_phase("reader_recv.connecting")
-        try:
-            reader, writer = await asyncio.open_unix_connection(_READER_SOCK_PATH)
-        except Exception as e:
-            _trace.emit("reader.connect_failed", level="warn",
-                        exc=type(e).__name__, msg=str(e))
-            await asyncio.sleep(1.0)
-            continue
-        _reader_writer = writer
-        _trace.emit("reader.connected")
-        # Push extra-pin config (e.g. user-configured spindle load pin) so the
-        # reader includes it in subsequent snapshots. Spawned as a separate
-        # task because this loop dispatches the reply — awaiting here would
-        # deadlock.
-        asyncio.create_task(_reader_configure_extra_pins())
-        try:
-            while True:
-                _set_phase("reader_recv.readline")
-                line = await reader.readline()
-                if not line:
-                    break
-                _set_phase("reader_recv.process_line")
-                try:
-                    msg = json.loads(line.decode())
-                except Exception as e:
-                    _trace.emit("reader.bad_json", level="warn",
-                                exc=type(e).__name__, msg=str(e))
-                    continue
-                mtype = msg.get("type")
-                if mtype == "snapshot":
-                    _reader_state = (msg, time.monotonic())
-                elif mtype == "reply":
-                    fut = _reader_pending.pop(msg.get("id"), None)
-                    if fut is not None and not fut.done():
-                        fut.set_result(msg)
-        except Exception as e:
-            _trace.emit("reader.recv_loop_error", level="warn",
-                        exc=type(e).__name__, msg=str(e))
-        finally:
-            _set_phase("reader_recv.cleanup")
-            try:
-                writer.close()
-                await writer.wait_closed()
-            except Exception:
-                pass  # safe-silent: async socket cleanup, peer may have vanished
-            _reader_writer = None
-            # Fail any pending requests so callers don't hang.
-            for fut in _reader_pending.values():
-                if not fut.done():
-                    fut.set_exception(ConnectionError("HAL reader disconnected"))
-            _reader_pending.clear()
-        await asyncio.sleep(1.0)
-
-
 async def _reader_configure_extra_pins() -> None:
     """Push the current extra-pin config to the reader.
 
-    Called on reader reconnect and when settings change. Reads settings
+    Called on reader reconnect (the bridge's on_reader_connect hook spawns
+    this as a task — the recv loop dispatches the reply, so awaiting inside
+    the hook would deadlock) and when settings change. Reads settings
     directly so it's correct regardless of whether status_loop has run yet
     (race-free at startup). Fire-and-forget; failures log but don't propagate.
     """
-    if _reader_writer is None:
+    if not _hal_bridge.reader_connected:
         return
     pins: Dict[str, str] = {}
     try:
@@ -734,62 +540,6 @@ async def _reader_configure_extra_pins() -> None:
     except Exception as e:
         _trace.emit("reader.configure_extra_pins_failed", level="warn",
                     exc=type(e).__name__, msg=str(e))
-
-
-async def _reader_request(req: str, timeout: float = 2.0, **kwargs) -> dict:
-    """Send a request to hal_reader.py and await the reply.
-
-    Raises ConnectionError if the reader is not connected, TimeoutError if
-    the reply doesn't arrive in time, RuntimeError if the reader returned ok=False.
-    """
-    global _reader_next_id
-    if _reader_writer is None:
-        raise ConnectionError("HAL reader not connected")
-    # Lock guards only the ID-increment + future-registration handshake.
-    # The actual write+drain happens unlocked: each call writes one complete
-    # `{...}\n` framed message in a single StreamWriter.write() (atomic on
-    # the buffer), so concurrent senders can't interleave bytes.
-    async with _reader_lock:
-        _reader_next_id += 1
-        req_id = _reader_next_id
-        loop = asyncio.get_running_loop()
-        fut = loop.create_future()
-        _reader_pending[req_id] = fut
-    try:
-        _reader_writer.write((json.dumps({"id": req_id, "req": req, **kwargs}) + "\n").encode())
-        await _reader_writer.drain()
-    except Exception:
-        _reader_pending.pop(req_id, None)
-        raise
-    try:
-        reply = await asyncio.wait_for(fut, timeout=timeout)
-    except asyncio.TimeoutError:
-        _reader_pending.pop(req_id, None)
-        raise
-    if not reply.get("ok"):
-        raise RuntimeError(reply.get("error", "reader request failed"))
-    return reply.get("result")
-
-
-def _reader_get(field: str):
-    """Return field from latest snapshot, or None if snapshot absent / field missing.
-
-    No `default` param by design — every absent value must surface as None all
-    the way to the frontend so consumers see "no data" honestly. See
-    feedback_no_silent_fallbacks.md.
-    """
-    state = _reader_state
-    if state is None:
-        return None
-    return state[0].get(field)
-
-
-def _reader_is_stale() -> bool:
-    """True if no snapshot has arrived within _READER_STALE_SEC."""
-    state = _reader_state
-    if state is None:
-        return True
-    return (time.monotonic() - state[1]) > _READER_STALE_SEC
 
 
 async def _disconnect_grace():
@@ -960,6 +710,26 @@ def _phase_ring_snapshot() -> List[Tuple[float, str]]:
         return list(_phase_ring)
     # Already filled; reorder so oldest is first.
     return _phase_ring[_phase_ring_idx:] + _phase_ring[:_phase_ring_idx]
+
+
+# ---- M6 bridge instance ----
+# Created here because _set_phase is a constructor dependency. The legacy
+# underscore names are rebound to bound methods so the many call sites —
+# including _heartbeat_loop/_disconnect_grace defined ABOVE — read unchanged;
+# they resolve these globals at call time, after this point. on_reader_connect
+# spawns the extra-pin push as a task (the recv loop dispatches the reply, so
+# the hook itself must not await).
+_hal_bridge = _hal_bridge_mod.HalBridge(
+    set_phase=_set_phase,
+    on_reader_connect=lambda: asyncio.create_task(_reader_configure_extra_pins()),
+)
+_hal_connect = _hal_bridge.watchdog_connect
+_hal_disconnect = _hal_bridge.watchdog_disconnect
+_hal_send = _hal_bridge.watchdog_send
+_reader_recv_loop = _hal_bridge.reader_recv_loop
+_reader_request = _hal_bridge.reader_request
+_reader_get = _hal_bridge.reader_get
+_reader_is_stale = _hal_bridge.reader_is_stale
 
 
 def _phase_window(start_mono: float, end_mono: float) -> List[dict]:
@@ -2076,7 +1846,7 @@ if _get_lcnc_pid() is not None:
         _trace.emit(
             "boot.hal_connect",
             dt_ms=round((time.monotonic() - _bt) * 1000, 1),
-            sock_ok=_hal_sock is not None,
+            sock_ok=_hal_bridge.watchdog_connected,
         )
 else:
     _trace.emit("boot.lcnc_skip", reason="no linuxcncsvr pid")
@@ -5079,12 +4849,7 @@ async def lifespan(app: "FastAPI"):
 
     # 5. Disconnect HAL sockets (must follow step 4 — _hal_send needs the socket).
     _hal_disconnect()
-    if _reader_writer is not None:
-        try:
-            _reader_writer.close()
-            await asyncio.wait_for(_reader_writer.wait_closed(), timeout=0.5)
-        except (asyncio.TimeoutError, Exception) as e:
-            print(f"[SHUTDOWN] {_elapsed()} reader writer close: {type(e).__name__}: {e}", flush=True)
+    await _hal_bridge.reader_aclose()
     print(f"[SHUTDOWN] {_elapsed()} HAL sockets disconnected", flush=True)
 
     # 6. Terminate the gcode parse subprocess if still alive, using the handle
