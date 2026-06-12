@@ -140,6 +140,9 @@ def trace_window(t0_ns: int, t1_ns: int) -> dict:
 
 # ---- WS viewer client ------------------------------------------------------
 
+LIVENESS_FAILED = False  # set by with_viewers when a scenario delivers 0 status frames
+
+
 class Viewer:
     """Minimal browser stand-in: hello + 1 Hz heartbeat + frame draining."""
 
@@ -147,6 +150,7 @@ class Viewer:
         self.name = name
         self.hidden = hidden
         self.frames = 0
+        self.status_frames = 0  # status/status_delta only — the liveness signal
         self.bytes = 0
         self.merged = {}
         self.armed_seen = None
@@ -178,6 +182,7 @@ class Viewer:
                     except Exception:
                         continue
                 if msg.get("type") in ("status", "status_delta"):
+                    self.status_frames += 1
                     self.merged.update(msg.get("data") or {})
                     if "armed" in msg:
                         self.armed_seen = msg["armed"]
@@ -209,10 +214,21 @@ async def with_viewers(n: int, hidden_frac: float, body):
     for v in viewers:
         await v.connect()
     try:
-        return await body(viewers)
+        result = await body(viewers)
     finally:
         for v in viewers:
             await v.close()
+    status_rx = sum(v.status_frames for v in viewers)
+    if isinstance(result, dict):
+        result["status_rx"] = status_rx
+    if status_rx == 0:
+        global LIVENESS_FAILED
+        LIVENESS_FAILED = True
+        print("  LIVENESS FAIL: viewers received ZERO status frames — "
+              "the fan-out is dead regardless of the perf numbers", flush=True)
+        if isinstance(result, dict):
+            result["LIVENESS_FAIL"] = True
+    return result
 
 
 # ---- scenario helpers ------------------------------------------------------
@@ -459,6 +475,9 @@ async def run(args):
     with open(out, "w") as f:
         json.dump(report, f, indent=1)
     print(f"\nartifact: {out}")
+    if LIVENESS_FAILED:
+        print("RESULT: FAIL (liveness) — at least one scenario delivered zero status frames", flush=True)
+        return 1
     return 0
 
 

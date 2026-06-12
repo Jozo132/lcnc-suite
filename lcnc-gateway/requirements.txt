@@ -24,3 +24,6 @@ click>=8.1
 # Optional: camera streaming — only imported when LCNC_CAMERA_SOURCE is set.
 # The gateway degrades gracefully (try/except ImportError) if missing.
 opencv-python-headless>=4.8
+
+# test-only: starlette TestClient transport (test_ws_smoke.py)
+httpx

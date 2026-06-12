@@ -4708,9 +4708,9 @@ async def ws_endpoint(ws: WebSocket):
             _prev_send_ms = 0.0  # send_ms from previous cycle (sent in next message)
             _prev_encode_ms = 0.0  # encode_ms from previous cycle (wire-format serialise time)
             _last_surface_version = 0  # tracks which _bulk.surface_version was last sent to this client
-            _last_bulk.grid_version = 0  # tracks which _bulk.grid_version was last sent to this client
+            _last_comp_grid_version = 0  # tracks which _bulk.grid_version was last sent to this client
             _last_tool_table_version = 0  # tracks which _tool_table_version was last sent to this client
-            _last_bulk.preview_version = _init_preview_ver  # initialized from connect-time snapshot
+            _last_gcode_preview_version = _init_preview_ver  # initialized from connect-time snapshot
             # Experiment 2: status-delta per-client state
             _last_status_data: Optional[Dict[str, Any]] = None
             _cycles_since_full = 0
@@ -4979,8 +4979,8 @@ async def ws_endpoint(ws: WebSocket):
                     # the single-threaded WS writer stalled the event loop past
                     # the HAL heartbeat window. File content is fetched via
                     # GET /gcode; preview data is fetched via GET /preview.
-                    if _bulk.preview_version != _last_bulk.preview_version:
-                        _last_bulk.preview_version = _bulk.preview_version
+                    if _bulk.preview_version != _last_gcode_preview_version:
+                        _last_gcode_preview_version = _bulk.preview_version
                         pending = _bulk.preview_pending
                         if _bulk.preview_available() and pending is not None:
                             try:
@@ -5012,8 +5012,8 @@ async def ws_endpoint(ws: WebSocket):
                                 pass  # safe-silent: WS closed between iteration start and send
 
                     # Compensation grid: same pattern — fetch via GET /comp_grid.
-                    if _bulk.grid_version != _last_bulk.grid_version:
-                        _last_bulk.grid_version = _bulk.grid_version
+                    if _bulk.grid_version != _last_comp_grid_version:
+                        _last_comp_grid_version = _bulk.grid_version
                         if _bulk.grid_bytes is not None:
                             try:
                                 await ws_send_json(ws, {
