@@ -355,8 +355,13 @@ if [[ -d "$SIM_CONFIG_DIR/hallib" ]]; then
   # the operator can merge their changes from the .bak.
   if [[ -e "$HAL_LINK" && ! -L "$HAL_LINK" ]]; then
     HAL_BAK="$HAL_LINK.bak.$(date +%Y%m%d%H%M%S)"
-    cp -p "$HAL_LINK" "$HAL_BAK" 2>/dev/null || true
-    warn "Existing lcnc_webui.hal was a regular file — backed up to $(basename "$HAL_BAK") before linking the template (merge any local edits from it)"
+    if cp -p "$HAL_LINK" "$HAL_BAK" 2>/dev/null; then
+      warn "Existing lcnc_webui.hal was a regular file — backed up to $(basename "$HAL_BAK") before linking the template (merge any local edits from it)"
+    else
+      # No silent fallback: a failed backup must not masquerade as a successful
+      # one — the operator's edits are about to be replaced by the template link.
+      warn "Existing lcnc_webui.hal is a regular file and the backup copy FAILED — local edits in it will be LOST when the template is linked"
+    fi
   fi
   ln -sf "$TARGET_DIR/examples/sim_config/hallib/lcnc_webui.hal" "$HAL_LINK"
   ok "Linked lcnc_webui.hal → repo template (safety glue stays in sync)"
