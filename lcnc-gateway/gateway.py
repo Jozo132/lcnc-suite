@@ -369,6 +369,14 @@ class ClientState:
     send_pending: bool = False # status fan-out is in-flight to this client
     hidden: bool = False       # client tab is backgrounded (visibilityState)
     session_id: Optional[str] = None  # tab-scoped UUID; basis for armed-resume across brief reconnects
+    # Former ws_endpoint closure vars (M3 de-closure): single source of truth
+    # for per-connection fanout state shared between the receive path and the
+    # status loop. `armed` was previously a closure var duplicated into this
+    # field at every write site.
+    viewer_init_sent: bool = False
+    probe_results: dict = field(default_factory=dict)  # per-client probe DRO results
+    prev_tc_req: Optional[bool] = False   # tool-change-requested edge detection
+    prev_tool_num: Optional[int] = None   # tool_number edge for tool_meta resend
     # Forensics for hb-stall disarms (delivery-vs-generation attribution): the
     # browser proved it generated+sent heartbeats on time while the gateway saw a
     # 3 s gap (the Vite dev proxy stalled the relay). On a stall, the arrival ring
@@ -5095,8 +5103,6 @@ async def ws_endpoint(ws: WebSocket):
             _trace.emit("ws.auth_rejected", level="warn", peer=_peer_of(ws), reason="token")
             await ws.close(code=1008)
             return
-        armed = False  # connection-local arming
-
         global _next_client_id, _estop_hold, _unacked_trip
         global _last_fault_latched, _trip_baseline_seen
         global _gcode_preview_pending, _gcode_preview_version
@@ -5110,6 +5116,7 @@ async def ws_endpoint(ws: WebSocket):
             ws=ws,
             last_hb=time.time(),
         )
+        client = _clients[client_id]  # M3 de-closure: per-connection state object
         await _cancel_disconnect_grace()
         _start_heartbeat()
         _start_status_poller()
@@ -5160,7 +5167,7 @@ async def ws_endpoint(ws: WebSocket):
         try:
             _set_phase(f"build_viewer_init client#{client_id}")
             await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-            viewer_init_sent = True  # prevents status_loop re-send; reset on LinuxCNC reconnect
+            client.viewer_init_sent = True  # NOTE: dead in practice — unconditionally reset to False below (pre-existing; post-poll re-send always fires)
             _trace.emit(
                 "ws.connect.viewer_init",
                 client_id=client_id,
@@ -5179,7 +5186,7 @@ async def ws_endpoint(ws: WebSocket):
             _set_phase(f"load_settings client#{client_id}")
             _init_settings = await asyncio.get_event_loop().run_in_executor(None, load_settings)
             _set_phase(f"send_settings_init client#{client_id}")
-            await ws_send_json(ws, {"type": "settings_init", "settings": _init_settings, "armed": armed})
+            await ws_send_json(ws, {"type": "settings_init", "settings": _init_settings, "armed": client.armed})
             _trace.emit(
                 "ws.connect.settings",
                 client_id=client_id,
@@ -5238,15 +5245,10 @@ async def ws_endpoint(ws: WebSocket):
             total_ms=round((time.monotonic() - _conn_t0) * 1000, 1),
         )
 
-        viewer_init_sent = False
-        _probe_results: dict = {}  # populated from shared poller probe updates
-        _prev_tc_req = False  # previous tool-change-requested state for edge detection
-        _prev_tool_num = None  # previous tool_number for metadata edge detection
-
+        client.viewer_init_sent = False  # force the post-poll viewer_init (see NOTE above)
 
         async def status_loop():
             _set_phase(f"status_loop.entry client#{client_id}")
-            nonlocal armed, viewer_init_sent, _probe_results, _prev_tc_req, _prev_tool_num
             global _tool_meta_dirty, _fb_scale, _spindle_load_pin
             loop = asyncio.get_event_loop()
             _last_settings_ver = _settings_store.version
@@ -5271,18 +5273,16 @@ async def ws_endpoint(ws: WebSocket):
                 try:
                     # Not connected — disarm and send error to this client
                     if not lcnc_connected:
-                        if viewer_init_sent:
-                            viewer_init_sent = False
-                        if armed:
-                            armed = False
-                            if client_id in _clients:
-                                _clients[client_id].armed = False
+                        if client.viewer_init_sent:
+                            client.viewer_init_sent = False
+                        if client.armed:
+                            client.armed = False
                         try:
                             await ws_send_json(ws, {
                                 "type": "status_error",
                                 "error": "LinuxCNC not connected",
                                 "clients": [{"ip": c.ip, "armed": c.armed} for c in _clients.values()],
-                                "armed": armed,
+                                "armed": client.armed,
                             })
                         except Exception:
                             break
@@ -5334,12 +5334,12 @@ async def ws_endpoint(ws: WebSocket):
                         continue
 
                     # Send viewer_init on first successful poll for this client
-                    if not viewer_init_sent:
+                    if not client.viewer_init_sent:
                         print(f"[VINIT] client#{client_id} sending viewer_init (post-poll), STAT={'OK' if STAT else 'None'}", flush=True)
                         _t = time.monotonic()
                         try:
                             await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-                            viewer_init_sent = True
+                            client.viewer_init_sent = True
                             _trace.emit(
                                 "ws.conn.viewer_init_late",
                                 client_id=client_id,
@@ -5354,7 +5354,7 @@ async def ws_endpoint(ws: WebSocket):
 
                     # Merge shared probe updates into per-client results
                     if _shared_probe_updates:
-                        _probe_results.update(_shared_probe_updates)
+                        client.probe_results.update(_shared_probe_updates)
 
                     # Build status message. When the wire format is msgpack and no
                     # delta is active, splice the poller's pre-encoded bytes via
@@ -5362,7 +5362,7 @@ async def ws_endpoint(ws: WebSocket):
                     # client. tool_meta now lives at top-level (not inside data),
                     # so tool-change ticks no longer mutate the shared dict and the
                     # shared-encode path stays engaged.
-                    _tool_meta_tick = (st.tool_number != _prev_tool_num or _tool_meta_dirty)
+                    _tool_meta_tick = (st.tool_number != client.prev_tool_num or _tool_meta_dirty)
                     _use_shared = (
                         _WIRE_FORMAT == "msgpack"
                         and not _STATUS_DELTA_ENABLED
@@ -5377,7 +5377,7 @@ async def ws_endpoint(ws: WebSocket):
                         "data": status_data,
                         "errors": _shared_errors,
                         "clients": _shared_clients_list,
-                        "armed": armed,
+                        "armed": client.armed,
                     }
                     if _unacked_trip is not None:
                         status_msg["safety_trip"] = _unacked_trip
@@ -5388,8 +5388,8 @@ async def ws_endpoint(ws: WebSocket):
                             "reason": _config_warning_reason or _units_fallback_reason,
                             "units": _units_fallback_active,
                         }
-                    if _probe_results:
-                        status_msg["probe_results"] = _probe_results
+                    if client.probe_results:
+                        status_msg["probe_results"] = client.probe_results
                     if _rfl_status is not None:
                         # RFL guard progress (measuring / safe_z / starting / failures)
                         # — top-level sibling of `data`, same pattern as safety_trip.
@@ -5399,7 +5399,7 @@ async def ws_endpoint(ws: WebSocket):
                     # 3D rendering). Lives at top level — sibling of `data` — so
                     # the shared-encode of `data` stays valid every tick.
                     if _tool_meta_tick:
-                        _prev_tool_num = st.tool_number
+                        client.prev_tool_num = st.tool_number
                         _tool_meta_dirty = False
                         if st.tool_number is not None:
                             try:
@@ -5518,16 +5518,16 @@ async def ws_endpoint(ws: WebSocket):
                             await ws_send_json(ws, {
                                 "type": "settings_changed",
                                 "settings": _ss,
-                                "armed": armed,
+                                "armed": client.armed,
                             })
                         except (OSError, json.JSONDecodeError, ValueError) as e:
                             _trace.emit("status.settings_changed_broadcast_failed", level="warn",
                                         exc=type(e).__name__, msg=str(e))
 
                     # Tool change: auto-deassert when request clears
-                    if _prev_tc_req and not st.tool_change_requested:
+                    if client.prev_tc_req and not st.tool_change_requested:
                         _hal_send({"tool_changed": False})
-                    _prev_tc_req = st.tool_change_requested
+                    client.prev_tc_req = st.tool_change_requested
 
                     # Viewer: gcode preview — send a tiny "ready" ping so each
                     # client fetches the cached msgpack bytes via GET /preview.
@@ -5604,9 +5604,8 @@ async def ws_endpoint(ws: WebSocket):
                     # in-flight jog from this client. No program abort.
                     if client_id in _clients:
                         if time.time() - _clients[client_id].last_hb > 3.0:
-                            if armed:
-                                armed = False
-                                _clients[client_id].armed = False
+                            if client.armed:
+                                client.armed = False
                                 try:
                                     async with _get_cmd_lock():
                                         await _jog_stop_for_client()
@@ -5769,15 +5768,13 @@ async def ws_endpoint(ws: WebSocket):
                                 )
                             else:
                                 _consume_armed_resume_hold(_sid)
-                                armed = True
-                                if client_id in _clients:
-                                    _clients[client_id].armed = True
-                                    _clients[client_id].last_hb = time.time()
+                                client.armed = True
+                                client.last_hb = time.time()
                                 _trace.emit(
                                     "session.resume_granted",
                                     client_id=client_id, session_id=_sid,
                                 )
-                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
+                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "arm":
@@ -5792,18 +5789,16 @@ async def ws_endpoint(ws: WebSocket):
                         "error": "Safety trip not acknowledged",
                     })
                     continue
-                _was_armed = armed
-                armed = want_armed
-                if client_id in _clients:
-                    _clients[client_id].armed = armed
-                    _clients[client_id].last_hb = time.time()  # reset on arm change
+                _was_armed = client.armed
+                client.armed = want_armed
+                client.last_hb = time.time()  # reset on arm change
                 # Symmetry with auto-disarm paths (Phase 2 / E1.2 + E2):
                 # explicit disarm must jog-stop any in-flight jog from this
                 # client AND register an armed-resume hold (so a deliberate
                 # disarm-then-Ctrl-R can still restore armed state). Closes
                 # the released-jog-button hazard and matches the "all paths
                 # to disarmed do the same thing" principle.
-                if _was_armed and not armed:
+                if _was_armed and not client.armed:
                     if CMD is not None and not _shutting_down:
                         try:
                             async with _get_cmd_lock():
@@ -5818,12 +5813,12 @@ async def ws_endpoint(ws: WebSocket):
                         "safety.explicit_disarmed",
                         client_id=client_id,
                     )
-                elif not _was_armed and armed:
+                elif not _was_armed and client.armed:
                     _trace.emit(
                         "safety.explicit_armed",
                         client_id=client_id,
                     )
-                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
+                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "safety_trip_ack":
@@ -5840,7 +5835,7 @@ async def ws_endpoint(ws: WebSocket):
             if msg.get("cmd") == "get_settings":
                 _loop = asyncio.get_event_loop()
                 _ss = await _loop.run_in_executor(None, load_settings)
-                await ws_send_json(ws, {"type": "settings_init", "settings": _ss, "armed": armed})
+                await ws_send_json(ws, {"type": "settings_init", "settings": _ss, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "save_settings":
@@ -5935,7 +5930,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "simulate_probe_trip":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 if not lcnc_connected:
@@ -5969,7 +5964,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "confirm_tool_change":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 if not lcnc_connected:
@@ -5981,7 +5976,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "set_compensation":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 enable = bool(msg.get("enable", False))
@@ -5991,7 +5986,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "set_compensation_method":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 # Validated inline: this handler runs BEFORE the handle_command
@@ -6010,7 +6005,7 @@ async def ws_endpoint(ws: WebSocket):
 
             _set_phase(f"handle_command cmd={msg.get('cmd', '?')} client#{client_id}")
             try:
-                reply = await handle_command(msg, armed)
+                reply = await handle_command(msg, client.armed)
             except (ValueError, TypeError, KeyError, PermissionError, OverflowError) as _val_e:
                 # Malformed payload or failed precondition (bad numeric cast,
                 # missing field, not-armed). Return a bounded structured error
@@ -6064,7 +6059,7 @@ async def ws_endpoint(ws: WebSocket):
         # server_shutdown and closed sockets; skip the jog-stop in that
         # window so N clients don't all serialize on _cmd_lock during a
         # LinuxCNC teardown.
-        if armed and CMD is not None and not _shutting_down:
+        if client.armed and CMD is not None and not _shutting_down:
             _set_phase(f"ws_endpoint.finally.armed_jog_stop client#{client_id}")
             try:
                 async with _get_cmd_lock():
