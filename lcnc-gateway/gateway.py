@@ -12,7 +12,6 @@ import threading
 from pathlib import Path
 import linuxcnc
 
-import collections
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, List, Tuple
 from fastapi.staticfiles import StaticFiles
@@ -203,56 +202,24 @@ MACHINE_DIR = BASE_DIR / "machine"
 # WIRE_FORMAT defaults to msgpack: smaller payload than JSON, faster
 # C-accelerated encode, and unlocks the per-tick shared-encode path under
 # fan-out when delta is off (one encode per tick instead of N). Set
-# WEBUI_WIRE_FORMAT=json explicitly to debug status frames in browser
-# DevTools. The remaining flags default OFF.
-_WIRE_FORMAT = (os.environ.get("WEBUI_WIRE_FORMAT") or "msgpack").strip().lower()
-if _WIRE_FORMAT not in ("json", "msgpack"):
-    _WIRE_FORMAT = "msgpack"
+# ---- Wire format / send policy ---- moved to ws_fanout (M3). Constants
+# rebound here; the WsFanout instance + method rebinds live after _set_phase.
+import ws_fanout as _ws_fanout_mod
 
-# Per-send timeout for ws.send_* calls. A backgrounded browser tab that
-# stops reading back-pressures the kernel TCP write buffer; `await
-# ws.send_bytes` then holds the asyncio loop long enough (1+ s observed)
-# to break the 500 ms HAL heartbeat budget and trigger a safety trip.
-# We bound any single send to this many seconds and force-close the
-# offending client on timeout — bug fix, not trip suppression: the
-# heartbeat task is unchanged and still trips on any other loop hang.
-# 0.2 s leaves ~300 ms of remaining budget for the rest of the cycle.
-# See plan in /home/cnc/.claude/plans/can-you-plan-for-jolly-leaf.md.
-_WS_SEND_TIMEOUT_S = 0.2
-# Delta status frames are the DEFAULT (experiment closed, June 2026): proven through
-# weeks of daily sim use including the full #35 verification load matrix. Set
-# WEBUI_STATUS_DELTA=0 to fall back to full frames + the shared-encode splice —
-# the encode-optimal path for fanout-heavy setups (~6+ simultaneous viewers).
-_STATUS_DELTA_ENABLED = os.environ.get("WEBUI_STATUS_DELTA", "1") == "1"
+_WIRE_FORMAT = _ws_fanout_mod.WIRE_FORMAT
+_STATUS_DELTA_ENABLED = _ws_fanout_mod.STATUS_DELTA_ENABLED
 _ADAPTIVE_POLL_ENABLED = os.environ.get("WEBUI_ADAPTIVE_POLL") == "1"
 try:
     _IDLE_POLL_HZ = max(1, int(os.environ.get("WEBUI_IDLE_POLL_HZ") or "5"))
 except ValueError:
     _IDLE_POLL_HZ = 5
-# Full-snapshot cadence when delta mode is on: force a full every N cycles so
-# any drift-bug self-heals within ~3s at 30 Hz.
-_DELTA_FULL_INTERVAL = 100
-
-# ---- Wire-format encoders ----
-# msgspec.json avoids per-call Encoder setup cost; msgspec.msgpack produces
-# compact binary frames for float-heavy StatusPayload. Both encoders are
-# thread-safe for reuse. msgspec is a hard dep (see requirements.txt).
+_DELTA_FULL_INTERVAL = _ws_fanout_mod.DELTA_FULL_INTERVAL
+# msgspec stays imported here: the poller's bulk-payload encodes (surface/grid/
+# preview — M4 territory) use it directly.
 import msgspec as _msgspec
 
-
-def _wire_enc_hook(obj):
-    # Any object msgspec doesn't know how to encode gets stringified
-    # (covers Path, datetime, and stray non-primitive payloads).
-    return str(obj)
-
-
-_json_encoder = _msgspec.json.Encoder(enc_hook=_wire_enc_hook)
-_msgpack_encoder = _msgspec.msgpack.Encoder(enc_hook=_wire_enc_hook)
-
-# NOTE: status-tick envelope encoding is done INLINE on the event loop (see
-# ws_send_measured). An earlier dedicated ThreadPoolExecutor for it was measured
-# and removed — encode_qsize stayed 0 while encode_ms still climbed, proving the
-# cost is GIL contention, not pool dispatch; a worker pool only added overhead.
+_json_encoder_encode = _ws_fanout_mod.json_encoder_encode
+_msgpack_encoder = _ws_fanout_mod.msgpack_encoder
 
 # Optional WS-init concurrency limiter. Default of 20 is a no-op for the
 # documented 10–13-tab scenario. If a real overload manifests (HAL trip
@@ -323,19 +290,6 @@ async def require_token(request: Request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
-def _json_encoder_encode(obj):
-    return _json_encoder.encode(obj)  # returns bytes
-
-
-def _encode_ws_frame(obj):
-    """Encode a WS payload with the active wire format. Returns bytes for
-    msgpack (→ ws.send_bytes) or str for json (→ ws.send_text). Used for
-    shared payloads (viewer_gcode, surface_points, comp_grid) that are
-    encoded once and broadcast verbatim to every client."""
-    if _WIRE_FORMAT == "msgpack":
-        return _msgpack_encoder.encode(obj)
-    return _json_encoder_encode(obj).decode("utf-8")
-
 # ---- LinuxCNC handles (nullable for auto-reconnect) ----
 STAT: Optional[linuxcnc.stat] = None
 CMD: Optional[linuxcnc.command] = None
@@ -351,33 +305,10 @@ _G5X_MAP = {"G54": 1, "G55": 2, "G56": 3, "G57": 4, "G58": 5, "G59": 6, "G59.1":
 _WCS_AXIS_KEYS = _status_runtime_mod.WCS_AXIS_KEYS
 
 # ---- Connected WebSocket clients ----
-@dataclass
-class ClientState:
-    """Per-client server-side state. Replaces the prior dict-of-dict
-    registry; the field set is small and stable, so a typed shape
-    catches typos at write time and avoids `.get()` defaults entirely
-    for known fields.
+# ClientState + the client registry moved to ws_fanout (M3). The registry
+# global is rebound to the WsFanout instance's dict after _set_phase below.
+ClientState = _ws_fanout_mod.ClientState
 
-    The broadcast `clients` envelope reads only `ip` and `armed`; the
-    rest are server-internal."""
-    ip: str
-    ws: "WebSocket"
-    armed: bool = False
-    halshow_live: bool = False
-    last_hb: float = 0.0       # wall-clock time of last heartbeat from this client
-    hb_mono: float = 0.0       # monotonic ts of last hb (0 = never seen)
-    send_pending: bool = False # status fan-out is in-flight to this client
-    hidden: bool = False       # client tab is backgrounded (visibilityState)
-    session_id: Optional[str] = None  # tab-scoped UUID; basis for armed-resume across brief reconnects
-    # Forensics for hb-stall disarms (delivery-vs-generation attribution): the
-    # browser proved it generated+sent heartbeats on time while the gateway saw a
-    # 3 s gap (the Vite dev proxy stalled the relay). On a stall, the arrival ring
-    # + total frame count say definitively what reached us and when.
-    frames_rx: int = 0         # every frame received from this client
-    hb_ring: "collections.deque" = field(default_factory=lambda: collections.deque(maxlen=12))  # monotonic hb arrival times
-
-
-_clients: Dict[int, ClientState] = {}
 _next_client_id = 0
 
 # ---- Armed-resume holds (Layer D, session-id resume) ----
@@ -706,6 +637,18 @@ def _phase_ring_snapshot() -> List[Tuple[float, str]]:
         return list(_phase_ring)
     # Already filled; reorder so oldest is first.
     return _phase_ring[_phase_ring_idx:] + _phase_ring[:_phase_ring_idx]
+
+
+# ---- M3 fanout instance ----
+# Send mechanics + client registry + tick stats live on the instance; the
+# registry/stats dict objects are stable so these rebinds stay valid.
+_ws_fanout = _ws_fanout_mod.WsFanout(set_phase=_set_phase)
+_clients = _ws_fanout.clients
+_status_tick_stats = _ws_fanout.tick_stats
+ws_send_json = _ws_fanout.ws_send_json
+ws_send_measured = _ws_fanout.ws_send_measured
+_ws_hidden_flag = _ws_fanout.ws_hidden_flag
+_diff_status_data = _ws_fanout_mod.diff_status_data
 
 
 # ---- M6 bridge instance ----
@@ -1058,19 +1001,6 @@ _status_poller_task: Optional[asyncio.Task] = None
 # current event and `await event.wait()` instead of tight-polling _status_gen.
 # Lazily allocated on first use so module import doesn't require an event loop.
 _status_event: Optional[asyncio.Event] = None
-
-# Per-tick aggregate stats for [STATUS] log. Accumulated as each client's
-# status_loop finishes its send; snapshotted + logged on the next poller tick.
-# All writers run on the single event loop, so no lock is required.
-_status_tick_stats: Dict[str, Any] = {
-    "gen": 0, "tick_start": 0.0, "expected": 0, "done": 0,
-    "encode_sum": 0.0, "send_sum": 0.0, "send_max": 0.0,
-    # === STATUS-PAYLOAD DIAGNOSTICS (permanent) === aggregate per-tick wire metrics so
-    # the [STATUS] outlier log can attribute encode cost to actual payload
-    # size. tool_meta_count: how many clients got a tool_meta block this
-    # tick (suspected reconnect-storm inflator).
-    "bytes_sum": 0, "bytes_max": 0, "tool_meta_count": 0,
-}
 
 # Serializes all CMD.* access. The LinuxCNC NML command channel is not
 # thread-safe; concurrent handle_command coroutines with >=2 clients
@@ -2231,182 +2161,6 @@ def read_machine_limits_from_ini(stat_obj):
     origin = [xmin, ymin, zmin]
     size = [xmax - xmin, ymax - ymin, zmax - zmin]
     return origin, size
-
-
-def _ws_hidden_flag(ws: WebSocket) -> bool:
-    """Look up the `hidden` state of the client owning `ws` by identity.
-    Used by the slow-send probes so a single trace event tells us whether
-    the slow consumer was a backgrounded tab (hidden-tab gating should
-    have caught it) or a genuinely-visible peer (separate problem).
-
-    Iterates over a snapshot (`list(...)`) to avoid the only realistic
-    failure mode (`RuntimeError: dictionary changed size during iteration`)
-    when another coroutine adds or removes a client mid-call. Any other
-    exception is a real bug and is allowed to propagate — better to
-    surface a crash than to silently report `hidden=False` on a corrupted
-    state and mislead the trace consumer.
-    """
-    for c in list(_clients.values()):
-        if c.ws is ws:
-            return c.hidden
-    return False
-
-
-async def _safe_ws_close(ws: WebSocket, peer: str) -> None:
-    """Fire-and-forget close used by the ws_send_measured timeout branch.
-
-    Bounds its own work to 500 ms total. Runs in a background task created
-    via asyncio.create_task — the caller (timeout branch in ws_send_measured)
-    must NOT await this. ws.close() itself can await an internal drain that
-    isn't reliably bounded under storm conditions; if our wait_for here
-    fires, the connection is forcibly torn down by the underlying TCP
-    timeout / the peer's reconnect logic.
-    """
-    try:
-        await asyncio.wait_for(ws.close(code=1001), timeout=0.5)
-    except Exception:
-        pass  # safe-silent: WS close is best-effort during shutdown
-
-
-async def ws_send_json(ws: WebSocket, obj: Dict[str, Any]):
-    # Legacy-name shim: all sends go through ws_send_measured so the wire-format
-    # flag applies uniformly and non-status messages don't diverge from status
-    # frames. Callers that need encode timing / bytes use ws_send_measured directly.
-    await ws_send_measured(ws, obj)
-
-
-def _diff_status_data(last: Dict[str, Any], current: Dict[str, Any]) -> Dict[str, Any]:
-    """Return fields of `current` that differ from `last`.
-
-    Single-level diff — StatusPayload is flat (no nested dataclasses per the
-    definition around line 1144). For list-valued fields, Python == compares
-    element-wise; mismatched lists are included whole. Reports added/changed
-    keys only (no tombstone semantics) — `data` mirrors `linuxcnc.stat`, whose
-    keys are stable, so removals don't occur in practice.
-    """
-    diff: Dict[str, Any] = {}
-    for k, v in current.items():
-        if k not in last or last[k] != v:
-            diff[k] = v
-    return diff
-
-
-async def ws_send_measured(ws: WebSocket, obj: Dict[str, Any]) -> Tuple[float, int]:
-    """Encode + send a WS payload. Returns (encode_ms, bytes_sent).
-
-    Used by the status hot path to attribute encode cost and payload size for
-    the Debug-tab timing surface. Other callers keep using ws_send_json when
-    they don't care about the measurement.
-
-    The wire format is chosen by _WIRE_FORMAT (see Experiment 1). encode_ms
-    excludes the actual ws.send_* call; bytes_sent is the size of the encoded
-    payload. Returns (encode_ms, 0) if the client disconnected mid-send.
-    """
-    t0 = time.monotonic()
-    _set_phase("ws_send_measured.encode")
-    # Inline encode (deliberate). A dedicated encode thread-pool was tried and
-    # removed: the trace bus showed encode_qsize=0 across every storm-time
-    # loop.tick while encode_ms still climbed to 50–200 ms — pool dispatch isn't
-    # the cost, GIL contention is, and offloading only adds dispatch overhead
-    # while the worker fights for the GIL alongside the main loop. msgspec's
-    # C-level encoder is fast (sub-ms for the typical envelope) and inline
-    # encoding eliminates a thread round-trip per send. The `ws.encode_slow`
-    # event still fires if this assumption breaks under future load.
-    if _WIRE_FORMAT == "msgpack":
-        data = _msgpack_encoder.encode(obj)
-    else:
-        data = _json_encoder_encode(obj)
-    encode_ms = round((time.monotonic() - t0) * 1000, 3)
-    try:
-        _send_peer = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
-    except Exception:
-        _send_peer = "?"
-    # Encode-only slow path: catches the case where the encode pool was
-    # contended / GIL-starved but the actual ws.send returns fast. Without
-    # this, ws.fanout_send_slow only fires when SEND is also slow and we'd
-    # miss encode-pool starvation entirely.
-    if encode_ms > 50:
-        _trace.emit(
-            "ws.encode_slow",
-            level="warn" if encode_ms > 200 else "info",
-            peer=_send_peer, encode_ms=encode_ms, bytes=len(data),
-            hidden=_ws_hidden_flag(ws),
-        )
-    _set_phase(f"ws_send.{_WIRE_FORMAT} peer={_send_peer} bytes={len(data)}")
-    # Bound any single send to _WS_SEND_TIMEOUT_S. A backgrounded browser
-    # tab stops reading → kernel TCP write buffer fills → `await
-    # ws.send_bytes` holds the loop ~1+ s, breaking the 500 ms HAL
-    # heartbeat budget. wait_for caps it; on timeout we close the slow
-    # client (they're already not getting updates anyway). Other clients
-    # are unaffected — each runs in its own status_loop task. The
-    # heartbeat task remains tied to the same asyncio loop, so any other
-    # cause of loop hang still trips the watchdog correctly.
-    send_t0 = time.monotonic()
-    try:
-        if _WIRE_FORMAT == "msgpack":
-            await asyncio.wait_for(ws.send_bytes(data), timeout=_WS_SEND_TIMEOUT_S)
-        else:
-            await asyncio.wait_for(
-                ws.send_text(data if isinstance(data, str) else data.decode("utf-8")),
-                timeout=_WS_SEND_TIMEOUT_S,
-            )
-    except asyncio.TimeoutError:
-        _set_phase(f"ws_send_measured.timeout_caught peer={_send_peer}")
-        # Slow consumer — log peer and close the WS. The per-client
-        # status_loop catches the resulting WebSocketDisconnect and
-        # exits cleanly (existing handler).
-        try:
-            peer = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
-        except Exception:
-            peer = "?"
-        try:
-            obj_type = str(obj.get("type", "?"))
-        except Exception:
-            obj_type = "?"
-        send_ms = (time.monotonic() - send_t0) * 1000
-        _trace.emit(
-            "ws.slow_client_drop", level="warn",
-            peer=peer, send_ms=round(send_ms, 1),
-            timeout_ms=int(_WS_SEND_TIMEOUT_S * 1000),
-            bytes=len(data), obj_type=obj_type,
-            hidden=_ws_hidden_flag(ws),
-        )
-        # Schedule the close as fire-and-forget so the timeout branch
-        # itself never blocks the asyncio loop. With N concurrent slow
-        # peers the previous inline `await wait_for(ws.close, 0.1)` could
-        # add N × 100 ms of loop-hold; create_task adds ~0 ms. The close
-        # task is bounded internally (see _safe_ws_close). Combined with
-        # the per-client send_pending flag, no further fan-out is queued
-        # to this client until the close completes or the connection
-        # errors out.
-        asyncio.create_task(_safe_ws_close(ws, peer))
-        _set_phase(f"ws_send_measured.timeout_returning peer={_send_peer}")
-        return (encode_ms, 0)
-    except RuntimeError:
-        _set_phase(f"ws_send_measured.RuntimeError peer={_send_peer}")
-        return (encode_ms, 0)
-    _set_phase(f"ws_send_measured.send_done peer={_send_peer}")
-    send_dt_ms = (time.monotonic() - send_t0) * 1000
-    # Promote any slow but completed send (>50 ms) into the trace bus so
-    # we see backpressure building before it timeouts.
-    if send_dt_ms > 50:
-        try:
-            peer = f"{ws.client.host}:{ws.client.port}" if ws.client else "?"
-        except Exception:
-            peer = "?"
-        try:
-            obj_type = str(obj.get("type", "?"))
-        except Exception:
-            obj_type = "?"
-        _trace.emit(
-            "ws.fanout_send_slow",
-            level="warn" if send_dt_ms > 200 else "info",
-            peer=peer, send_ms=round(send_dt_ms, 1),
-            encode_ms=encode_ms, bytes=len(data), obj_type=obj_type,
-            hidden=_ws_hidden_flag(ws),
-        )
-    # msgspec returns bytes; stdlib json returns str — both have len() == bytes/chars
-    return (encode_ms, len(data))
 
 
 async def _cmd_blocking(cmd_fn, *args, wait=_CMD_WAIT_TIMEOUT) -> int:
@@ -5095,8 +4849,6 @@ async def ws_endpoint(ws: WebSocket):
             _trace.emit("ws.auth_rejected", level="warn", peer=_peer_of(ws), reason="token")
             await ws.close(code=1008)
             return
-        armed = False  # connection-local arming
-
         global _next_client_id, _estop_hold, _unacked_trip
         global _last_fault_latched, _trip_baseline_seen
         global _gcode_preview_pending, _gcode_preview_version
@@ -5110,6 +4862,7 @@ async def ws_endpoint(ws: WebSocket):
             ws=ws,
             last_hb=time.time(),
         )
+        client = _clients[client_id]  # M3 de-closure: per-connection state object
         await _cancel_disconnect_grace()
         _start_heartbeat()
         _start_status_poller()
@@ -5160,7 +4913,7 @@ async def ws_endpoint(ws: WebSocket):
         try:
             _set_phase(f"build_viewer_init client#{client_id}")
             await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-            viewer_init_sent = True  # prevents status_loop re-send; reset on LinuxCNC reconnect
+            client.viewer_init_sent = True  # NOTE: dead in practice — unconditionally reset to False below (pre-existing; post-poll re-send always fires)
             _trace.emit(
                 "ws.connect.viewer_init",
                 client_id=client_id,
@@ -5179,7 +4932,7 @@ async def ws_endpoint(ws: WebSocket):
             _set_phase(f"load_settings client#{client_id}")
             _init_settings = await asyncio.get_event_loop().run_in_executor(None, load_settings)
             _set_phase(f"send_settings_init client#{client_id}")
-            await ws_send_json(ws, {"type": "settings_init", "settings": _init_settings, "armed": armed})
+            await ws_send_json(ws, {"type": "settings_init", "settings": _init_settings, "armed": client.armed})
             _trace.emit(
                 "ws.connect.settings",
                 client_id=client_id,
@@ -5238,15 +4991,10 @@ async def ws_endpoint(ws: WebSocket):
             total_ms=round((time.monotonic() - _conn_t0) * 1000, 1),
         )
 
-        viewer_init_sent = False
-        _probe_results: dict = {}  # populated from shared poller probe updates
-        _prev_tc_req = False  # previous tool-change-requested state for edge detection
-        _prev_tool_num = None  # previous tool_number for metadata edge detection
-
+        client.viewer_init_sent = False  # force the post-poll viewer_init (see NOTE above)
 
         async def status_loop():
             _set_phase(f"status_loop.entry client#{client_id}")
-            nonlocal armed, viewer_init_sent, _probe_results, _prev_tc_req, _prev_tool_num
             global _tool_meta_dirty, _fb_scale, _spindle_load_pin
             loop = asyncio.get_event_loop()
             _last_settings_ver = _settings_store.version
@@ -5271,18 +5019,16 @@ async def ws_endpoint(ws: WebSocket):
                 try:
                     # Not connected — disarm and send error to this client
                     if not lcnc_connected:
-                        if viewer_init_sent:
-                            viewer_init_sent = False
-                        if armed:
-                            armed = False
-                            if client_id in _clients:
-                                _clients[client_id].armed = False
+                        if client.viewer_init_sent:
+                            client.viewer_init_sent = False
+                        if client.armed:
+                            client.armed = False
                         try:
                             await ws_send_json(ws, {
                                 "type": "status_error",
                                 "error": "LinuxCNC not connected",
                                 "clients": [{"ip": c.ip, "armed": c.armed} for c in _clients.values()],
-                                "armed": armed,
+                                "armed": client.armed,
                             })
                         except Exception:
                             break
@@ -5334,12 +5080,12 @@ async def ws_endpoint(ws: WebSocket):
                         continue
 
                     # Send viewer_init on first successful poll for this client
-                    if not viewer_init_sent:
+                    if not client.viewer_init_sent:
                         print(f"[VINIT] client#{client_id} sending viewer_init (post-poll), STAT={'OK' if STAT else 'None'}", flush=True)
                         _t = time.monotonic()
                         try:
                             await ws_send_json(ws, {"type": "viewer_init", "data": build_viewer_init(stl_base_url)})
-                            viewer_init_sent = True
+                            client.viewer_init_sent = True
                             _trace.emit(
                                 "ws.conn.viewer_init_late",
                                 client_id=client_id,
@@ -5354,7 +5100,7 @@ async def ws_endpoint(ws: WebSocket):
 
                     # Merge shared probe updates into per-client results
                     if _shared_probe_updates:
-                        _probe_results.update(_shared_probe_updates)
+                        client.probe_results.update(_shared_probe_updates)
 
                     # Build status message. When the wire format is msgpack and no
                     # delta is active, splice the poller's pre-encoded bytes via
@@ -5362,7 +5108,7 @@ async def ws_endpoint(ws: WebSocket):
                     # client. tool_meta now lives at top-level (not inside data),
                     # so tool-change ticks no longer mutate the shared dict and the
                     # shared-encode path stays engaged.
-                    _tool_meta_tick = (st.tool_number != _prev_tool_num or _tool_meta_dirty)
+                    _tool_meta_tick = (st.tool_number != client.prev_tool_num or _tool_meta_dirty)
                     _use_shared = (
                         _WIRE_FORMAT == "msgpack"
                         and not _STATUS_DELTA_ENABLED
@@ -5372,34 +5118,33 @@ async def ws_endpoint(ws: WebSocket):
                         status_data: Any = _msgspec.Raw(_shared_status_data_msgpack)
                     else:
                         status_data = _shared_status_dict.copy() if _shared_status_dict else st.__dict__.copy()
-                    status_msg: dict = {
-                        "type": "status",
-                        "data": status_data,
-                        "errors": _shared_errors,
-                        "clients": _shared_clients_list,
-                        "armed": armed,
-                    }
-                    if _unacked_trip is not None:
-                        status_msg["safety_trip"] = _unacked_trip
-                    if _reader_is_stale():
-                        status_msg["reader_stale"] = True
-                    if _units_fallback_active or _config_warning_active:
-                        status_msg["config_warning"] = {
-                            "reason": _config_warning_reason or _units_fallback_reason,
-                            "units": _units_fallback_active,
-                        }
-                    if _probe_results:
-                        status_msg["probe_results"] = _probe_results
-                    if _rfl_status is not None:
-                        # RFL guard progress (measuring / safe_z / starting / failures)
-                        # — top-level sibling of `data`, same pattern as safety_trip.
-                        status_msg["rfl_status"] = _rfl_status
+                    # Envelope assembly moved to ws_fanout.build_status_envelope
+                    # (M3): safety metadata is named in the call — when trip /
+                    # stale / config-warning state rides the frame, it's visible
+                    # right here, not implied by a bus subscription.
+                    status_msg: dict = _ws_fanout_mod.build_status_envelope(
+                        status_data=status_data,
+                        errors=_shared_errors,
+                        clients_list=_shared_clients_list,
+                        armed=client.armed,
+                        safety_trip=_unacked_trip,
+                        reader_stale=_reader_is_stale(),
+                        config_warning=(
+                            {
+                                "reason": _config_warning_reason or _units_fallback_reason,
+                                "units": _units_fallback_active,
+                            }
+                            if (_units_fallback_active or _config_warning_active) else None
+                        ),
+                        probe_results=client.probe_results,
+                        rfl_status=_rfl_status,
+                    )
 
                     # Inject tool_meta on tool_number change or library edit (for
                     # 3D rendering). Lives at top level — sibling of `data` — so
                     # the shared-encode of `data` stays valid every tick.
                     if _tool_meta_tick:
-                        _prev_tool_num = st.tool_number
+                        client.prev_tool_num = st.tool_number
                         _tool_meta_dirty = False
                         if st.tool_number is not None:
                             try:
@@ -5518,16 +5263,16 @@ async def ws_endpoint(ws: WebSocket):
                             await ws_send_json(ws, {
                                 "type": "settings_changed",
                                 "settings": _ss,
-                                "armed": armed,
+                                "armed": client.armed,
                             })
                         except (OSError, json.JSONDecodeError, ValueError) as e:
                             _trace.emit("status.settings_changed_broadcast_failed", level="warn",
                                         exc=type(e).__name__, msg=str(e))
 
                     # Tool change: auto-deassert when request clears
-                    if _prev_tc_req and not st.tool_change_requested:
+                    if client.prev_tc_req and not st.tool_change_requested:
                         _hal_send({"tool_changed": False})
-                    _prev_tc_req = st.tool_change_requested
+                    client.prev_tc_req = st.tool_change_requested
 
                     # Viewer: gcode preview — send a tiny "ready" ping so each
                     # client fetches the cached msgpack bytes via GET /preview.
@@ -5604,9 +5349,8 @@ async def ws_endpoint(ws: WebSocket):
                     # in-flight jog from this client. No program abort.
                     if client_id in _clients:
                         if time.time() - _clients[client_id].last_hb > 3.0:
-                            if armed:
-                                armed = False
-                                _clients[client_id].armed = False
+                            if client.armed:
+                                client.armed = False
                                 try:
                                     async with _get_cmd_lock():
                                         await _jog_stop_for_client()
@@ -5769,15 +5513,13 @@ async def ws_endpoint(ws: WebSocket):
                                 )
                             else:
                                 _consume_armed_resume_hold(_sid)
-                                armed = True
-                                if client_id in _clients:
-                                    _clients[client_id].armed = True
-                                    _clients[client_id].last_hb = time.time()
+                                client.armed = True
+                                client.last_hb = time.time()
                                 _trace.emit(
                                     "session.resume_granted",
                                     client_id=client_id, session_id=_sid,
                                 )
-                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
+                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "arm":
@@ -5792,18 +5534,16 @@ async def ws_endpoint(ws: WebSocket):
                         "error": "Safety trip not acknowledged",
                     })
                     continue
-                _was_armed = armed
-                armed = want_armed
-                if client_id in _clients:
-                    _clients[client_id].armed = armed
-                    _clients[client_id].last_hb = time.time()  # reset on arm change
+                _was_armed = client.armed
+                client.armed = want_armed
+                client.last_hb = time.time()  # reset on arm change
                 # Symmetry with auto-disarm paths (Phase 2 / E1.2 + E2):
                 # explicit disarm must jog-stop any in-flight jog from this
                 # client AND register an armed-resume hold (so a deliberate
                 # disarm-then-Ctrl-R can still restore armed state). Closes
                 # the released-jog-button hazard and matches the "all paths
                 # to disarmed do the same thing" principle.
-                if _was_armed and not armed:
+                if _was_armed and not client.armed:
                     if CMD is not None and not _shutting_down:
                         try:
                             async with _get_cmd_lock():
@@ -5818,12 +5558,12 @@ async def ws_endpoint(ws: WebSocket):
                         "safety.explicit_disarmed",
                         client_id=client_id,
                     )
-                elif not _was_armed and armed:
+                elif not _was_armed and client.armed:
                     _trace.emit(
                         "safety.explicit_armed",
                         client_id=client_id,
                     )
-                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": armed})
+                await ws_send_json(ws, {"type": "reply", "ok": True, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "safety_trip_ack":
@@ -5840,7 +5580,7 @@ async def ws_endpoint(ws: WebSocket):
             if msg.get("cmd") == "get_settings":
                 _loop = asyncio.get_event_loop()
                 _ss = await _loop.run_in_executor(None, load_settings)
-                await ws_send_json(ws, {"type": "settings_init", "settings": _ss, "armed": armed})
+                await ws_send_json(ws, {"type": "settings_init", "settings": _ss, "armed": client.armed})
                 continue
 
             if msg.get("cmd") == "save_settings":
@@ -5935,7 +5675,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "simulate_probe_trip":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 if not lcnc_connected:
@@ -5969,7 +5709,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "confirm_tool_change":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 if not lcnc_connected:
@@ -5981,7 +5721,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "set_compensation":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 enable = bool(msg.get("enable", False))
@@ -5991,7 +5731,7 @@ async def ws_endpoint(ws: WebSocket):
                 continue
 
             if msg.get("cmd") == "set_compensation_method":
-                if not armed:
+                if not client.armed:
                     await ws_send_json(ws, {"type": "reply", "ok": False, "error": "Not armed"})
                     continue
                 # Validated inline: this handler runs BEFORE the handle_command
@@ -6010,7 +5750,7 @@ async def ws_endpoint(ws: WebSocket):
 
             _set_phase(f"handle_command cmd={msg.get('cmd', '?')} client#{client_id}")
             try:
-                reply = await handle_command(msg, armed)
+                reply = await handle_command(msg, client.armed)
             except (ValueError, TypeError, KeyError, PermissionError, OverflowError) as _val_e:
                 # Malformed payload or failed precondition (bad numeric cast,
                 # missing field, not-armed). Return a bounded structured error
@@ -6064,7 +5804,7 @@ async def ws_endpoint(ws: WebSocket):
         # server_shutdown and closed sockets; skip the jog-stop in that
         # window so N clients don't all serialize on _cmd_lock during a
         # LinuxCNC teardown.
-        if armed and CMD is not None and not _shutting_down:
+        if client.armed and CMD is not None and not _shutting_down:
             _set_phase(f"ws_endpoint.finally.armed_jog_stop client#{client_id}")
             try:
                 async with _get_cmd_lock():
