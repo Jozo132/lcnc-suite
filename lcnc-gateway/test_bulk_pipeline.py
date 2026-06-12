@@ -1,0 +1,130 @@
+"""Unit tests for bulk_pipeline (M4) — publication contracts and file readers.
+
+Temp dirs stand in for the LinuxCNC config dir; no gateway import. The parse
+worker and fusion worker subprocesses have their own round-trip coverage in
+test_command_dispatch (TestTerminateParseProc / TestFusionWorkerSubprocess).
+"""
+import json
+import os
+import tempfile
+import types
+import unittest
+
+from bulk_pipeline import BulkPipeline
+
+
+def _pipeline(ini_path=None):
+    stat = types.SimpleNamespace(ini_filename=ini_path) if ini_path else None
+    return BulkPipeline(
+        get_stat=lambda: stat,
+        get_machine_units=lambda: "mm",
+        build_wcs_rotation_patches=lambda: {},
+    )
+
+
+class TestPreviewContract(unittest.TestCase):
+    def test_preview_available_matrix(self):
+        b = _pipeline()
+        self.assertFalse(b.preview_available())
+        b.preview_bytes = b"raw"
+        self.assertTrue(b.preview_available())
+        b.preview_bytes = None
+        b.preview_bytes_gz = b"gz"
+        self.assertTrue(b.preview_available())
+
+    def test_clear_preview_drops_everything_then_bumps_once(self):
+        b = _pipeline()
+        b.preview_pending = {"file": "/x.ngc"}
+        b.preview_bytes_gz = b"gz"
+        b.last_file = "/x.ngc"
+        b.last_mtime = 1.0
+        v0 = b.preview_version
+        b.clear_preview()
+        self.assertIsNone(b.preview_pending)
+        self.assertIsNone(b.preview_bytes)
+        self.assertIsNone(b.preview_bytes_gz)
+        self.assertIsNone(b.last_file)
+        self.assertIsNone(b.last_mtime)
+        self.assertEqual(b.preview_version, v0 + 1)
+
+    def test_versions_seeded_nonzero(self):
+        # ?v= URLs must not collide across restarts — seeded from wall clock.
+        b = _pipeline()
+        self.assertGreater(b.preview_version, 0)
+        self.assertGreater(b.surface_version, 0)
+        self.assertGreater(b.grid_version, 0)
+
+
+class TestIniInvalidation(unittest.TestCase):
+    def test_first_ini_only_records(self):
+        b = _pipeline()
+        sv, gv = b.surface_version, b.grid_version
+        b.invalidate_caches_for_ini("/cfg/a.ini")
+        self.assertEqual(b.caches_ini, "/cfg/a.ini")
+        self.assertEqual((b.surface_version, b.grid_version), (sv, gv))
+
+    def test_same_ini_is_noop(self):
+        b = _pipeline()
+        b.invalidate_caches_for_ini("/cfg/a.ini")
+        sv, gv = b.surface_version, b.grid_version
+        b.invalidate_caches_for_ini("/cfg/a.ini")
+        self.assertEqual((b.surface_version, b.grid_version), (sv, gv))
+
+    def test_ini_change_clears_and_bumps_both(self):
+        b = _pipeline()
+        b.invalidate_caches_for_ini("/cfg/a.ini")
+        b.surface_pending, b.surface_bytes, b.surface_initialized = [[0, 0, 0]], b"s", True
+        b.grid_pending, b.grid_bytes, b.grid_initialized = {"g": 1}, b"g", True
+        sv, gv = b.surface_version, b.grid_version
+        b.invalidate_caches_for_ini("/cfg/b.ini")
+        self.assertIsNone(b.surface_pending)
+        self.assertIsNone(b.surface_bytes)
+        self.assertFalse(b.surface_initialized)
+        self.assertIsNone(b.grid_pending)
+        self.assertIsNone(b.grid_bytes)
+        self.assertFalse(b.grid_initialized)
+        self.assertEqual(b.surface_version, sv + 1)
+        self.assertEqual(b.grid_version, gv + 1)
+        self.assertEqual(b.caches_ini, "/cfg/b.ini")
+
+    def test_none_ini_never_clobbers(self):
+        b = _pipeline()
+        b.invalidate_caches_for_ini("/cfg/a.ini")
+        b.invalidate_caches_for_ini(None)
+        self.assertEqual(b.caches_ini, "/cfg/a.ini")
+
+
+class TestFileReaders(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.ini = os.path.join(self.tmp.name, "m.ini")
+        open(self.ini, "w").write("[EMC]\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_probe_results_parses_and_skips_bad_lines(self):
+        with open(os.path.join(self.tmp.name, "probe-results.txt"), "w") as f:
+            f.write("1.0 2.0 -0.5\nnot a point\n3.5 4.5 0.25 extra-ok\n1.0 nan-ish\n")
+        pts = _pipeline(self.ini).read_probe_results_file()
+        self.assertEqual(pts, [[1.0, 2.0, -0.5], [3.5, 4.5, 0.25]])
+
+    def test_probe_results_absent_file_and_no_ini(self):
+        self.assertEqual(_pipeline(self.ini).read_probe_results_file(), [])
+        self.assertEqual(_pipeline(None).read_probe_results_file(), [])
+
+    def test_comp_grid_valid_corrupt_absent(self):
+        path = os.path.join(self.tmp.name, "probe-results-grid.json")
+        with open(path, "w") as f:
+            json.dump({"nx": 3, "ny": 2, "z": [[0, 0, 0], [1, 1, 1]]}, f)
+        b = _pipeline(self.ini)
+        self.assertEqual(b.read_comp_grid_file()["nx"], 3)
+        open(path, "w").write("{broken json")
+        self.assertIsNone(b.read_comp_grid_file())   # corrupt → None, loud trace
+        os.unlink(path)
+        self.assertIsNone(b.read_comp_grid_file())   # absent → None
+        self.assertIsNone(_pipeline(None).read_comp_grid_file())
+
+
+if __name__ == "__main__":
+    unittest.main()
