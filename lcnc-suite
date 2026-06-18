@@ -37,6 +37,7 @@ if [[ -n "$INI_FILE" ]]; then
   PORT="${LCNC_WEBUI_PORT:-$(ini_get WEBUI_PORT)}"
   BROWSER="${LCNC_WEBUI_BROWSER:-$(ini_get WEBUI_BROWSER)}"
   DEV="${LCNC_WEBUI_DEV:-$(ini_get WEBUI_DEV)}"
+  FRONTEND="${LCNC_WEBUI_FRONTEND:-$(ini_get WEBUI_FRONTEND)}"
   CAM_SOURCE="${LCNC_CAMERA_SOURCE:-$(ini_get CAMERA_SOURCE)}"
   CAM_RES="${LCNC_CAMERA_RESOLUTION:-$(ini_get CAMERA_RESOLUTION)}"
   CAM_FPS="${LCNC_CAMERA_FPS:-$(ini_get CAMERA_FPS)}"
@@ -54,6 +55,7 @@ else
   PORT="${LCNC_WEBUI_PORT:-}"
   BROWSER="${LCNC_WEBUI_BROWSER:-}"
   DEV="${LCNC_WEBUI_DEV:-}"
+  FRONTEND="${LCNC_WEBUI_FRONTEND:-}"
   CAM_SOURCE="${LCNC_CAMERA_SOURCE:-}"
   CAM_RES="${LCNC_CAMERA_RESOLUTION:-}"
   CAM_FPS="${LCNC_CAMERA_FPS:-}"
@@ -73,6 +75,7 @@ HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 BROWSER="${BROWSER:-1}"
 DEV="${DEV:-0}"
+FRONTEND="${FRONTEND:-1}"
 
 VITE_PORT="5173"
 
@@ -458,39 +461,45 @@ if [[ "$DEV" == "1" ]]; then
 fi
 
 # ── Production mode: gateway serves built frontend ──
-if [[ ! -f "$DIST_DIR/index.html" ]]; then
-  echo "ERROR: Built frontend not found at $DIST_DIR" >&2
-  echo "Run:  cd $WEBUI_DIR && npm run build" >&2
-  exit 1
-fi
-
-export LCNC_WEBUI_DIST_DIR="$DIST_DIR"
-
-if [[ "$BROWSER" == "1" ]]; then
-  ( sleep 1.5 && xdg-open "http://localhost:$PORT" 2>/dev/null ) &
-fi
-
-# Print Vite-style banner so the operator sees the LAN URL too. ANSI
-# escapes match Vite's chalk output (green ➜, bold label, cyan URL) so
-# the production startup looks consistent with dev. When HOST=0.0.0.0
-# (default), enumerate both loopback and the first non-loopback IPv4
-# so a remote browser knows what to connect to. When HOST is an
-# explicit IP, print just that.
-_C_GREEN=$'\033[32m'; _C_BOLD=$'\033[1m'; _C_CYAN=$'\033[36m'; _C_RESET=$'\033[0m'
-printf '\n  %slcnc-suite%s %sPROD%s mode\n\n' "$_C_GREEN$_C_BOLD" "$_C_RESET" "$_C_BOLD" "$_C_RESET"
-if [[ "$HOST" == "0.0.0.0" ]]; then
-  printf '  %s➜%s  %sLocal%s:   %shttp://localhost:%s/%s\n' \
-    "$_C_GREEN" "$_C_RESET" "$_C_BOLD" "$_C_RESET" "$_C_CYAN" "$PORT" "$_C_RESET"
-  _LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  if [[ -n "$_LAN_IP" ]]; then
-    printf '  %s➜%s  %sNetwork%s: %shttp://%s:%s/%s\n' \
-      "$_C_GREEN" "$_C_RESET" "$_C_BOLD" "$_C_RESET" "$_C_CYAN" "$_LAN_IP" "$PORT" "$_C_RESET"
+if [[ "$FRONTEND" == "1" ]]; then
+  if [[ ! -f "$DIST_DIR/index.html" ]]; then
+    echo "ERROR: Built frontend not found at $DIST_DIR" >&2
+    echo "Run:  cd $WEBUI_DIR && npm run build" >&2
+    echo "Or set [DISPLAY] WEBUI_FRONTEND = 0 to run gateway/API only." >&2
+    exit 1
   fi
+
+  export LCNC_WEBUI_DIST_DIR="$DIST_DIR"
+
+  if [[ "$BROWSER" == "1" ]]; then
+    ( sleep 1.5 && xdg-open "http://localhost:$PORT" 2>/dev/null ) &
+  fi
+
+  # Print Vite-style banner so the operator sees the LAN URL too. ANSI
+  # escapes match Vite's chalk output (green ➜, bold label, cyan URL) so
+  # the production startup looks consistent with dev. When HOST=0.0.0.0
+  # (default), enumerate both loopback and the first non-loopback IPv4
+  # so a remote browser knows what to connect to. When HOST is an
+  # explicit IP, print just that.
+  _C_GREEN=$'\033[32m'; _C_BOLD=$'\033[1m'; _C_CYAN=$'\033[36m'; _C_RESET=$'\033[0m'
+  printf '\n  %slcnc-suite%s %sPROD%s mode\n\n' "$_C_GREEN$_C_BOLD" "$_C_RESET" "$_C_BOLD" "$_C_RESET"
+  if [[ "$HOST" == "0.0.0.0" ]]; then
+    printf '  %s➜%s  %sLocal%s:   %shttp://localhost:%s/%s\n' \
+      "$_C_GREEN" "$_C_RESET" "$_C_BOLD" "$_C_RESET" "$_C_CYAN" "$PORT" "$_C_RESET"
+    _LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+    if [[ -n "$_LAN_IP" ]]; then
+      printf '  %s➜%s  %sNetwork%s: %shttp://%s:%s/%s\n' \
+        "$_C_GREEN" "$_C_RESET" "$_C_BOLD" "$_C_RESET" "$_C_CYAN" "$_LAN_IP" "$PORT" "$_C_RESET"
+    fi
+  else
+    printf '  %s➜%s  %shttp://%s:%s/%s\n' \
+      "$_C_GREEN" "$_C_RESET" "$_C_CYAN" "$HOST" "$PORT" "$_C_RESET"
+  fi
+  echo
 else
-  printf '  %s➜%s  %shttp://%s:%s/%s\n' \
-    "$_C_GREEN" "$_C_RESET" "$_C_CYAN" "$HOST" "$PORT" "$_C_RESET"
+  unset LCNC_WEBUI_DIST_DIR
+  echo "lcnc-suite: gateway/API-only mode (WEBUI_FRONTEND=0)"
 fi
-echo
 
 # Single signal authority: terminal signals reach the launcher only;
 # the trap is the only path that signals the gateway. Trap forwards
